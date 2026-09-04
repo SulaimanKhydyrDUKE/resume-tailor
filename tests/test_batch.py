@@ -384,6 +384,24 @@ check("amount: a range becomes its midpoint", _as_amount("$30-40 per hour") == "
 check("amount: thousands separators", _as_amount("$85,000 per year") == "85000")
 check("amount: k suffix", _as_amount("40k") == "40000")
 check("amount: no number -> None", _as_amount("negotiable") is None)
+from resume_tailor.apply import closest_option
+check("closest: the list's shorter wording", closest_option("Computer Science and Mathematics", ["Chemistry", "Computer Engineering", "Computer Science", "Mathematics"]) == 2)
+check("closest: place written out vs abbreviated", closest_option("Durham, NC, United States", ["Durham, NC, US", "Durham, NH, US", "Durham, CA, US"]) == 0)
+check("closest: a tie stays open", closest_option("Durham", ["Durham, NC, US", "Durham, NH, US"]) is None)
+check("closest: nothing in common stays open", closest_option("Durham, NC, United States", ["San Francisco", "New York", "Remote"]) is None)
+check("closest: a lone stray word is not a match", closest_option("Bachelor of Science in Computer Science", ["Science Teacher", "Nursing"]) is None)
+_opt = [
+    {"qid": "o1", "key": planner.question_key("Field of Study", "select"), "label": "Field of Study", "section": "", "widget": "select",
+     "options": ["Chemistry", "Computer Engineering", "Computer Science", "Mathematics"], "required": True, "maxlength": None, "hint": "", "bank": ""},
+    {"qid": "o2", "key": planner.question_key("Where are you located?", "select"), "label": "Where are you located?", "section": "", "widget": "select",
+     "options": ["San Francisco Bay Area", "New York", "Remote (US)"], "required": True, "maxlength": None, "hint": "", "bank": ""},
+]
+_opt_plan = planner.rails([
+    FieldAnswer(id="o1", answer="Computer Science and Mathematics", basis=["work_preferences.open_to_relocation"], skip=False, essay=False, reason="major"),
+    FieldAnswer(id="o2", answer="Durham, NC, United States", basis=["work_preferences.open_to_relocation"], skip=False, essay=False, reason="home"),
+], _opt, _pl)
+check("rails: an answer outside the list lands on the entry that means it", _opt_plan[_opt[0]["key"]].answer == "Computer Science")
+check("rails: an answer with nothing in the list stays open for the repair pass", _opt_plan[_opt[1]["key"]].answer is None)
 check("rails: the candidate's phone does answer 'Phone'", _plan[_qs[1]["key"]].answer == "+1 555-0100")
 check("rails: a whole-word option match is normalised to the option's exact text",
       _plan[_qs[2]["key"]].answer == "Charlottesville, VA")

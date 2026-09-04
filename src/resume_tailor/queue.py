@@ -155,6 +155,8 @@ class RunState:
                 fcntl.flock(lock, fcntl.LOCK_UN)
 
     def record(self, entry_id: str, outcome: dict[str, Any]) -> None:
+        prior = self.done.get(entry_id) or {}
+        outcome["attempts"] = int(prior.get("attempts") or 0) + 1
         self.done[entry_id] = outcome
         self._touched.add(entry_id)
         self.save()

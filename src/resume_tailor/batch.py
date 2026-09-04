@@ -22,7 +22,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from . import ats, freetext, judge, mailbox, planner, qa
-from .apply import ApplySession, _is_empty, _looks_like_application, _pick_option, detect_blocker
+from .apply import ApplySession, _is_empty, _looks_like_application, _pick_option, detect_blocker, closest_option
 from .planner import Decision
 from .profile import Profile
 from .render import extract_pdf_text
@@ -937,6 +937,19 @@ async def _repair(session: ApplySession, profile: Profile, posting_text: str,
                 except Exception:
                     options = []
             widget = planner.widget_of(f)
+            searched: list[str] = []
+            if f.get("combobox") and not options:
+                # A search picker lists nothing until something is typed:
+                # type what was tried (or the bank's answer) and read what the
+                # page offers for it, so the choice is made from real entries.
+                seed = str(decided.get((f.get("section") or "", label, ())) or _bank(profile, label, {**f, "required": True}, [], strong=True)[0] or "")
+                if seed:
+                    try:
+                        searched = await session.combobox_search(f["selector"], f, seed)
+                    except Exception:
+                        searched = []
+                    if searched:
+                        options = searched
         if f.get("type") == "file":
             # An upload that was tried and failed keeps its own error; one
             # never tried is a file the profile does not have.
@@ -963,6 +976,12 @@ async def _repair(session: ApplySession, profile: Profile, posting_text: str,
             quick = None  # the site just refused exactly this; the model sees the error and the live options instead
         if quick is None and previous and not options and _NUMERIC_ERR.search(error or ""):
             quick = _as_amount(str(previous))  # the page wants the number, not the sentence around it
+        if quick is None and previous and searched:
+            # The entry the page itself offers for what was tried — "Durham,
+            # NC, US" for "Durham, NC, United States" — when one clearly fits.
+            j = closest_option(str(previous), searched)
+            if j is not None:
+                quick = searched[j]
         try:
             if quick is not None:
                 d = Decision(quick, reason="rule or answer bank")

@@ -422,6 +422,16 @@ def to_entry(listing: dict) -> QueueEntry:
     )
 
 
+RETRY_CAP = 3
+
+
+def _worn_out(rec: dict) -> bool:
+    """Three attempts that all ended in needs_review or blocked, none of
+    them a hand re-queue."""
+    return (rec.get("status") in ("needs_review", "blocked") and int(rec.get("attempts") or 0) >= RETRY_CAP
+            and not (rec.get("detail") or "").startswith("re-queued"))
+
+
 def select(listings: list[dict], prefs: Prefs, state: RunState | None = None,
            limit: int | None = None) -> tuple[list[QueueEntry], dict[str, int]]:
     """Listings worth attempting, in the order to attempt them: direct-form ATS
@@ -503,7 +513,15 @@ def select(listings: list[dict], prefs: Prefs, state: RunState | None = None,
     # postings — rather than left behind the whole never-attempted pool.
     ready = [l for l in kept if stage(l) == 0]
     new = [l for l in kept if stage(l) == 1]
-    retries = [l for l in kept if stage(l) == 2]
+    # A posting that has needed review three times running is waiting for a
+    # person (a pledge to sign, a transcript, an Apply that leads nowhere),
+    # not for another pass; it stays on the dashboard and out of the deal.
+    # Errors and login walls keep retrying: a network blip or a login by
+    # the user changes them without any code change.
+    retries = [l for l in kept if stage(l) == 2 and not _worn_out(attempted.get(l.get("id") or l.get("url")) or {})]
+    for l in kept:
+        if stage(l) == 2 and _worn_out(attempted.get(l.get("id") or l.get("url")) or {}):
+            excluded["needs review, three attempts"] = excluded.get("needs review, three attempts", 0) + 1
     kept = ready
     while new or retries:
         kept += new[:3]

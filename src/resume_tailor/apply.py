@@ -608,6 +608,49 @@ _DECLINE_WORDS = ("decline", "prefer not", "do not wish", "don't wish", "not to 
                   "don't want", "not want to")
 
 
+_STOP = {"and", "the", "of", "in", "at", "or", "a", "an", "to", "for", "with", "usa", "united", "states", "us"}
+
+
+def _sig_words(text: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z0-9]+", (text or "").lower()) if len(w) >= 2 and w not in _STOP}
+
+
+def closest_option(value: str, options: list[str]) -> int | None:
+    """The one option that means `value` when nothing matches it outright:
+    the entry sharing the most of its words — "Computer Science" for
+    "Computer Science and Mathematics", "Durham, NC, US" for "Durham, NC,
+    United States" — and only when that entry beats every other, so a tie
+    ("Durham, NC" against "Durham, NH") stays a question."""
+    want = _sig_words(value)
+    if not want or not options:
+        return None
+    scored = []
+    for i, o in enumerate(options):
+        have = _sig_words(o)
+        if not have:
+            continue
+        shared = len(want & have)
+        if not shared:
+            continue
+        scored.append((shared, len(have - want), i))  # words in common; words the option adds
+    if not scored:
+        return None
+    scored.sort(key=lambda t: (-t[0], t[1]))
+    best = scored[0]
+    if len(scored) > 1 and scored[1][0] == best[0]:
+        # Two entries share as much: only an entry that adds nothing of its
+        # own wins over one that does — "Computer Science" over "Computer
+        # Science Education" — while "Durham, United Kingdom" against
+        # "Durham, North Carolina" stays a question.
+        if not (best[1] == 0 and scored[1][1] > 0):
+            return None
+    # At least one real word in common, and not a lone stray: a two-word
+    # value must share both, a longer one at least half.
+    if best[0] < min(len(want), 2):
+        return None
+    return best[2]
+
+
 def _pick_option(value: str, options: list[dict]) -> int | None:
     """Index of the dropdown option that means `value`.
 
@@ -720,6 +763,25 @@ def _is_empty(field: dict) -> bool:
     if field.get("type") in ("checkbox", "radio"):
         return not field.get("checked")
     return not field.get("value")
+
+
+_DEEP_TEXT_JS = r"""
+() => {
+  const out = [];
+  const walk = root => {
+    for (const el of root.querySelectorAll('*')) {
+      if (el.shadowRoot) walk(el.shadowRoot);
+    }
+    if (root !== document) {
+      const t = (root.textContent || '').replace(/\s+/g, ' ').trim();
+      if (t) out.push(t);
+    }
+  };
+  out.push((document.body && document.body.innerText || '').replace(/\s+/g, ' ').trim());
+  walk(document);
+  return out.join('\n');
+}
+"""
 
 
 @dataclass
@@ -921,6 +983,15 @@ class ApplySession:
         await self._pick_frame()
         await self._settle()
         return await self._page.title()
+
+    async def read_text_deep(self) -> str:
+        """The page's text including what sits inside open shadow roots —
+        where SmartRecruiters draws its whole form, file names included."""
+        await self.start()
+        try:
+            return await self._doc.evaluate(_DEEP_TEXT_JS)
+        except Exception:
+            return await self.read_text()
 
     async def read_text(self) -> str:
         await self.start()
@@ -1376,6 +1447,10 @@ class ApplySession:
                     scales.append((float(m.group(1)), k))
             if len(scales) == len(holds):
                 i = min(scales)[1]
+        if i is None and not re.fullmatch(r"\d+(\.\d+)?", v):
+            # Last: the entry that shares the most of the value's words,
+            # when one clearly does — the list's own wording for the answer.
+            i = closest_option(value, [o["t"] for o in found])
         return i
 
     async def _pick_combobox(self, el, value: str) -> None:
@@ -1488,6 +1563,41 @@ class ApplySession:
         raise ValueError(f"no option matches {value!r} in this picker"
                          + (f"; it offered {offered}" if offered else "; it showed no list"))
 
+    async def combobox_search(self, selector: str, field: dict | None = None, text: str = "", limit: int = 40) -> list[str]:
+        """What a search-as-you-type picker offers for `text` — the live
+        choices a person would see after typing it. The typed text is taken
+        back afterwards; nothing is chosen."""
+        await self.start()
+        page = self._page
+        el = await self._locate(selector, field)
+        found: list[dict] = []
+        tries = [text.strip()]
+        first = next((w for w in re.findall(r"[A-Za-z0-9']+", text) if len(w) >= 3), "")
+        if first and first.lower() != text.strip().lower():
+            tries.append(first)
+        for t in tries:
+            if not t:
+                continue
+            try:
+                await el.click()
+                await el.fill("")
+                await el.press_sequentially(t[:60], delay=20)
+                found = await self._visible_options(limit, wait_ms=1500)
+            except Exception:
+                found = []
+            # "Cannot find your city? Click here to fill in manually", "No
+            # results": the list's way of saying nothing matched.
+            found = [o for o in found if not re.search(r"no (results|matches|options)|cannot find|can't find|not found|fill in manually", o["t"], re.I)]
+            if found:
+                break
+        try:
+            await el.fill("")
+        except Exception:
+            pass
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(150)
+        return [o["t"] for o in found][:limit]
+
     async def combobox_options(self, selector: str, field: dict | None = None, limit: int = 60) -> list[str]:
         """What a picker offers when opened with nothing typed — the short,
         fixed lists ("Where did you hear about us?", graduation month). A
@@ -1583,10 +1693,50 @@ class ApplySession:
             raise FileNotFoundError(p)
         page = self._page
         doc = self._doc
+
+        async def taken(loc=None) -> bool:
+            """Did the page take the file? Its name on show, an "uploaded"
+            note, or the input still holding it. A widget that reads a
+            separate input of its own (SmartRecruiters) shows none of these
+            after the tagged input is set, and that is a miss, not a success."""
+            for _ in range(6):
+                await page.wait_for_timeout(500)
+                try:
+                    text = await self.read_text_deep()
+                except Exception:
+                    text = ""
+                if p.name.lower() in text.lower() or re.search(r"successfully (uploaded|attached)|file (uploaded|attached)|upload(ed)? complete", text, re.I):
+                    return True
+                if loc is not None:
+                    try:
+                        if await loc.evaluate("e => !!(e.files && e.files.length)"):
+                            return True
+                    except Exception:
+                        pass
+            return False
+
         try:
-            await doc.locator(selector).first.set_input_files(str(p), timeout=4000)
-            await page.wait_for_timeout(700)
-            return
+            tagged = doc.locator(selector).first
+            await tagged.set_input_files(str(p), timeout=4000)
+            if await taken(tagged):
+                return
+        except Exception:
+            pass
+
+        # The widget did not take it through its input: the native chooser
+        # behind its own "Attach / Upload / Browse" control, when it has one
+        # nearby (SmartRecruiters draws a button and listens to the chooser).
+        try:
+            near = doc.locator(selector).first.locator(
+                "xpath=ancestor::*[position()<=5]//*[self::button or self::label or @role='button']").filter(
+                has_text=re.compile(r"attach|upload|browse|choose|select (a )?file|add file", re.I)).first
+            if await near.count():
+                async with page.expect_file_chooser(timeout=5000) as fc:
+                    await near.click(timeout=5000)
+                chooser = await fc.value
+                await chooser.set_files(str(p))
+                if await taken():
+                    return
         except Exception:
             pass
 
@@ -1605,8 +1755,8 @@ class ApplySession:
                         pick = cand
                         break
             await pick.set_input_files(str(p), timeout=4000)
-            await page.wait_for_timeout(700)
-            return
+            if await taken(pick):
+                return
 
         want = re.compile(r"upload|attach|resume|résumé|\bcv\b|choose file|browse", re.I)
         button = doc.get_by_role("button", name=want).first
@@ -1616,18 +1766,34 @@ class ApplySession:
             await button.click(timeout=5000)
         chooser = await fc.value
         await chooser.set_files(str(p))
-        await page.wait_for_timeout(700)
+        if not await taken():
+            raise ValueError("the page did not take the file — no file name or upload note appeared after attaching it")
 
     async def click(self, selector: str) -> None:
         await self.start()
         await self._doc.locator(selector).first.click()
         await self._page.wait_for_timeout(1200)
 
-    async def advance(self, selector: str) -> None:
+    async def _step_key(self) -> tuple:
+        """What tells one step of a multi-page form from the next: the URL
+        and the questions on show. Workday keeps one URL for all six steps."""
+        try:
+            labels = tuple((f.get("label") or f.get("name") or "")[:40] for f in (await self.describe_form())[:24])
+        except Exception:
+            labels = ()
+        return (self._page.url if self._page is not None else "", labels)
+
+    async def advance(self, selector: str, seconds: float = 45.0) -> bool:
         """Click a Next/Continue control of a multi-step form and wait for
-        the following step to render."""
+        the following step to render. True when the page changed.
+
+        Wait for a change, not for "a form": the step just filled is itself
+        a form, so a wait that stops at the first form in sight stops at
+        once — while Workday is still saving the page (its Next goes grey
+        for five to twenty seconds, then the next step draws). A page that
+        stays put and shows an error has answered too, so that returns early."""
         await self.start()
-        baseline = await self._fields_present()
+        before = await self._step_key()
         try:
             await self._page.keyboard.press("Escape")  # any open menu would take this click instead
         except Exception:
@@ -1638,11 +1804,33 @@ class ApplySession:
         except Exception:
             pass
         await self._page.wait_for_timeout(900)
-        # The next step renders from JavaScript after the click (Oracle's
-        # verification-code step arrives once its e-mail is sent, ten to
-        # fifteen seconds later); wait for it, not for a blank.
-        await self._wait_for_fields(20, baseline)
+        deadline = time.monotonic() + seconds
+        quiet = 0
+        while time.monotonic() < deadline:
+            await self._pick_frame()
+            now = await self._step_key()
+            if now != before:
+                # The next step renders from JavaScript (Oracle's code step
+                # arrives once its e-mail is sent): give it a moment to fill in.
+                await self._wait_for_fields(20)
+                await self._pick_frame()
+                return True
+            # Same step. The site may have rejected it — an error on show
+            # and the control usable again — or may still be saving it.
+            try:
+                busy = await self._doc.locator(selector).first.evaluate(
+                    "b => b.disabled || b.getAttribute('aria-disabled') === 'true' || b.getAttribute('aria-busy') === 'true'")
+            except Exception:
+                busy = False
+            if not busy:
+                quiet += 1
+                if quiet >= 6 and await self.errors():  # three seconds of a settled, complaining page
+                    return False
+            else:
+                quiet = 0
+            await self._page.wait_for_timeout(500)
         await self._pick_frame()
+        return (await self._step_key()) != before
 
     async def screenshot(self, path: str | Path) -> Path:
         await self.start()

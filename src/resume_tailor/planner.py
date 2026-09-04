@@ -22,7 +22,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from .apply import _pick_option
+from .apply import _pick_option, closest_option
 from .models import FieldAnswer, FormPlan
 from .profile import Profile
 
@@ -321,6 +321,11 @@ def rails(answers: list[FieldAnswer], questions: list[dict], profile: Profile) -
             chosen: list[str] = []
             for w in wanted:
                 i = _pick_option(w, [{"label": o, "value": o} for o in q["options"]])
+                if i is None:
+                    # Not the list's words: take the one entry that means
+                    # it ("Computer Science" for "Computer Science and
+                    # Mathematics"). A tie or nothing in common stays open.
+                    i = closest_option(w, q["options"])
                 if i is not None and q["options"][i] not in chosen:
                     chosen.append(q["options"][i])
             if not chosen:

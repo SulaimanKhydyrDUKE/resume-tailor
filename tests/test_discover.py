@@ -181,7 +181,23 @@ with tempfile.TemporaryDirectory() as d:
     sel, ex = select(verkada, Prefs(positions=["Backend Engineer Intern"]), RunState.load(Path(d) / "s.json"))
     check("select applies the company collapse and reports it",
           [e.id for e in sel] == ["v-back", "other"] or [e.id for e in sel] == ["other", "v-back"], [e.id for e in sel])
+
     check("collapsed duplicates counted as 'same company, later pass'", ex.get("same company, later pass") == 3, ex)
+    _worn = RunState(path=Path(tempfile.mkdtemp()) / "s.json",
+                     done={"w1": {"status": "needs_review", "company": "Wall Co", "attempts": 3, "detail": "no application form was found on this page"},
+                           "w2": {"status": "needs_review", "company": "Fresh Co", "attempts": 2, "detail": "no application form was found on this page"},
+                           "w3": {"status": "error", "company": "Blip Co", "attempts": 5, "detail": "could not load posting"},
+                           "w4": {"status": "needs_review", "company": "Queued Co", "attempts": 4, "detail": "re-queued by hand"}})
+    _worn_listings = [L(id="w1", company_name="Wall Co", url="https://jobs.lever.co/wall/1"),
+                      L(id="w2", company_name="Fresh Co", url="https://jobs.lever.co/fresh/1"),
+                      L(id="w3", company_name="Blip Co", url="https://jobs.lever.co/blip/1"),
+                      L(id="w4", company_name="Queued Co", url="https://jobs.lever.co/queued/1")]
+    _worn_sel, _worn_why = select(_worn_listings, P, _worn)
+    _worn_ids = {e.id for e in _worn_sel}
+    check("retry cap: three needs_review attempts leave the deal", "w1" not in _worn_ids and _worn_why.get("needs review, three attempts") == 1)
+    check("retry cap: two attempts still retried", "w2" in _worn_ids)
+    check("retry cap: errors keep retrying", "w3" in _worn_ids)
+    check("retry cap: a hand re-queue is exempt", "w4" in _worn_ids)
 
 width = max(len(n) for n, _, _ in RESULTS)
 failed = 0
