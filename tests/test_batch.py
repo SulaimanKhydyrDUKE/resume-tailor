@@ -472,6 +472,10 @@ from resume_tailor.apply import ApplySession as _AS
 _opts = [{"i": 0, "t": "Durham, United Kingdom"}, {"i": 1, "t": "Durham, North Carolina, United States"}, {"i": 2, "t": "Raleigh, North Carolina, United States"}]
 check("picker: 'Durham, NC' finds 'Durham, North Carolina, United States'", _AS._match_option("Durham, NC", _opts) == 1)
 check("picker: 'Durham' alone is ambiguous between two Durhams", _AS._match_option("Durham", _opts) is None)
+_fos = [{"i": 0, "t": "Computer Engineering"}, {"i": 1, "t": "Computer Science"}, {"i": 2, "t": "Mathematics"}, {"i": 3, "t": "Chemistry"}]
+check("picker: Intel's Field of Study — the profile's major lands on the list's 'Computer Science'",
+      _AS._match_option("Computer Science and Mathematics", _fos, loose_prefix="Computer") == 1)
+check("picker: a bare major with one exact entry", _AS._match_option("Mathematics", _fos) == 2)
 check("picker: 'Raleigh, NC' finds Raleigh", _AS._match_option("Raleigh, NC", _opts) == 2)
 _edu = _P(career={"personal_information": {"name": "A", "surname": "B"}},
           answers={"availability": {"earliest_start_date": "May 2027"},
