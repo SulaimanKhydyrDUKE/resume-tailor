@@ -173,7 +173,7 @@ class OpenAILLM:
                     {"role": "user", "content": prompt},
                 ],
                 response_format=schema,
-                max_completion_tokens=16000,
+                max_completion_tokens=32000,  # a reasoning model spends part of this thinking; 16k cut one tailoring off mid-JSON
                 **kwargs,
             )
 
