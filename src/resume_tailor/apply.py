@@ -1328,6 +1328,16 @@ class ApplySession:
         else:
             await self._type(el, value)
 
+    async def _set_value_js(self, el, value: str) -> None:
+        """Set an input's value through the native setter and fire input and
+        change, so a React-controlled box takes it without keystrokes."""
+        await el.evaluate(
+            "(e, v) => { const d = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(e), 'value') "
+            "|| Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value'); "
+            "d.set.call(e, v); e.dispatchEvent(new Event('input', {bubbles: true})); "
+            "e.dispatchEvent(new Event('change', {bubbles: true})); }", value)  # no focus/blur: Workday's month box clears on blur
+        await self._page.wait_for_timeout(200)
+
     async def _type(self, el, value: str) -> None:
         """Enter text the way a person does — the pointer goes to the field,
         the keys go in one at a time — rather than setting the value in one
@@ -1336,6 +1346,17 @@ class ApplySession:
         # The pointer's approach is a courtesy to the bot score, not a
         # requirement: a field a sticky header covers (Workday) still takes
         # a forced click and its text.
+        # Workday's date boxes (dateSectionMonth-input …) sit off-screen
+        # behind display divs: a click cannot reach them and keystrokes
+        # scramble across the auto-advancing boxes. Set the value the way
+        # React reads it — the native setter, then input and change.
+        try:
+            aid = await el.evaluate("e => e.getAttribute('data-automation-id') || ''")
+        except Exception:
+            aid = ""
+        if re.search(r"dateSection(Month|Day|Year)-input", aid or ""):
+            await self._set_value_js(el, value)
+            return
         try:
             await el.scroll_into_view_if_needed(timeout=3000)
             await el.hover(timeout=3000)
@@ -1344,7 +1365,11 @@ class ApplySession:
         try:
             await el.click(timeout=4000)
         except Exception:
-            await el.click(force=True, timeout=4000)
+            try:
+                await el.click(force=True, timeout=4000)
+            except Exception:
+                # Off-screen or covered: reach it without the pointer.
+                await el.evaluate("e => e.focus()")
         await el.fill("")
         if not value:
             return
