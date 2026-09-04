@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Applications</title>
+<style>
+  :root { --bg: #f6f7f9; --panel: #fff; --line: #e5e7eb; --ink: #111827; --muted: #6b7280; --accent: #2563eb; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  #root { height: 100%; }
+  .app { display: grid; grid-template-rows: auto 1fr; height: 100vh; }
+  header { background: var(--panel); border-bottom: 1px solid var(--line); padding: 12px 20px; display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; }
+  header h1 { font-size: 17px; margin: 0; }
+  .watch { color: var(--muted); font-size: 13px; }
+  .watch b { color: var(--ink); }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: #9ca3af; }
+  .dot.on { background: #16a34a; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 3px 10px; cursor: pointer; font-size: 13px; }
+  .chip.active { border-color: var(--accent); color: var(--accent); }
+  .chip small { color: var(--muted); margin-left: 4px; }
+  input.search { border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; font: inherit; min-width: 220px; }
+  .body { display: grid; grid-template-columns: 400px 1fr; min-height: 0; }
+  aside { border-right: 1px solid var(--line); overflow-y: auto; background: var(--panel); }
+  main { overflow-y: auto; padding: 20px 28px 60px; }
+  .row { padding: 10px 16px; border-bottom: 1px solid var(--line); cursor: pointer; display: grid; gap: 3px; }
+  .row:hover { background: #f3f4f6; }
+  .row.active { background: #eff6ff; box-shadow: inset 3px 0 0 var(--accent); }
+  .row .top { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+  .row .co { font-weight: 600; }
+  .row .role { color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .meta { color: var(--muted); font-size: 12px; display: flex; gap: 10px; }
+  .badge { display: inline-block; border-radius: 6px; padding: 2px 8px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+  .badge.ok { background: #dcfce7; color: #166534; }
+  .badge.warn { background: #fef3c7; color: #92400e; }
+  .badge.bad { background: #fee2e2; color: #991b1b; }
+  .badge.info { background: #dbeafe; color: #1e40af; }
+  .badge.muted { background: #e5e7eb; color: #374151; }
+  .empty { color: var(--muted); padding: 60px; text-align: center; }
+  .detail h2 { margin: 0 0 4px; font-size: 22px; }
+  .detail .sub { color: var(--muted); margin-bottom: 14px; }
+  .detail a { color: var(--accent); }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin: 14px 0; }
+  .card h3 { margin: 0 0 10px; font-size: 14px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .status-line { display: flex; gap: 10px; align-items: flex-start; }
+  .status-line p { margin: 0; white-space: pre-wrap; }
+  .judges { display: flex; gap: 10px; flex-wrap: wrap; }
+  .judge { border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; min-width: 160px; }
+  .judge .score { font-size: 20px; font-weight: 700; }
+  .judge .who { color: var(--muted); font-size: 12px; }
+  iframe.pdf { width: 100%; height: 720px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+  .shots { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+  .shot img { width: 100%; border: 1px solid var(--line); border-radius: 8px; max-height: 420px; object-fit: cover; object-position: top; }
+  .shot .cap { color: var(--muted); font-size: 12px; margin-top: 4px; }
+  table.answers { width: 100%; border-collapse: collapse; }
+  table.answers th, table.answers td { text-align: left; vertical-align: top; padding: 8px 8px; border-top: 1px solid var(--line); font-size: 13px; }
+  table.answers th { color: var(--muted); font-weight: 600; border-top: none; }
+  table.answers td.q { width: 34%; }
+  table.answers td.a { white-space: pre-wrap; }
+  table.answers td.src { color: var(--muted); width: 22%; font-size: 12px; }
+  .section-head td { background: #f9fafb; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  .reason { color: #991b1b; }
+  .none { color: var(--muted); font-style: italic; }
+  .req { color: #b45309; font-weight: 700; margin-left: 3px; }
+  details.log summary { cursor: pointer; color: var(--muted); }
+  details.log pre { font-size: 12px; white-space: pre-wrap; background: #f9fafb; padding: 10px; border-radius: 8px; max-height: 260px; overflow: auto; }
+  .err { color: #991b1b; }
+  .actions { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .actions button { font: inherit; font-size: 13px; padding: 6px 12px; border-radius: 8px; border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; }
+  .actions button.quiet { background: var(--panel); color: var(--ink); border-color: var(--line); }
+  .actions button:disabled { opacity: .5; cursor: default; }
+  .actions .msg { flex-basis: 100%; color: var(--muted); font-size: 13px; }
+</style>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.26.9/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo } = React;
+
+const STATUS = {
+  applied: ["Applied", "ok"],
+  needs_review: ["Needs review", "warn"],
+  blocked: ["Blocked", "bad"],
+  ready_not_submitted: ["Ready (dry run)", "info"],
+  awaiting_approval: ["Awaiting your approval", "warn"],
+  by_hand: ["In your hands", "info"],
+  needs_login: ["Needs login", "warn"],
+  error: ["Error", "bad"],
+  fit_rejected: ["Judges said no", "muted"],
+  skipped: ["Skipped", "muted"],
+  tailored_only: ["Tailored only", "muted"],
+};
+const ORDER = Object.keys(STATUS);
+
+function Badge({ status }) {
+  const [label, tone] = STATUS[status] || [status, "muted"];
+  return <span className={"badge " + tone}>{label}</span>;
+}
+
+function fmtWhen(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return isNaN(d) ? iso : d.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+function fmtPosted(ts) {
+  return ts ? new Date(ts * 1000).toLocaleDateString([], { month: "short", day: "numeric" }) : "";
+}
+
+// "hiring manager 90/100 pass | screener 95/100 pass (revised ×1)"
+function parseFit(fit) {
+  const clean = (fit || "").replace(/\s*\(revised[^)]*\)\s*$/, "");
+  return clean.split("|").map(s => s.trim()).filter(Boolean).map(s => {
+    const m = s.match(/^(.*?)\s+(\d+)\/100\s+(\S+)$/);
+    return m ? { who: m[1], score: +m[2], verdict: m[3] } : { who: s, score: null, verdict: "" };
+  });
+}
+function revisedTag(fit) {
+  const m = (fit || "").match(/\(revised[^)]*\)/);
+  return m ? m[0] : "";
+}
+
+function Judges({ fit }) {
+  const js = parseFit(fit);
+  if (!js.length) return <span className="none">not judged (stopped before the resume was made)</span>;
+  return (
+    <div className="judges">
+      {js.map((j, i) => (
+        <div className="judge" key={i}>
+          <div className="score">{j.score === null ? "—" : j.score}<span style={{ fontSize: 12, color: "#6b7280" }}> /100</span></div>
+          <div className="who">{j.who} · {j.verdict}</div>
+        </div>
+      ))}
+      {revisedTag(fit) ? <div className="judge"><div className="who">résumé {revisedTag(fit).replace(/[()]/g, "")} from the judges' notes</div></div> : null}
+    </div>
+  );
+}
+
+function Header({ data, err, filter, setFilter, q, setQ }) {
+  const counts = data?.counts || {};
+  const total = Object.values(counts).reduce((a, b) => a + b, 0);
+  const w = data?.watch || {};
+  return (
+    <header>
+      <h1>Applications</h1>
+      <span className="watch">
+        <span className={"dot " + (w.running || w.pass_running ? "on" : "")}></span>
+        <b>{w.label || (w.running ? "loop running" : "loop stopped")}</b>
+        {data?.pool && data.pool.new != null ? <span className="muted"> · {data.pool.new} new postings waiting in the pool ({data.pool.cached} discovered)</span> : null}
+        {data?.now ? <span> · <b>now:</b> {data.now.company || "?"}{data.now.role ? " — " + data.now.role : ""} · {data.now.stage} since {new Date(data.now.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</span>
+                   : <span> · idle between postings</span>}
+        {data ? <span> · refreshed {new Date(data.generated_at).toLocaleTimeString()}</span> : null}
+        {err ? <span className="err"> · {err}</span> : null}
+      </span>
+      <div className="chips">
+        <span className={"chip " + (filter === "all" ? "active" : "")} onClick={() => setFilter("all")}>All<small>{total}</small></span>
+        {ORDER.filter(s => counts[s]).map(s => (
+          <span key={s} className={"chip " + (filter === s ? "active" : "")} onClick={() => setFilter(s)}>
+            {STATUS[s][0]}<small>{counts[s]}</small>
+          </span>
+        ))}
+      </div>
+      <input className="search" placeholder="Search company or role" value={q} onChange={e => setQ(e.target.value)} />
+    </header>
+  );
+}
+
+function Row({ app, active, onClick }) {
+  return (
+    <div className={"row " + (active ? "active" : "")} onClick={onClick}>
+      <div className="top"><span className="co">{app.company || "?"}</span><Badge status={app.status} /></div>
+      <div className="role">{app.role}</div>
+      <div className="meta">
+        {app.when ? <span>{fmtWhen(app.when)}</span> : <span>earlier</span>}
+        {app.fit ? <span>{parseFit(app.fit).map(j => j.score).join(" / ")}</span> : null}
+        {app.locations?.length ? <span>{app.locations.slice(0, 2).join("; ")}</span> : null}
+      </div>
+    </div>
+  );
+}
+
+function Screenshots({ shots }) {
+  const kinds = [["post-submit", "After submit"], ["pre-submit", "Before submit"], ["needs-review", "As left for review"], ["dry-run", "Dry run"]];
+  const have = kinds.filter(([k]) => shots && shots[k]);
+  if (!have.length) return <span className="none">no screenshot for this attempt</span>;
+  return (
+    <div className="shots">
+      {have.map(([k, cap]) => (
+        <div className="shot" key={k}>
+          <a href={shots[k]} target="_blank" rel="noreferrer"><img src={shots[k]} alt={cap} /></a>
+          <div className="cap">{cap} · open full size</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Answers({ answers, status }) {
+  if (!answers || !answers.length) {
+    return <span className="none">
+      {["applied", "needs_review", "ready_not_submitted", "awaiting_approval"].includes(status)
+        ? "answers were not recorded for this attempt (it ran before recording existed); the next retry will record them"
+        : "no form was filled for this posting"}
+    </span>;
+  }
+  const bySection = [];
+  for (const a of answers) {
+    const sec = a.section || "";
+    let g = bySection.find(x => x.section === sec);
+    if (!g) { g = { section: sec, items: [] }; bySection.push(g); }
+    g.items.push(a);
+  }
+  return (
+    <table className="answers">
+      <thead><tr><th>Question</th><th>Answer given</th><th>Where it came from</th></tr></thead>
+      <tbody>
+        {bySection.map(g => (
+          <React.Fragment key={g.section}>
+            {g.section ? <tr className="section-head"><td colSpan={3}>{g.section}</td></tr> : null}
+            {g.items.map((a, i) => (
+              <tr key={i}>
+                <td className="q">{a.question}{a.required ? <span className="req">*</span> : null}
+                  {a.options?.length ? <div className="none">{a.options.join(" · ")}</div> : null}</td>
+                <td className="a">{a.answer ? a.answer : <span className="none">left blank</span>}
+                  {a.reason ? <div className="reason">{a.reason}</div> : null}</td>
+                <td className="src">{a.source || (a.answer ? "the page had it" : "")}</td>
+              </tr>
+            ))}
+          </React.Fragment>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function Actions({ app }) {
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+  const post = async (url, body) => {
+    setBusy(true);
+    try {
+      const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+      const j = await r.json();
+      if (j.error) setMsg("Could not do that: " + j.error);
+      else if (url.includes("/review/")) setMsg("Opening in Chrome. The posting appears first; the form is filled in over the next minute or two, longer if the resume has to be made or revised first. Check it, then press Submit yourself; close the window when done. You can open several postings at once.");
+      else setMsg("Recorded.");
+    } catch (e) { setMsg(String(e)); }
+    setBusy(false);
+  };
+  return (
+    <div className="actions">
+      {app.reviewing ? <span className="badge info">Chrome window open since {new Date(app.reviewing.since).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</span> : null}
+      {app.status === "awaiting_approval" ? <button disabled={busy} onClick={() => { if (window.confirm(`Submit the application to ${app.company}?`)) post(`/api/approve/${encodeURIComponent(app.id)}`); }}>Approve and submit</button> : null}
+      {["needs_login", "by_hand", "blocked"].includes(app.status) ? <button disabled={busy} onClick={() => post(`/api/login/${encodeURIComponent(app.id)}`)}>Log in here, then let the tool apply</button> : null}
+      <button disabled={busy} className={app.status === "awaiting_approval" ? "quiet" : ""} onClick={() => post(`/api/review/${encodeURIComponent(app.id)}`)}>{app.reviewing ? "Open another window" : "Open in Chrome to finish by hand"}</button>
+      {app.status !== "applied" ? <button disabled={busy} className="quiet" onClick={() => post(`/api/mark/${encodeURIComponent(app.id)}`, { status: "applied" })}>Mark as applied</button> : null}
+      {app.status !== "skipped" ? <button disabled={busy} className="quiet" onClick={() => post(`/api/mark/${encodeURIComponent(app.id)}`, { status: "skipped" })}>Mark as skipped</button> : null}
+      {msg ? <div className="msg">{msg}</div> : null}
+    </div>
+  );
+}
+
+function Detail({ app }) {
+  return (
+    <div className="detail">
+      <h2>{app.company || "?"} <span style={{ fontWeight: 400, color: "#6b7280" }}>· {app.role}</span></h2>
+      <div className="sub">
+        {app.url ? <a href={app.url} target="_blank" rel="noreferrer">posting</a> : null}
+        {app.locations?.length ? <span> · {app.locations.join("; ")}</span> : null}
+        {app.date_posted ? <span> · posted {fmtPosted(app.date_posted)}</span> : null}
+        {app.when ? <span> · attempted {fmtWhen(app.when)}</span> : null}
+      </div>
+
+      <div className="card">
+        <h3>Outcome</h3>
+        <div className="status-line"><Badge status={app.status} /><p>{app.detail}</p></div>
+        <Actions app={app} />
+      </div>
+
+      <div className="card">
+        <h3>Judges</h3>
+        <Judges fit={app.fit} />
+      </div>
+
+      <div className="card">
+        <h3>Answers given</h3>
+        <Answers answers={app.answers} status={app.status} />
+      </div>
+
+      <div className="card">
+        <h3>Resume sent {app.pdf ? <a href={app.pdf} target="_blank" rel="noreferrer" style={{ textTransform: "none", letterSpacing: 0 }}>open PDF</a> : null}</h3>
+        {app.pdf ? <iframe className="pdf" src={app.pdf} title="resume" /> : <span className="none">no resume was made for this posting</span>}
+      </div>
+
+      <div className="card">
+        <h3>Screenshots</h3>
+        <Screenshots shots={app.screenshots} />
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState(null);
+  const [filter, setFilter] = useState("all");
+  const [q, setQ] = useState("");
+  const [sel, setSel] = useState(null);
+
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      try {
+        const r = await fetch("/api/index", { cache: "no-store" });
+        const j = await r.json();
+        if (!alive) return;
+        if (j.error) { setErr(j.error); return; }
+        setData(j); setErr(null);
+      } catch (e) { if (alive) setErr(String(e)); }
+    };
+    load();
+    const t = setInterval(load, 8000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
+
+  const apps = useMemo(() => (data?.applications || []).filter(a =>
+    (filter === "all" || a.status === filter) &&
+    (!q || (a.company + " " + a.role).toLowerCase().includes(q.toLowerCase()))
+  ), [data, filter, q]);
+  const current = (data?.applications || []).find(a => a.id === sel);
+
+  return (
+    <div className="app">
+      <Header data={data} err={err} filter={filter} setFilter={setFilter} q={q} setQ={setQ} />
+      <div className="body">
+        <aside>
+          {apps.map(a => <Row key={a.id} app={a} active={a.id === sel} onClick={() => setSel(a.id)} />)}
+          {data && !apps.length ? <div className="empty">nothing here yet</div> : null}
+          {!data && !err ? <div className="empty">loading…</div> : null}
+        </aside>
+        <main>
+          {current ? <Detail app={current} /> : (
+            <div className="empty">
+              <p>Pick an application on the left.</p>
+              {data?.watch?.log_tail?.length ? (
+                <details className="log" open>
+                  <summary>loop log (last lines)</summary>
+                  <pre>{data.watch.log_tail.join("\n")}</pre>
+                </details>
+              ) : null}
+            </div>
+          )}
+        </main>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>

@@ -1,0 +1,108 @@
+/* clean $ ATS-safe single column */
+
+/* Single column, real text, no floats, no tables, no icon fonts carrying
+   meaning. Every one of those is a way for a parser to drop or reorder content,
+   and a resume that extracts wrong is rejected before a human sees it. */
+
+* { box-sizing: border-box; }
+
+body {
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-size: 10.5pt;
+  line-height: 1.34;
+  color: #16181d;
+  margin: 0;
+  max-width: 100%;
+}
+
+header { margin-bottom: 14px; }
+
+header h1 {
+  font-size: 20pt;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin: 0 0 4px;
+}
+
+.contact-info {
+  font-size: 9.5pt;
+  color: #3d434f;
+}
+
+/* Inline-block rather than flex: the PDF text layer follows source order, and
+   flex reordering is exactly what scrambles a parse. */
+.contact-info p {
+  display: inline-block;
+  margin: 0 12px 0 0;
+}
+
+.contact-info a { color: #16181d; text-decoration: none; }
+
+section { margin-bottom: 13px; }
+
+/* Plain, expected section names. Parsers key off these literal words. */
+h2 {
+  font-size: 10.5pt;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-bottom: 1px solid #c8ccd4;
+  padding-bottom: 3px;
+  margin: 0 0 8px;
+}
+
+h3 {
+  font-size: 11pt;
+  font-weight: 700;
+  margin: 0 0 1px;
+}
+
+.entry { margin-bottom: 10px; }
+
+.entry-meta {
+  font-size: 9.5pt;
+  color: #4a5160;
+  margin: 0 0 4px;
+}
+
+.entry-meta .dates { float: none; }
+
+ul { margin: 3px 0 0; padding-left: 17px; }
+
+li { margin-bottom: 2.5px; }
+
+p { margin: 0 0 4px; }
+
+.skills p { margin-bottom: 3px; }
+
+strong { font-weight: 700; }
+
+a { color: #16181d; }
+
+/* Keep an entry from splitting across the page break mid-bullet. */
+.entry, li { page-break-inside: avoid; break-inside: avoid; }
+h2 { page-break-after: avoid; break-after: avoid; }
+
+/* The page margins live here, not only in the print call: Chromium's print
+   engine lets a CSS @page rule win over the margin option, and "margin: 0"
+   here once pinned every line to the left edge of the sheet. */
+@page { size: Letter; margin: 0.5in 0.55in; }
+
+/* One page is the norm for an internship résumé. When a render spills a few
+   lines onto a second page, the renderer tries these notches in order —
+   slightly smaller type and tighter spacing — before it gives up. */
+body.compact-1 { font-size: 10pt; line-height: 1.28; }
+body.compact-1 header { margin-bottom: 10px; }
+body.compact-1 section { margin-bottom: 9px; }
+body.compact-1 .entry { margin-bottom: 7px; }
+body.compact-1 li { margin-bottom: 1.5px; }
+body.compact-1 h2 { margin-bottom: 6px; }
+
+body.compact-2 { font-size: 9.6pt; line-height: 1.24; }
+body.compact-2 header { margin-bottom: 8px; }
+body.compact-2 header h1 { font-size: 18pt; }
+body.compact-2 section { margin-bottom: 7px; }
+body.compact-2 .entry { margin-bottom: 5px; }
+body.compact-2 li { margin-bottom: 1px; }
+body.compact-2 h2 { margin-bottom: 5px; padding-bottom: 2px; }
+body.compact-2 p { margin-bottom: 2px; }

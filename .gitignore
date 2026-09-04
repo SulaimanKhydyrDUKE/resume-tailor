@@ -1,0 +1,20 @@
+# local environment
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.DS_Store
+
+# everything a run produces: tailored PDFs, screenshots, batch state, logs,
+# the listings cache — personal by construction
+output/
+
+# credentials and personal records never live in the repo; `resume-tailor init`
+# creates them under ~/.resume-tailor from profile/*.example.*
+env
+*.env
+career.yaml
+answers.yaml
+queue.yaml
+logins/

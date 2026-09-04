@@ -1,0 +1,22 @@
+# One entry per posting. Two ways to supply each one:
+#
+#   url:   the runner opens this and reads the posting text itself.
+#   text:  paste the description directly — nothing gets fetched for this entry.
+#
+# apply_url only needs setting when it differs from the posting page (e.g. the
+# posting is on a job board but the application lives on the company's own
+# site). company is optional — a hint used before the posting is read; after
+# tailoring, the company name extracted from the posting itself takes over.
+
+- url: "https://boards.greenhouse.io/acme/jobs/1234567"
+  company: "Acme"
+
+- url: "https://jobs.lever.co/beta-corp/abcdef"
+  apply_url: "https://jobs.lever.co/beta-corp/abcdef/apply"
+  company: "Beta Corp"
+
+- text: |
+    Paste a job description here directly if you don't have a stable URL for
+    it, or the page requires a login just to read the posting.
+  apply_url: "https://apply.example.com/some-application-form"
+  company: "Gamma Inc"

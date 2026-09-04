@@ -1,0 +1,163 @@
+# The deterministic answer bank for application forms. Filled once, looked up
+# per form. The agent reads answers from here instead of guessing — anything
+# missing gets escalated to you rather than invented.
+#
+# Keys are matched by the words in their names, so add keys freely: a
+# `github_profile: "..."` key makes "GitHub profile" questions answerable.
+
+work_authorization:
+  default_region: "us"                 # which region an unqualified "require sponsorship?" refers to
+  us_work_authorization: ""            # "Yes" / "No"
+  legally_allowed_to_work_in_us: ""
+  requires_us_visa: ""
+  requires_us_sponsorship: ""
+  eu_work_authorization: ""
+  legally_allowed_to_work_in_eu: ""
+  requires_eu_visa: ""
+  requires_eu_sponsorship: ""
+  uk_work_authorization: ""
+  legally_allowed_to_work_in_uk: ""
+  requires_uk_visa: ""
+  requires_uk_sponsorship: ""
+  canada_work_authorization: ""
+  legally_allowed_to_work_in_canada: ""
+  requires_canada_visa: ""
+  requires_canada_sponsorship: ""
+
+work_preferences:
+  remote_work: ""                      # "Yes" / "No"
+  hybrid_work: ""
+  in_person_work: ""
+  open_to_relocation: ""
+  willing_to_complete_assessments: ""
+  willing_to_undergo_background_checks: ""
+  willing_to_undergo_drug_tests: ""
+
+availability:
+  notice_period: ""                    # e.g. "2 weeks", or "Current student — available May–August 2027"
+  earliest_start_date: ""
+  earliest_full_time_start_date: ""    # for the "when could you start full time?" question interns get asked
+  target_term: ""
+
+salary_expectations:
+  # Several spellings of the same answer, so "Expected salary", "Salary range"
+  # and "Desired hourly rate" all find it. Leave all blank to have forms that
+  # require a number skipped and logged rather than guessed.
+  salary: ""
+  expected_salary: ""
+  salary_range_usd: ""
+  desired_compensation: ""
+  hourly_rate_usd: ""
+  currency: ""
+
+self_identification:
+  # All voluntary. "Decline to self-identify" lands on whatever decline option
+  # a form offers ("Prefer not to say", "I don't wish to answer", ...).
+  gender: ""
+  pronouns: ""
+  veteran: ""
+  disability: ""
+  ethnicity: ""
+
+# Targeting rules for the discovery half.
+search:
+  positions: []                        # title words worth applying to, e.g. ["Software Engineer", "Backend", "Data Analyst"]
+  locations: []
+  remote: true
+  hybrid: true
+  onsite: true
+  experience_level:
+    internship: false
+    entry: false
+    associate: true
+    mid_senior_level: true
+    director: false
+    executive: false
+  job_types:
+    internship: false
+    full_time: true
+    contract: false
+    part_time: false
+  company_blacklist: []
+  title_blacklist: []
+  location_blacklist: []
+  apply_once_at_company: true
+  # Discovery: which terms to apply for, and two safety filters. A title that
+  # names another term outright ("... - Fall 2026") is left out whatever the
+  # list says about it.
+  terms: ["Summer 2027"]
+  require_us: true
+  exclude_phd_only: true
+  # Companies whose applications are filled but NOT submitted until you press
+  # Approve on the dashboard. Whole-word match on the company name.
+  approve_before_submit: []            # e.g. [Google, Microsoft, Apple, Amazon, Meta]
+  # Hosts where the tool may create an account with your e-mail and the
+  # generated RESUME_TAILOR_SITE_PASSWORD. Workday needs one and does not ask
+  # for e-mail confirmation; leave empty to stop at every login wall instead.
+  create_accounts_on: []               # e.g. [myworkdayjobs.com]
+  # The two match judges. One number, or {hiring manager: 85, screener: 90}.
+  # A résumé under the bar is revised up to max_revisions times; with
+  # apply_below_bar true it is then submitted anyway unless a named
+  # eligibility rule (citizenship, clearance, degree level) is unmet.
+  min_judge_score: 90
+  max_revisions: 2
+  apply_below_bar: false
+  # jobright.ai rows link to jobright itself, which wants a sign-in before it
+  # shows the employer's page; set true once the tool's browser is signed in.
+  jobright_account: false
+  # Replace the built-in GitHub README-table sources (jobright-ai, speedyapply,
+  # vanshb03) with your own: [[name, raw README url], ...]
+  # extra_sources: []
+
+# Form fields beyond the resume. School/degree/major answer themselves from
+# career.yaml; the rest is here because forms ask and the resume does not say.
+address:
+  street: ""
+  city: ""
+  state: ""
+  zip: ""
+  country: ""
+  # Optional: addresses that replace the default when the posting's location
+  # matches any of their terms (whole-token for short codes like "MN").
+  # alternates:
+  #   - when_location_matches: ["Minnesota", "MN", "Minneapolis"]
+  #     street: ""
+  #     city: ""
+  #     state: ""
+  #     zip: ""
+
+education:
+  graduation_date: ""          # "May 2028"
+  expected_graduation: ""
+  graduation_year: ""
+  currently_enrolled: ""       # "Yes" / "No"
+  student_status: ""
+  degree_level: ""             # "Bachelor's"
+  graduation_month_and_year: ""   # "May 2028"
+
+# Consent boxes and yes/no acknowledgements forms ask on the way to Submit.
+consents:
+  interview_recording: ""       # "Yes" / "No"
+  ai_notetaking_during_interviews: ""
+  text_message_updates: ""
+  email_updates: ""
+  data_processing: ""
+  privacy_policy: ""
+  terms_and_conditions: ""
+  code_of_conduct: ""
+
+# Files some forms ask for besides the résumé. A blank means: leave that
+# upload empty unless the form requires it, in which case it is generated
+# (cover letter, essay) or the posting is logged as needs_review.
+documents:
+  transcript: ""                # e.g. "~/.resume-tailor/documents/transcript.pdf"
+  cover_letter: ""
+  essay: ""
+
+about:
+  name_pronunciation: ""        # a short phonetic guide, e.g. "soo-lay-MAHN"
+  preferred_contact_method: ""  # "Email"
+  applied_here_before: ""       # "No"
+  outstanding_offers: ""        # "No"
+  recent_reading: ""            # for "what have you read lately?" — one or two sentences, real
+  university_email: ""          # only for fields that ask for a school e-mail

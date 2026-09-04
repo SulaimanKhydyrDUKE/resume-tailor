@@ -1,0 +1,77 @@
+# Your complete career history. Write EVERYTHING here, even things irrelevant to
+# most jobs — the tailoring step selects from this per application. It never
+# invents anything that is not in this file, so the richer this is, the better
+# every tailored resume gets.
+#
+# Bullets with concrete numbers in them are worth ten without. If you have a
+# number, put it here; the tailorer will not manufacture one for you.
+
+personal_information:
+  name: ""
+  surname: ""
+  city: ""                       # rendered as "city, country" in the header
+  country: ""
+  phone_prefix: ""
+  phone: ""
+  email: ""
+  linkedin: ""
+  github: ""
+  website: ""
+
+education_details:
+  - education_level: ""          # e.g. "B.S." or "Master's Degree"
+    institution: ""
+    field_of_study: ""
+    final_evaluation_grade: ""   # optional, omit if not strong
+    start_date: ""
+    year_of_completion: ""       # "2028 (expected)" is fine
+    coursework: []               # course names; each becomes citable evidence
+
+# Optional. Read by the tailorer before it selects evidence: which kinds of
+# work to lead with for which kinds of posting, what never to default to, how
+# to label research vs coursework vs production. Free text.
+tailoring_guidance: >
+  Pick the 3-5 experiences that match the posting, not the same headline
+  every time. Label research, coursework and prototypes as such.
+
+experience_details:
+  - position: ""
+    company: ""
+    employment_period: ""        # "06/2019 - Present"
+    location: ""
+    industry: ""
+    key_responsibilities:
+      - responsibility: ""
+    # Everything you can claim from this role. The tailorer picks the subset
+    # matching each job description; it cannot pick what is not listed.
+    skills_acquired: []
+
+projects:
+  - name: ""
+    technologies: []             # shown in the entry's meta line
+    period: ""                   # "02/2026 - Present"
+    link: ""
+    bullets: []                  # one line each; rendered verbatim, never rewritten
+    description: ""              # used only if there are no bullets
+
+# Skills you claim independently of any one role — your resume's skills section.
+# Group them however you like; group names become the labels on the resume.
+skills:
+  Languages: []
+  Frontend: []
+  "Backend & Infra": []
+  "AI & Data": []
+
+achievements:
+  - name: ""
+    description: ""
+
+certifications:
+  - name: ""
+    description: ""
+
+languages:
+  - language: ""
+    proficiency: ""              # e.g. "Native", "Fluent", "Professional"
+
+interests: []
