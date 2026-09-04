@@ -77,6 +77,12 @@ with tempfile.TemporaryDirectory() as d:
     reloaded.mark_applied("Chicago Trading Company (CTC)")
     check("apply-once: the same company under another spelling is recognised",
           reloaded.has_applied("Chicago Trading Company") and not reloaded.has_applied("Chicago Mercantile"))
+    _held = RunState(path=spath, done={"a": {"status": "awaiting_approval", "company": "Jane Street"},
+                                       "b": {"status": "applied", "company": "Acme"}})
+    check("held_at: a company with an application awaiting approval is occupied", _held.held_at("Jane Street"))
+    check("held_at: the held record itself is not its own conflict", not _held.held_at("Jane Street", except_id="a"))
+    check("held_at: an applied company is not 'held'", not _held.held_at("Acme"))
+    check("held_at: unknown company", not _held.held_at("Nowhere Inc"))
 
     # Two processes on one state file: the watch and a hand-run retry. Each
     # must keep the other's records, and the later write must not clobber.

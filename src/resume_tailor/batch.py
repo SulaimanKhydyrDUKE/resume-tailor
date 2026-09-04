@@ -1177,6 +1177,9 @@ async def _process_one(session: ApplySession, profile: Profile, entry: QueueEntr
         # Known before anything is spent: no page load, no tailoring.
         o.status, o.detail = "skipped", f"already applied at {entry.company_hint} (apply_once_at_company)"
         return o
+    if apply_once and any(state.held_at(c, except_id=entry.id) for c in names if c):
+        o.status, o.detail = "skipped", f"another posting at {entry.company_hint} is awaiting your approval (apply_once_at_company)"
+        return o
 
     jd_text = entry.text
     if not jd_text:
@@ -1257,6 +1260,9 @@ async def _process_one(session: ApplySession, profile: Profile, entry: QueueEntr
                     return o
                 if apply_once and o.company and state.has_applied(o.company):
                     o.status, o.detail = "skipped", f"already applied at {o.company} (apply_once_at_company)"
+                    return o
+                if apply_once and o.company and state.held_at(o.company, except_id=entry.id):
+                    o.status, o.detail = "skipped", f"another posting at {o.company} is awaiting your approval (apply_once_at_company)"
                     return o
                 if result.roles_included == 0:
                     o.status, o.detail = "skipped", "no experience survived selection and audit for this posting — poor fit"

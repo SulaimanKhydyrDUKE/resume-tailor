@@ -97,6 +97,18 @@ class RunState:
         key = company_key(company)
         return bool(key) and key in self.applied_companies
 
+    def held_at(self, company: str, except_id: str | None = None) -> bool:
+        """Is an application at this company filled and waiting for the
+        user's approval? It is not applied yet, but it occupies the company
+        the same way — a second one would only give the user two to review."""
+        key = company_key(company)
+        if not key:
+            return False
+        for rec_id, rec in self.done.items():
+            if rec_id != except_id and rec.get("status") == "awaiting_approval" and company_key(rec.get("company") or "") == key:
+                return True
+        return False
+
     def mark_applied(self, company: str) -> None:
         key = company_key(company)
         if key:
