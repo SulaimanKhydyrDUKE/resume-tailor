@@ -577,7 +577,9 @@ _SUBMIT_JS = """
   const s = v => (typeof v === 'string' ? v : '');
   // Native buttons, ARIA buttons, and web-component buttons (SmartRecruiters'
   // <spl-button>, whose click target is a span — there is no <button> at all).
-  const btnLike = el => el.matches('button, input[type=submit], [role=button]') || /-button$/i.test(el.tagName);
+  // JazzHR's "Submit Application" is <a href="#" class="btn">: a link
+  // dressed as a button is a button.
+  const btnLike = el => el.matches('button, input[type=submit], [role=button], a.btn, a[class*="btn-"], a[class*="button"]') || /-button$/i.test(el.tagName);
   const raw = document.querySelectorAll('*').filter(el => btnLike(el) && vis(el));
   // A component wrapping another button-like component reports once, as the
   // innermost — the one that takes the click.
@@ -1811,8 +1813,17 @@ class ApplySession:
             now = await self._step_key()
             if now != before:
                 # The next step renders from JavaScript (Oracle's code step
-                # arrives once its e-mail is sent): give it a moment to fill in.
+                # arrives once its e-mail is sent): give it a moment to fill in,
+                # then wait until what it shows stops changing — Workday draws
+                # its heading first and its résumé slot a second or two later.
                 await self._wait_for_fields(20)
+                settled = await self._step_key()
+                for _ in range(10):
+                    await self._page.wait_for_timeout(1500)
+                    again = await self._step_key()
+                    if again == settled:
+                        break
+                    settled = again
                 await self._pick_frame()
                 return True
             # Same step. The site may have rejected it — an error on show
@@ -1910,12 +1921,18 @@ _LOGIN_HOSTS = ("accounts.google.com", "login.microsoftonline.com", "login.live.
 _GONE_PHRASES = ("page you are looking for doesn't exist", "page you're looking for doesn't exist", "job is no longer available",
                  "position is no longer available", "posting is no longer available", "no longer accepting applications",
                  "this job has been closed", "this position has been filled", "job has expired", "posting has expired",
-                 "job you are looking for is no longer", "requisition is closed", "this job is not available")
+                 "job you are looking for is no longer", "requisition is closed", "this job is not available",
+                 "job not found", "job you requested was not found", "this job is no longer open", "job posting not found")
 _LOGIN_PATH = re.compile(r"/(signin|sign-in|login|log-in|auth|register|signup|sign-up|create-?account)(/|$)", re.I)
 _SIGNIN_TEXT = re.compile(r"\b(sign in|log ?in|create (an )?account)\b", re.I)
 
 
 _WD_ENTRY = re.compile(r"^(workExperience|education|language|socialNetworkAccounts)-(\d+)--(\w+?)(?:-dateSection(Month|Year|Day)-input)?$")
+
+
+# A date that belongs to no entry — the self-identification form's "Date"
+# (selfIdentifiedDisabilityData--dateSignedOn-dateSectionMonth-input).
+_WD_DATE = re.compile(r"^(?:[\w]+--)?(\w*?)-?dateSection(Month|Day|Year)-input$")
 
 
 def _relabel_workday(fields: list[dict]) -> None:
@@ -1937,6 +1954,12 @@ def _relabel_workday(fields: list[dict]) -> None:
     for f in fields:
         m = _WD_ENTRY.match(f.get("dom_id") or "")
         if not m:
+            d = _WD_DATE.match(f.get("dom_id") or "")
+            if d:
+                part, seg = d.group(1), d.group(2)
+                which = "Date" if not part or re.search(r"date|sign|today", part, re.I) else part
+                f["label"] = f"{which} — {seg} ({'MM' if seg == 'Month' else 'YYYY' if seg == 'Year' else 'DD'})" + ("*" if f.get("required") else "")
+                f["hint"] = "MM" if seg == "Month" else "YYYY" if seg == "Year" else "DD"
             continue
         entry = f"{m.group(1)}-{m.group(2)}"
         part, seg = m.group(3), m.group(4)

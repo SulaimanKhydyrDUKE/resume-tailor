@@ -465,6 +465,11 @@ def _autofill_boilerplate(label: str, field: dict, options: list[str] | None = N
         # "Name / Date" — is today. The field's own format hint decides how
         # it is written (see apply._date_text).
         return datetime.now().strftime("%m/%d/%Y")
+    m = re.fullmatch(r"\s*(today'?s\s+)?date(\s+signed)?\s*[—:-]\s*(month|day|year)\b.*", label, re.I)
+    if m and not opts_now:
+        # The same date split into Workday's three boxes.
+        part = m.group(3).lower()
+        return datetime.now().strftime("%m" if part == "month" else "%d" if part == "day" else "%Y")
     if field.get("type") == "checkbox" and not opts_now and field.get("required") and "?" not in label:
         # A required lone checkbox under a statement — "Your application will
         # be reviewed for one position at a time" — is an acknowledgement box,
@@ -609,7 +614,7 @@ async def _fill_form(session: ApplySession, profile: Profile, pdf_path: Path, po
     # is a review item, not an error to retry blindly.
     file_fields = [f for f in fields if f.get("type") == "file"]
     resume_like = [f for f in file_fields if re.search(
-        r"resume|résumé|\bcv\b", " ".join((f.get("label", ""), f.get("dom_id", ""), f.get("name", ""))), re.I)]
+        r"resume|résumé|\bcv\b", " ".join((f.get("label", ""), f.get("dom_id", ""), f.get("name", ""), f.get("section", ""))), re.I)]
     # Ashby puts an "autofill from your résumé" uploader above the real Resume
     # field. When a form has several file inputs, only the résumé-labelled ones
     # get the PDF; a lone unlabelled one gets it regardless.
@@ -635,6 +640,21 @@ async def _fill_form(session: ApplySession, profile: Profile, pdf_path: Path, po
         except Exception as e:
             if f.get("required"):
                 unresolved.append(f"{label or kind} ({str(e).splitlines()[0][:120]})")
+
+    # A slot that drew after the first scan (Workday's My Experience renders
+    # its Resume/CV section a beat after its heading) gets the résumé now.
+    try:
+        late = [f for f in await session.describe_form() if f.get("type") == "file"
+                and f["selector"] not in {g["selector"] for g in file_fields}
+                and re.search(r"resume|résumé|\bcv\b|upload a file", " ".join((f.get("label", ""), f.get("section", ""), f.get("dom_id", ""))), re.I)]
+    except Exception:
+        late = []
+    for f in late:
+        try:
+            await session.upload(f["selector"], pdf_path, label=f.get("label", ""))
+            file_fields.append(f)
+        except Exception as e:
+            unresolved.append(f"{f.get('label') or 'file upload'} ({str(e).splitlines()[0][:120]})")
 
     # A required upload with no configured file whose label is itself a
     # prompt — "In an essay of about 750 words…", "Cover letter" — is written

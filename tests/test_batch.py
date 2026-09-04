@@ -384,6 +384,10 @@ check("amount: a range becomes its midpoint", _as_amount("$30-40 per hour") == "
 check("amount: thousands separators", _as_amount("$85,000 per year") == "85000")
 check("amount: k suffix", _as_amount("40k") == "40000")
 check("amount: no number -> None", _as_amount("negotiable") is None)
+from datetime import datetime as _dt
+check("boilerplate: 'Date — Year (YYYY)' is this year", _autofill_boilerplate("Date — Year (YYYY)*", {"type": "text", "required": True}, []) == _dt.now().strftime("%Y"))
+check("boilerplate: 'Date - Month (MM)' is this month", _autofill_boilerplate("Date - Month (MM)", {"type": "text", "required": True}, []) == _dt.now().strftime("%m"))
+check("boilerplate: 'Start date — Month' is not today", _autofill_boilerplate("From date — Month (MM)*", {"type": "text", "required": True}, []) is None)
 from resume_tailor.apply import closest_option
 check("closest: the list's shorter wording", closest_option("Computer Science and Mathematics", ["Chemistry", "Computer Engineering", "Computer Science", "Mathematics"]) == 2)
 check("closest: place written out vs abbreviated", closest_option("Durham, NC, United States", ["Durham, NC, US", "Durham, NH, US", "Durham, CA, US"]) == 0)
@@ -658,6 +662,7 @@ check("blocker: after Apply, a sign-in page with no fields is a login wall",
 check("blocker: after Apply, any fields are the form's own first step",
       blocker_verdict([{"type": "email", "label": "Email Address"}], "Get started with your email", "https://x.oraclecloud.com/apply/email", after_apply=True) is None)
 check("blocker: a removed posting is gone, not a wall", blocker_verdict([], "The page you are looking for doesn't exist.", "https://x.myworkdayjobs.com/job/1") == "posting_gone")
+check("blocker: Ashby's 'Job not found' is gone, not a review item", blocker_verdict([], "Job not found The job you requested was not found. View all open positions", "https://jobs.ashbyhq.com/replit/7e0d") == "posting_gone")
 for text in ("Apply now »", "Apply Online", "Apply for this job online", "Apply to this job", "I’m interested", "APPLY NOW", "Apply Manually" if False else "Apply"):
     check(f"apply text: {text!r}", _APPLY_TEXT.match(text) is not None)
 check("apply text: another site's autofill is excluded", _APPLY_EXCLUDE.search("Apply with LinkedIn") is not None)
