@@ -1196,6 +1196,13 @@ async def _process_one(session: ApplySession, profile: Profile, entry: QueueEntr
             o.status, o.detail = "error", f"could not load posting: {e}"
             return o
     if len(jd_text.strip()) < 120:
+        from .ats import NEEDS_ACCOUNT, host_kind
+        if host_kind(entry.url) in NEEDS_ACCOUNT:
+            # The board shows nothing to a visitor without an account (Work at
+            # a Startup): a login to do by hand, not a page that failed.
+            o.status, o.detail = "needs_login", ("this site shows the posting only to an account holder — log in once "
+                                                 f"in the tool's browser and rerun: {entry.url}")
+            return o
         o.status, o.detail = "skipped", "posting text too short — page likely did not load the description"
         return o
     if entry.company_hint and entry.company_hint.lower() not in jd_text.lower():

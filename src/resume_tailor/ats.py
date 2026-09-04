@@ -25,12 +25,13 @@ _KINDS = (
     ("workable.com", "workable"),
     ("bamboohr.com", "bamboohr"),
     ("rippling.com", "rippling"),
+    ("workatastartup.com", "workatastartup"),  # Y Combinator's board: apply with a YC account and profile
 )
 
 # Systems that gate every application behind a per-site account. The runner
 # will reach them, hit the login wall, and log needs_login — correct, but each
 # one is a job that needs you to log in once first, so they're sorted last.
-NEEDS_ACCOUNT = {"workday", "icims", "oracle", "taleo", "successfactors"}
+NEEDS_ACCOUNT = {"workday", "icims", "oracle", "taleo", "successfactors", "workatastartup"}
 
 # Systems whose forms this tool fills without help.
 DIRECT_FORM = {"greenhouse", "lever", "ashby", "workable", "bamboohr", "rippling"}

@@ -81,6 +81,7 @@ check("lever /apply idempotent", ats.apply_url_for("https://jobs.lever.co/palant
 check("ashby -> /application", ats.apply_url_for("https://jobs.ashbyhq.com/co/xyz").endswith("/xyz/application"))
 check("greenhouse unchanged", ats.apply_url_for("https://job-boards.greenhouse.io/acme/jobs/1") == "https://job-boards.greenhouse.io/acme/jobs/1")
 check("workday is account-gated", ats.host_kind("https://bah.wd1.myworkdayjobs.com/x") in ats.NEEDS_ACCOUNT)
+check("work at a startup is account-gated", ats.host_kind("https://www.workatastartup.com/jobs/95003") in ats.NEEDS_ACCOUNT)
 check("tiktok careers is 'other'", ats.host_kind("https://lifeattiktok.com/search/123") == "other")
 
 # --- select: dedup, company rule, ordering, limit ----------------------------
