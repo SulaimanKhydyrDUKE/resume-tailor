@@ -131,13 +131,19 @@ _FIELD_JS = r"""
     // The nearest preceding text block, climbing the ancestors. Nine levels:
     // Greenhouse's embedded react-select buries its input six wrappers below
     // the <label> that names it. A lone required star is not a name.
+    // A picker's own chosen value ("Duke University" in react-select's
+    // singleValue node beside the input), its placeholder, or its chips sit
+    // before the input too, and are never its name.
+    const PICKER_OWN = '[class*="single-value"], [class*="singleValue"], [class*="selected-value"], [class*="selectedValue"], '
+      + '[class*="placeholder"], [class*="multi-value"], [class*="multiValue"], [data-automation-id="selectedItem"], [class*="-chip"], spl-chip';
+    const pickerOwn = n => n.matches(PICKER_OWN) || !!n.querySelector(PICKER_OWN);
     const walkUp = (start, levels) => {
       let node = start;
       for (let depth = 0; depth < levels && node; depth++) {
         let sib = node.previousElementSibling;
         while (sib) {
           const t = txt(sib);
-          if (t && t.length <= MAXQ && !sib.querySelector('input, select, textarea') && !placeholderish(t) && !/^[*✱:\s]+$/.test(t)) return t;
+          if (t && t.length <= MAXQ && !sib.querySelector('input, select, textarea') && !placeholderish(t) && !/^[*✱:\s]+$/.test(t) && !pickerOwn(sib)) return t;
           sib = sib.previousElementSibling;
         }
         node = node.parentElement;
@@ -222,7 +228,7 @@ _FIELD_JS = r"""
       n = n.parentElement;
       if (!n || n.tagName === 'FORM' || n.tagName === 'BODY') break;
       if (n.querySelectorAll('input, [role=combobox]').length > 2) break;
-      const v = n.querySelector('[class*="single-value"], [class*="selected-value"], [class*="selectedValue"]');
+      const v = n.querySelector('[class*="single-value"], [class*="singleValue"], [class*="selected-value"], [class*="selectedValue"]');
       if (v && txt(v)) return txt(v);
       // Workday's multi-select keeps its choices as chips beside the input.
       const chips = [...n.querySelectorAll('[data-automation-id="selectedItem"], [data-automation-id*="selectedItem"]')].map(txt).filter(Boolean);
@@ -339,7 +345,7 @@ e => {
     n = n.parentElement;
     if (!n || n.tagName === 'FORM' || n.tagName === 'BODY') break;
     if (n.querySelectorAll('input, [role=combobox]').length > 2) break;
-    const v = n.querySelector('[class*="single-value"], [class*="selected-value"], [class*="selectedValue"]');
+    const v = n.querySelector('[class*="single-value"], [class*="singleValue"], [class*="selected-value"], [class*="selectedValue"]');
     if (v && (v.innerText || '').trim()) return v.innerText.trim();
     // A multi-select shows each chosen entry as a chip ("Active Security
     // Clearance(s)") rather than one single-value node.
@@ -1459,16 +1465,21 @@ class ApplySession:
             if await el.evaluate(_COMBO_VALUE_JS):
                 return
         # Last try: type it and press Enter — some pickers commit the typed
-        # entry — and keep it only if the widget then shows that entry.
+        # entry — and keep it only if the widget then shows that entry. A
+        # picker that never showed a list (Greenhouse's employer field, an
+        # autocomplete over free text) keeps the whole typed value.
         try:
+            typed = value[:40] if offered else value[:120]
             await el.click()
             await el.fill("")
-            await el.press_sequentially(value[:40], delay=25)
+            await el.press_sequentially(typed, delay=25)
             await page.wait_for_timeout(600)
             await page.keyboard.press("Enter")
             await page.wait_for_timeout(500)
             shown = await el.evaluate(_COMBO_VALUE_JS)
             if shown and _pick_option(value, [{"label": shown, "value": shown}]) is not None:
+                return
+            if shown and not offered and " ".join(shown.split()).lower() == " ".join(typed.split()).lower():
                 return
             await el.fill("")
         except Exception:

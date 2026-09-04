@@ -35,6 +35,10 @@ THIRD_PARTY = re.compile(
 )
 # Keys that describe the candidate personally — the ones a third-party question must not draw on.
 SELF_KEYS = ("personal.", "address.", "about.")
+# "Are you being referred?" / "Were you referred by an employee?" is about the
+# candidate, however much it says "referr"; only the referrer's own details
+# are about someone else.
+_ASKS_IF_REFERRED = re.compile(r"\b(are|were|have|did) (you|anyone)\b[^?]{0,40}\breferr|\bdo you have an? (employee )?referral\b", re.I)
 
 _SYSTEM = (
     "You fill in job application forms on a candidate's behalf, from their profile and record only. "
@@ -308,7 +312,8 @@ def rails(answers: list[FieldAnswer], questions: list[dict], profile: Profile) -
         if not known and not (_SILENCE.search(q["label"]) and _NO_LIKE.match(answer)):
             decisions[key] = Decision(None, reason="rests on nothing in the profile")
             continue
-        if known and THIRD_PARTY.search(q["label"]) and all(b.startswith(SELF_KEYS) for b in known):
+        if (known and THIRD_PARTY.search(q["label"]) and all(b.startswith(SELF_KEYS) for b in known)
+                and not _ASKS_IF_REFERRED.search(q["label"])):
             decisions[key] = Decision(None, reason="asks about someone else")
             continue
         if q["options"]:

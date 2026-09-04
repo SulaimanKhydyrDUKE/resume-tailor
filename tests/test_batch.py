@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from resume_tailor.batch import _autofill_boilerplate, _pick_submit_button
+from resume_tailor.batch import _autofill_boilerplate, _pick_submit_button, _as_amount
 from resume_tailor.queue import QueueEntry, RunState, load_queue
 
 
@@ -360,6 +360,24 @@ _plan = planner.rails([
 ], _qs, _pl)
 check("rails: the candidate's phone never answers an emergency-contact question",
       _plan[_qs[0]["key"]].answer is None)
+_ref = [
+    {"qid": "r1", "key": planner.question_key("Are you being referred to this role as part of the Campus Referral Program?", "select"),
+     "label": "Are you being referred to this role as part of the Campus Referral Program?", "section": "", "widget": "select",
+     "options": ["Yes", "No"], "required": True, "maxlength": None, "hint": "", "bank": ""},
+    {"qid": "r2", "key": planner.question_key("What is the full name of your referrer?", "text"),
+     "label": "What is the full name of your referrer?", "section": "", "widget": "text",
+     "options": [], "required": False, "maxlength": None, "hint": "", "bank": ""},
+]
+_ref_plan = planner.rails([
+    FieldAnswer(id="r1", answer="No", basis=["about.applied_here_before"], skip=False, essay=False, reason="not referred"),
+    FieldAnswer(id="r2", answer="A B", basis=["personal.name"], skip=False, essay=False, reason="name"),
+], _ref, _pl)
+check("rails: 'are you being referred?' is about the candidate and keeps its No", _ref_plan[_ref[0]["key"]].answer == "No")
+check("rails: the referrer's name is still about someone else", _ref_plan[_ref[1]["key"]].answer is None)
+check("amount: a range becomes its midpoint", _as_amount("$30-40 per hour") == "35")
+check("amount: thousands separators", _as_amount("$85,000 per year") == "85000")
+check("amount: k suffix", _as_amount("40k") == "40000")
+check("amount: no number -> None", _as_amount("negotiable") is None)
 check("rails: the candidate's phone does answer 'Phone'", _plan[_qs[1]["key"]].answer == "+1 555-0100")
 check("rails: a whole-word option match is normalised to the option's exact text",
       _plan[_qs[2]["key"]].answer == "Charlottesville, VA")

@@ -871,6 +871,29 @@ async def _fill_group(session: ApplySession, members: list[dict], options: list[
         raise ValueError(f"no option matches {answer!r}")
 
 
+_NUMERIC_ERR = re.compile(r"valid (currency )?amount|numeric|numbers? only|must be a (valid )?number|digits only|whole number", re.I)
+_VALUE_ERR = re.compile(r"\b(valid|invalid|format|numeric|number|amount|digits|too long|too short|at least|at most)\b", re.I)
+
+
+def _as_amount(text: str) -> str | None:
+    """The one number a form that wants "a valid currency amount" can take,
+    out of an answer written for a person: "$30-40 per hour" -> "35",
+    "$85,000" -> "85000", "40k" -> "40000". None when there is no number."""
+    nums = []
+    for m in re.finditer(r"(\d[\d,]*(?:\.\d+)?)\s*([kK])?", text or ""):
+        try:
+            n = float(m.group(1).replace(",", ""))
+        except ValueError:
+            continue
+        if m.group(2):
+            n *= 1000
+        nums.append(n)
+    if not nums:
+        return None
+    n = (nums[0] + nums[1]) / 2 if len(nums) >= 2 else nums[0]
+    return str(int(n)) if float(n).is_integer() else f"{n:.2f}"
+
+
 async def _repair(session: ApplySession, profile: Profile, posting_text: str,
                   decided: dict[tuple, str | None], sources: dict[tuple, str], unresolved: list[str],
                   limit: int = 24, force_required: set[str] | None = None) -> list[str]:
@@ -880,10 +903,23 @@ async def _repair(session: ApplySession, profile: Profile, posting_text: str,
     tried, what the page says, and the options as they stand now. Returns
     the questions that remain unanswered, each with the reason."""
     still = await session.unfilled_required(force_required)
-    if not still:
-        return []
     errors = await session.errors()
     fields = await session.describe_form()
+    # A field the page rejected while it holds a value ("Salary Range Must be
+    # a valid currency amount") is not empty, so it is not in `still`; it
+    # still needs a different answer.
+    rejected = [e for e in errors if _VALUE_ERR.search(e)]
+    if rejected:
+        seen = {f["id"] for f in still}
+        for f in fields:
+            label = (f.get("label") or "").strip()
+            if f["id"] in seen or not f.get("value") or not label or f.get("type") in ("file", "checkbox", "radio"):
+                continue
+            if any(label[:30].lower() in e.lower() for e in rejected):
+                still.append(f)
+                seen.add(f["id"])
+    if not still:
+        return []
     groups, grouped = _group(fields)
     remaining: list[str] = []
     for f in still[:limit]:
@@ -911,7 +947,7 @@ async def _repair(session: ApplySession, profile: Profile, posting_text: str,
         question = {"qid": "q1", "key": planner.question_key(label, widget, section), "label": label,
                     "section": section, "widget": widget, "options": options, "required": True,
                     "maxlength": f.get("maxlength"), "hint": f.get("hint") or f.get("placeholder") or "", "bank": ""}
-        previous = decided.get((section, label, tuple(options)))
+        previous = decided.get((section, label, tuple(options))) or f.get("value") or None
         error = next((e for e in errors if f["id"] in e or (label and label[:30].lower() in e.lower())), "")
         if not error:
             # What the widget itself refused — "no option matches '1560';
@@ -925,6 +961,8 @@ async def _repair(session: ApplySession, profile: Profile, posting_text: str,
             quick, _ = _bank(profile, label, {**f, "required": True}, options, strong=True)
         if quick is not None and previous and quick.strip().lower() == str(previous).strip().lower():
             quick = None  # the site just refused exactly this; the model sees the error and the live options instead
+        if quick is None and previous and not options and _NUMERIC_ERR.search(error or ""):
+            quick = _as_amount(str(previous))  # the page wants the number, not the sentence around it
         try:
             if quick is not None:
                 d = Decision(quick, reason="rule or answer bank")
