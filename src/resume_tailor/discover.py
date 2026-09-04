@@ -451,6 +451,8 @@ def select(listings: list[dict], prefs: Prefs, state: RunState | None = None,
         for rec_id, rec in state.done.items():
             if rec.get("status") in RETRYABLE:
                 continue
+            if rec.get("status") == "skipped" and (rec.get("detail") or "").startswith("posting text too short"):
+                continue  # a page that showed nothing is no verdict on the role; another link to it may work
             # The listing's own title, when the record's id is a listing id —
             # the title the model read off the posting can differ by a word.
             src = by_listing_id.get(rec_id) or {}
