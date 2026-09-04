@@ -85,6 +85,19 @@ _TERM_IN_TITLE = re.compile(
     r"\b(" + _SEASON + r"(?:\s*[/&+-]\s*" + _SEASON + r")*)\s*[-/]?\s*'?(?:20)?(2[5-9])\b", re.I)
 
 
+_YEAR_FIRST = re.compile(r"\b(?:20)?(2[5-9])\s+(" + _SEASON + r")\b", re.I)
+_SEASON_ONLY = re.compile(r"\b(fall|autumn|winter|spring)\b", re.I)
+
+
+def other_season(title: str) -> str:
+    """A season the title names with no year at all — "Winter Co-Op",
+    "Spring Term Co-op" — when it never says summer. Empty when nothing."""
+    if re.search(r"\bsummer\b", title or "", re.I):
+        return ""
+    m = _SEASON_ONLY.search(title or "")
+    return ("Fall" if m and m.group(1).lower() == "autumn" else m.group(1).capitalize()) if m else ""
+
+
 def title_terms(title: str) -> set[str]:
     """The terms a title names outright — {"Fall 2026"} for "SWE Intern -
     Fall 2026", both halves of "Summer/Fall 2027", nothing for a title that
@@ -95,6 +108,9 @@ def title_terms(title: str) -> set[str]:
         for season in re.split(r"\s*[/&+-]\s*", seasons):
             season = season.lower()
             out.add(("Fall" if season == "autumn" else season.capitalize()) + " 20" + yy)
+    for yy, season in _YEAR_FIRST.findall(title or ""):  # "2027 Spring Term Co-op"
+        season = season.lower()
+        out.add(("Fall" if season == "autumn" else season.capitalize()) + " 20" + yy)
     return out
 
 
@@ -306,6 +322,9 @@ def evaluate(listing: dict, prefs: Prefs) -> str:
     named = title_terms(listing.get("title") or "")
     if prefs.terms and named and not named & set(prefs.terms):
         return "other term: " + ", ".join(sorted(named))
+    season = other_season(listing.get("title") or "")
+    if prefs.terms and season and not any(t.lower().startswith(season.lower()) for t in prefs.terms):
+        return "other term: " + season
     category = (listing.get("category") or "").lower()
     if "software" not in category and "analyst" not in category:
         return f"category: {listing.get('category') or '?'}"
