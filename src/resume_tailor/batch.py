@@ -46,7 +46,7 @@ AWAITING = "awaiting_approval"
 _SUBMIT_WORDS = re.compile(r"\b(submit|apply|send)\b", re.I)
 # Pickers that search a large index as you type — the opening list is a
 # handful of suggestions, not the set of answers.
-_SEARCH_PICKER = re.compile(r"\b(location|city|town|address|school|university|college|institution|employer|company)\b", re.I)
+_SEARCH_PICKER = re.compile(r"\b(location|located|where (are|do) you|city|town|address|region|country|school|university|college|institution|employer|company)\b", re.I)
 _LEAVE_BLANK = re.compile(r"middle (name|initial)|phone extension|\bext(ension)?\.?\b|name suffix|\bsuffix\b|address line ?2|apartment|apt\.?\b|unit number|suite", re.I)
 _SELF_ID = re.compile(r"self-?identif|eeo|equal employment|diversity|transgender|sexual orientation|hispanic|latino|ethnicity|"
                       r"\brace\b|veteran|disability|\bgender\b|pronoun", re.I)
@@ -849,17 +849,23 @@ def _group(fields: list[dict]) -> tuple[dict[str, list[dict]], set[str]]:
     boxes = [f for f in fields if f.get("type") == "checkbox"]
     by_name: dict[str, int] = {}
     by_question: dict[tuple, int] = {}
+    name_labels: dict[str, set] = {}
     for f in boxes:
         by_name[f.get("group") or ""] = by_name.get(f.get("group") or "", 0) + 1
         q = (f.get("section") or "", f.get("label") or "")
         by_question[q] = by_question.get(q, 0) + 1
+        name_labels.setdefault(f.get("group") or "", set()).add(f.get("label") or "")
     for f in fields:
         if f.get("type") == "radio":
             groups.setdefault(f.get("group") or f.get("label", ""), []).append(f)
         elif f.get("type") == "checkbox":
             name = f.get("group") or ""
             q = (f.get("section") or "", f.get("label") or "")
-            if name and by_name[name] > 1:
+            # A shared name makes a list only when the boxes also share a
+            # question. Ashby names every lone consent box "Yes": two of them
+            # under two statements are two questions, and ticking one of
+            # them is not an answer to the other.
+            if name and by_name[name] > 1 and len(name_labels.get(name) or set()) <= 1:
                 groups.setdefault(name, []).append(f)
             elif f.get("label") and by_question[q] > 1 and f.get("option_label") and f["option_label"] != f["label"]:
                 groups.setdefault("q:" + "|".join(q), []).append(f)

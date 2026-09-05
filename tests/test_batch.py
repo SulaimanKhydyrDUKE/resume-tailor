@@ -476,6 +476,26 @@ _fos = [{"i": 0, "t": "Computer Engineering"}, {"i": 1, "t": "Computer Science"}
 check("picker: Intel's Field of Study — the profile's major lands on the list's 'Computer Science'",
       _AS._match_option("Computer Science and Mathematics", _fos, loose_prefix="Computer") == 1)
 check("picker: a bare major with one exact entry", _AS._match_option("Mathematics", _fos) == 2)
+_terms = [{"i": 0, "t": "Winter 2026"}, {"i": 1, "t": "Spring 2027"}, {"i": 2, "t": "Summer 2027"}, {"i": 3, "t": "Spring 2028"}, {"i": 4, "t": "Summer 2028"}]
+check("picker: 'May 2028' on a term list is 'Spring 2028'", _AS._match_option("May 2028", _terms) == 3)
+check("picker: 'December 2027' on a term list is 'Winter 2027' when offered, else open", _AS._match_option("December 2027", _terms) is None)
+from resume_tailor.batch import _SEARCH_PICKER
+check("search picker: 'Where are you located?' searches as you type — its opening suggestions are not a list",
+      bool(_SEARCH_PICKER.search("Where are you located?")))
+check("search picker: 'Field of Study' is a fixed list", not _SEARCH_PICKER.search("Field of Study"))
+from resume_tailor.batch import _group
+_two_consents = [
+    {"id": "c1", "type": "checkbox", "group": "Yes", "option_label": "Yes", "label": "I certify the information provided is true.", "section": "Application Questions", "required": True},
+    {"id": "c2", "type": "checkbox", "group": "Yes", "option_label": "Yes", "label": "I understand my application will be processed under the Candidate Privacy Policy.", "section": "Application Questions", "required": True},
+]
+_g, _grouped = _group(_two_consents)
+check("group: two lone consent boxes named 'Yes' under two statements are two questions", not _grouped)
+_one_list = [
+    {"id": "l1", "type": "checkbox", "group": "langs", "option_label": "Python", "label": "Languages you know", "section": "", "required": False},
+    {"id": "l2", "type": "checkbox", "group": "langs", "option_label": "Go", "label": "Languages you know", "section": "", "required": False},
+]
+_g2, _grouped2 = _group(_one_list)
+check("group: boxes sharing a name and a question are one list", _grouped2 == {"l1", "l2"})
 check("picker: 'Raleigh, NC' finds Raleigh", _AS._match_option("Raleigh, NC", _opts) == 2)
 _edu = _P(career={"personal_information": {"name": "A", "surname": "B"}},
           answers={"availability": {"earliest_start_date": "May 2027"},

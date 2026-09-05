@@ -67,11 +67,21 @@ _FIELD_JS = r"""
     return s.display !== 'none' && s.visibility !== 'hidden' && (r.width > 0 || r.height > 0);
   };
   // Word joiners and zero-width spaces (Epic writes "First Name\u2060*\u2060:") would hide the asterisk.
-  const txt = el => (el ? (el.innerText || el.textContent || '') : '').replace(/[\u2060\u200b\ufeff]/g, '').replace(/\s+/g, ' ').trim();
+  // An icon's fallback text ("SVGs not supported by this browser.") is not
+  // a label: Workable draws a chevron inside every dropdown's <label>.
+  const svgText = el => (el && el.querySelectorAll) ? [...el.querySelectorAll('svg')].map(s => (s.textContent || '').trim()).filter(Boolean) : [];
+  const txt = el => {
+    let t = el ? (el.innerText || el.textContent || '') : '';
+    for (const st of svgText(el)) t = t.split(st).join(' ');
+    return t.replace(/[\u2060\u200b\ufeff]/g, '').replace(/\s+/g, ' ').trim();
+  };
   const isOption = el => ['radio', 'checkbox'].includes((el.type || '').toLowerCase());
   const byIds = ids => ids.split(/\s+/).map(id => document.getElementById(id)).filter(Boolean).map(txt).join(' ').trim();
   const dummy = el => {
     if (isOption(el) || el.type === 'file') return false;
+    // A store behind a widget (Workable's <input name=QA_… aria-hidden
+    // tabindex=-1> under its read-only combobox) is never the control.
+    if (el.getAttribute('aria-hidden') === 'true' && el.tabIndex === -1) return true;
     const s = getComputedStyle(el); const r = el.getBoundingClientRect();
     return (s.opacity === '0' || r.height === 0) && (el.tabIndex === -1 || el.getAttribute('aria-hidden') === 'true');
   };
@@ -88,6 +98,7 @@ _FIELD_JS = r"""
   const placeholderish = t => /^(type your response|your answer|type here.*|enter .*|select\.{0,3}|choose.*|start typing.*|attach( file)?|upload( file)?|browse|choose file|select file|drag and drop.*|drop files?.*)$/i.test(t || '');
   const MAXQ = 600;
   const STAR = /[*✱]\s*:?\s*$/;
+  const STARLEAD = /^\s*[*✱]\s*\S/;  // Workable writes the star first: "* What is your…"
   // The block holding one question and its control(s): Ashby's field entry,
   // Lever's application-question, a generic field wrapper.
   const entryOf = el => el.closest('[data-field-path], [class*="field-entry"], [class*="application-question"], [class*="form-field"], [class*="field-wrapper"], [class*="field-container"]');
@@ -259,7 +270,7 @@ _FIELD_JS = r"""
       label: q,
       name: el.name || '',
       dom_id: el.id || '',
-      required: el.required || el.getAttribute('aria-required') === 'true' || STAR.test(q) || entryRequired(el),
+      required: el.required || el.getAttribute('aria-required') === 'true' || STAR.test(q) || STARLEAD.test(q) || entryRequired(el),
       value: (type === 'file' || isOption(el)) ? ''
            : el.tagName === 'SELECT' ? (el.value && el.selectedOptions[0] ? txt(el.selectedOptions[0]) : '')
            : (combo ? comboValue(el) : (el.value || chipValue(el))),
@@ -289,7 +300,7 @@ _FIELD_JS = r"""
     const q = questionFor(ed);
     out.push({
       id, selector: `[data-rt-id="${id}"]`, tag: 'editor', type: 'editor', label: q, name: '', dom_id: ed.id || '',
-      required: STAR.test(q) || entryRequired(ed) || ed.getAttribute('aria-required') === 'true',
+      required: (STAR.test(q) || STARLEAD.test(q)) || entryRequired(ed) || ed.getAttribute('aria-required') === 'true',
       value: txt(ed), combobox: false, section: sectionOf(ed), placeholder: ed.getAttribute('data-placeholder') || '',
       hint: hintOf(ed), maxlength: undefined,
     });
@@ -304,7 +315,7 @@ _FIELD_JS = r"""
     const shown = txt(b);
     out.push({
       id, selector: `[data-rt-id="${id}"]`, tag: 'listbox', type: 'listbox', label: q, name: '', dom_id: b.id || '',
-      required: STAR.test(q) || entryRequired(b) || b.getAttribute('aria-required') === 'true',
+      required: (STAR.test(q) || STARLEAD.test(q)) || entryRequired(b) || b.getAttribute('aria-required') === 'true',
       value: (placeholderish(shown) || shown === q || !shown || /^(select one|choose one|select|choose|--)$/i.test(shown)) ? '' : shown, combobox: true,
       section: sectionOf(b), placeholder: '', hint: hintOf(b), maxlength: undefined,
     });
@@ -323,7 +334,7 @@ _FIELD_JS = r"""
     const q = questionFor(box);
     out.push({
       id, selector: `[data-rt-id="${id}"]`, tag: 'yesno', type: 'yesno', label: q, name: '', dom_id: '',
-      required: STAR.test(q) || entryRequired(box), value: on ? txt(on) : '', options: opts.map(txt), combobox: false,
+      required: (STAR.test(q) || STARLEAD.test(q)) || entryRequired(box), value: on ? txt(on) : '', options: opts.map(txt), combobox: false,
     });
   }
   return out;
@@ -1270,6 +1281,11 @@ class ApplySession:
             " || e.getAttribute('data-uxi-widget-type') === 'selectinput' || !!e.getAttribute('data-uxi-multiselect-id')"
         )
         if tag == "input" and is_combobox:
+            if await el.evaluate("e => e.readOnly"):
+                # A read-only combobox (Workable's "Select an option…") opens
+                # a list on click and takes nothing typed: choose from it.
+                await self._pick_listbox(el, value)
+                return
             await self._pick_combobox(el, value)
             return
         phone_label = bool(re.search(r"\bphone\b", (field or {}).get("label") or "", re.I)) and not re.search(
@@ -1474,6 +1490,17 @@ class ApplySession:
                     scales.append((float(m.group(1)), k))
             if len(scales) == len(holds):
                 i = min(scales)[1]
+        if i is None:
+            # A month written out against a list of terms: "May 2028" is
+            # "Spring 2028" on a graduation picker.
+            parsed = _parse_date(value)
+            if parsed and parsed[1]:
+                y, mo = parsed[0], parsed[1]
+                season = "Winter" if mo in (12, 1, 2) else "Spring" if mo <= 5 else "Summer" if mo <= 8 else "Fall"
+                for term in (f"{season} {y}", f"{season} {y % 100:02d}", f"{'Autumn' if season == 'Fall' else season} {y}"):
+                    i = _pick_option(term, [{"label": o["t"], "value": o["t"]} for o in found])
+                    if i is not None:
+                        break
         if i is None and not re.fullmatch(r"\d+(\.\d+)?", v):
             # Last: the entry that shares the most of the value's words,
             # when one clearly does — the list's own wording for the answer.
