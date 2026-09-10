@@ -55,7 +55,10 @@ def _is_search_picker(field: dict) -> bool:
     """A picker whose list is an index searched as you type — by its label
     (a place, a school, an employer) or by the widget itself (Workday's
     selectinput with its "Search" placeholder: Field of Study, Skills)."""
-    return bool(field.get("combobox")) and (bool(field.get("search")) or bool(_SEARCH_PICKER.search(field.get("label") or "")))
+    label = field.get("label") or ""
+    if re.search(r"prefer|office|which|choose|select (a|an|your)", label, re.I) and not field.get("search"):
+        return False  # "Top location preference": a fixed list of offices, read like any other
+    return bool(field.get("combobox")) and (bool(field.get("search")) or bool(_SEARCH_PICKER.search(label)))
 # Facts about one entry of a work or language block that only the plan may
 # decide, with the entry in view: never the bank ("currently enrolled: Yes"
 # once ticked "I currently work here"), never an acknowledgement rule.

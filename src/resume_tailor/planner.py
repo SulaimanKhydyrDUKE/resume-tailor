@@ -135,7 +135,9 @@ _SYSTEM = (
 # never fills these in; the answer bank holds the candidate's truth for them.
 _HARD_FACT = re.compile(r"citizen|clearance|authori[sz]|sponsor|visa|degree|gpa|graduat|felon|convict|licen[cs]e|"
                         r"certif|security|passport|national", re.I)
-_PREFERENCE = re.compile(r"prefer|preference|which (team|program|track|platform|division|group|area)|team choice", re.I)
+_PREFERENCE = re.compile(r"prefer|preference|which (team|program|track|platform|division|group|area)|team choice|"
+                         r"important (factors? )?to you|factors|matters? (the )?most|what (would|do) you (like|want|hope|look for)|"
+                         r"most (interested|excited)|interested in (working|joining)", re.I)
 
 # Questions that the record answers by its silence: nothing of the kind on
 # file means No, and No needs no key to rest on.
