@@ -61,14 +61,25 @@ class Profile:
     career: dict
     answers: dict
     root: Path
+    # The résumé skeleton every tailored résumé keeps (resume/base.yaml):
+    # roles in order with their own bullets, projects, skills, honors.
+    base_resume: dict | None = None
 
     @classmethod
     def load(cls, root: str | Path | None = None) -> "Profile":
         root = Path(root or DEFAULT_PROFILE_DIR).expanduser()
+        base_path = root / "resume" / "base.yaml"
+        base = None
+        if base_path.is_file():
+            try:
+                base = _prune(yaml.safe_load(base_path.read_text(encoding="utf-8")) or {}) or None
+            except yaml.YAMLError as e:
+                raise ProfileError(f"{base_path} is not valid YAML: {e}") from e
         return cls(
             career=_prune(_load(root / "career.yaml")),
             answers=_prune(_load(root / "answers.yaml")),
             root=root,
+            base_resume=base,
         )
 
     # --- career -----------------------------------------------------------
@@ -99,6 +110,14 @@ class Profile:
                     idx[f"{base}.r{j}"] = f"[{head}] {text}"
             for j, s in enumerate(exp.get("skills_acquired", []) or []):
                 idx[f"{base}.s{j}"] = f"[{head}] skill: {s}"
+        # The résumé skeleton's own wording for each role (resume/base.yaml),
+        # as facts a tailored bullet may cite: a rewording that keeps a base
+        # bullet's numbers passes the numeral gate by citing that bullet.
+        for role in (self.base_resume or {}).get("roles") or []:
+            rid = str(role.get("id") or "")
+            if rid in idx:
+                for j, text in enumerate(role.get("base") or []):
+                    idx[f"{rid}.b{j}"] = f"[{idx[rid]}] résumé: {text}"
         for i, ed in enumerate(self.career.get("education_details", []) or []):
             idx[f"edu{i}"] = (
                 f"{ed.get('education_level', '?')} in {ed.get('field_of_study', '?')}, "
@@ -154,7 +173,8 @@ class Profile:
                 if re.search(rf"(?<![A-Za-z]){re.escape(term)}(?![A-Za-z])", text, flags):
                     merged = {**base, **{k: v for k, v in alt.items() if k != "when_location_matches"}}
                     merged.pop("alternates", None)
-                    return Profile(career=self.career, answers={**self.answers, "address": merged}, root=self.root)
+                    return Profile(career=self.career, answers={**self.answers, "address": merged}, root=self.root,
+                                   base_resume=self.base_resume)
         return self
 
     def blacklisted(self, company: str) -> bool:
@@ -411,3 +431,15 @@ _STOPWORDS = {
     "what", "which", "any", "all", "have", "has", "be", "been", "with", "from",
     "required", "optional", "field", "question", "answer", "currently",
 }
+
+
+def apply_once_at_company(answers: dict) -> bool:
+    """The one-application-per-company rule: `search.apply_once_at_company`
+    in answers.yaml (on unless set), overridden by the environment variable
+    RESUME_TAILOR_APPLY_ONCE_AT_COMPANY (0/1) for a launch that should differ."""
+    env = os.environ.get("RESUME_TAILOR_APPLY_ONCE_AT_COMPANY", "").strip().lower()
+    if env in ("0", "false", "no", "off"):
+        return False
+    if env in ("1", "true", "yes", "on"):
+        return True
+    return bool((answers.get("search") or {}).get("apply_once_at_company", True))

@@ -39,6 +39,11 @@ SELF_KEYS = ("personal.", "address.", "about.")
 # candidate, however much it says "referr"; only the referrer's own details
 # are about someone else.
 _ASKS_IF_REFERRED = re.compile(r"\b(are|were|have|did) (you|anyone)\b[^?]{0,40}\breferr|\bdo you have an? (employee )?referral\b", re.I)
+# "Do you or your spouse have an immediate family member who works here?"
+# is about the candidate's own ties, however many other people it names.
+_ASKS_ABOUT_OWN_TIES = re.compile(
+    r"\b(do|does|did|are|were|have|has|is) (you|your|any)\b[^?]{0,140}\b(family|spouse|partner|relative|relationship|"
+    r"associate|household|friend|conflict of interest)", re.I)
 
 _SYSTEM = (
     "You fill in job application forms on a candidate's behalf, from their profile and record only. "
@@ -75,6 +80,10 @@ _SYSTEM = (
     "not a start date; a date field takes the format its hint shows.\n"
     "- Experience with a named thing, or a past tie to the hiring company (employee, intern, contractor, "
     "referral, relative): the record is complete — absent means No. 'Have you applied here before?': No.\n"
+    "- 'Do you meet the educational requirement / the minimum qualifications / have the required amount of "
+    "relevant experience as described?': Yes — the candidate applies only to postings the record was judged "
+    "to meet. Willing to take a drug test, a background check, an assessment, or to travel as the role "
+    "needs: Yes, as the work_preferences keys say.\n"
     "- 'How much experience in X' with duration options: add up the dates of the roles and projects in "
     "the record that list X (cite them) and pick the matching band; a language or tool absent from the "
     "record gets the option that means none, however that option is worded ('None', '0 years', "
@@ -130,6 +139,8 @@ _PREFERENCE = re.compile(r"prefer|preference|which (team|program|track|platform|
 # file means No, and No needs no key to rest on.
 _SILENCE = re.compile(
     r"employed by|worked (for|at|with)|team member|contract(or|ed| work)|relative|related to|referred|"
+    r"family member|immediate family|close (personal )?(relationship|associate|friend)|household|spouse|"
+    r"domestic partner|life partner|conflict of interest|"
     r"experience (with|in|using|of)|familiar|certif|clearance|previously (worked|employed|applied|interned)|"
     r"currently (work|employed)|ever (worked|been employed|applied|interviewed)|applied (to|for)|"
     r"participated in|competed in|competition|olympiad|member of|published|patent|how much experience|"
@@ -262,18 +273,33 @@ async def repair(question: dict, previous: str | None, error: str, profile: Prof
 
 
 def _id_to_name(profile: Profile, answer: str) -> str | None:
-    """'exp0' → that role's employer; 'proj1' → that project's name. A form
-    never wants the record's own ids."""
-    m = re.fullmatch(r"(exp|proj)(\d+)(?:\.\w+)?", answer.strip(), re.I)
+    """'exp0' → that role's employer; 'proj1' → that project's name; 'edu0'
+    → that degree's school. A form never wants the record's own ids (a
+    School picker was once handed "edu0")."""
+    m = re.fullmatch(r"(exp|proj|edu)(\d+)(?:\.\w+)?", answer.strip(), re.I)
     if not m:
         return None
     career = getattr(profile, "career", {}) or {}
-    items = career.get("experience_details" if m.group(1).lower() == "exp" else "projects") or []
+    kind = m.group(1).lower()
+    items = career.get({"exp": "experience_details", "proj": "projects", "edu": "education_details"}[kind]) or []
     i = int(m.group(2))
     if i >= len(items):
         return None
     item = items[i] or {}
-    return str(item.get("company") or item.get("name") or "") or None
+    return str(item.get("company") or item.get("name") or item.get("institution") or item.get("school") or "") or None
+
+
+def _title_to_company(profile: Profile, answer: str) -> str | None:
+    """The record's employer for a role given by its title — or None when
+    the answer is not one of the record's titles."""
+    a = " ".join(answer.split()).strip().lower()
+    if not a:
+        return None
+    for e in (getattr(profile, "career", {}) or {}).get("experience_details") or []:
+        pos = " ".join(str(e.get("position") or "").split()).strip().lower()
+        if pos and e.get("company") and (a == pos or (len(a) >= 12 and (a.startswith(pos[:40]) or pos.startswith(a[:40])))):
+            return str(e["company"])
+    return None
 
 
 def rails(answers: list[FieldAnswer], questions: list[dict], profile: Profile) -> dict[tuple[str, str], Decision]:
@@ -313,9 +339,16 @@ def rails(answers: list[FieldAnswer], questions: list[dict], profile: Profile) -
             decisions[key] = Decision(None, reason="rests on nothing in the profile")
             continue
         if (known and THIRD_PARTY.search(q["label"]) and all(b.startswith(SELF_KEYS) for b in known)
-                and not _ASKS_IF_REFERRED.search(q["label"])):
+                and not _ASKS_IF_REFERRED.search(q["label"]) and not _ASKS_ABOUT_OWN_TIES.search(q["label"])):
             decisions[key] = Decision(None, reason="asks about someone else")
             continue
+        if re.search(r"\b(employer|company|organi[sz]ation|firm)\b", q["label"], re.I):
+            # A form that wants the employer and was given the role's title
+            # ("Undergraduate Teaching Assistant — CS 210" for "most recent
+            # employer") gets the record's company for that role.
+            company = _title_to_company(profile, answer)
+            if company:
+                answer = company
         if q["options"]:
             wanted = [p.strip() for p in answer.split("|")] if q["widget"] == "checkboxes" else [answer]
             chosen: list[str] = []

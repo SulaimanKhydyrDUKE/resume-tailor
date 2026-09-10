@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import os
 import random
 import re
 import sys
@@ -22,11 +23,12 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from . import ats, freetext, judge, mailbox, planner, qa
-from .apply import ApplySession, _is_empty, _looks_like_application, _pick_option, detect_blocker, closest_option
+from .apply import (ApplySession, _SIGNIN_TEXT, _is_empty, _looks_like_application, _pick_option, _value_parts, _YES_WORDS,
+                    closest_option, detect_blocker)
 from .planner import Decision
 from .profile import Profile
 from .render import extract_pdf_text
-from .queue import QueueEntry, RunState, load_queue
+from .queue import QueueEntry, RunState, company_key, load_queue
 from .tailor import tailor
 
 # Outcomes that are worth re-attempting on a later run without --retry-all —
@@ -47,6 +49,18 @@ _SUBMIT_WORDS = re.compile(r"\b(submit|apply|send)\b", re.I)
 # Pickers that search a large index as you type — the opening list is a
 # handful of suggestions, not the set of answers.
 _SEARCH_PICKER = re.compile(r"\b(location|located|where (are|do) you|city|town|address|region|country|school|university|college|institution|employer|company)\b", re.I)
+
+
+def _is_search_picker(field: dict) -> bool:
+    """A picker whose list is an index searched as you type — by its label
+    (a place, a school, an employer) or by the widget itself (Workday's
+    selectinput with its "Search" placeholder: Field of Study, Skills)."""
+    return bool(field.get("combobox")) and (bool(field.get("search")) or bool(_SEARCH_PICKER.search(field.get("label") or "")))
+# Facts about one entry of a work or language block that only the plan may
+# decide, with the entry in view: never the bank ("currently enrolled: Yes"
+# once ticked "I currently work here"), never an acknowledgement rule.
+_NO_BANK = re.compile(r"currently work here|currently (employed|attend)|i am fluent", re.I)
+_CURRENT_ROLE = re.compile(r"currently work here|current(ly)? (role|position|employ)|i still work here|present position", re.I)
 _LEAVE_BLANK = re.compile(r"middle (name|initial)|phone extension|\bext(ension)?\.?\b|name suffix|\bsuffix\b|address line ?2|apartment|apt\.?\b|unit number|suite", re.I)
 _SELF_ID = re.compile(r"self-?identif|eeo|equal employment|diversity|transgender|sexual orientation|hispanic|latino|ethnicity|"
                       r"\brace\b|veteran|disability|\bgender\b|pronoun", re.I)
@@ -54,7 +68,11 @@ _DECLINE_WORDS = ("decline", "prefer not", "do not wish", "don't wish", "not to 
                   "not to say", "not to disclose", "do not want", "don't want", "not want to")
 _ACK_OPTION = re.compile(r"^\s*(yes|i understand|understood|i acknowledge|acknowledged|ok|okay|i agree|agree|i confirm|confirm|"
                          r"accept|i accept|i have read.*)\s*[.!]?\s*$", re.I)
-_CONSENT_WORDS = re.compile(r"\b(certify|agree|confirm|accura|consent|acknowledge|terms|policy|code of conduct)\b", re.I)
+# A statement put to the applicant as a required field is an acknowledgement
+# whatever it says: "We will only consider you for one role at a time…"
+# (Optiver), "Reminder that you can only apply for one role" (HRT).
+_CONSENT_WORDS = re.compile(r"\b(certify|agree|confirm|accura|consent|acknowledge|terms|policy|code of conduct|i understand|"
+                            r"please note|reminder that|we will only consider|first preference|one (role|position|application)s? at a time)\b", re.I)
 # "How did you hear about us?" — and not "if you were referred, name the
 # person", which is a different question with a factual answer.
 _SOURCE_FIELD = re.compile(
@@ -82,6 +100,7 @@ class Outcome:
     answers: list = field(default_factory=list)  # the form as it stood at the end: question, answer, where it came from
     resume_version: int = 0  # which generation of the résumé composer made the cached PDF
     revisions: int = 0  # how many times the résumé was revised from the judges' notes before this verdict
+    worker: str = ""  # which parallel loop handled it ("0".."3", "fresh"), for the dashboard
 
 
 # Bumped whenever the résumé composer or renderer changes in a way that makes
@@ -89,7 +108,10 @@ class Outcome:
 #  2: bullets can no longer render as ", won the…" (empty action); Letter page size.
 #  3: the career record grew from a one-page transcription to the full inventory
 #     (2026-09-03 evening) — a résumé drafted before that misses most of it.
-RESUME_VERSION = 3
+#  4: the résumé is composed on the user's own skeleton (resume/base.yaml) in
+#     the LaTeX layout and uploaded as First_Last_resume.pdf (2026-09-07) — an
+#     earlier draft has the old shape and a company-named file.
+RESUME_VERSION = 4
 
 
 # Wording that says a control is not the one that sends the application,
@@ -167,8 +189,20 @@ async def _tick_invalid_boxes(session: ApplySession) -> int:
     if not ids:
         return 0
     ticked = 0
-    for f in await session.describe_form():
-        if f.get("type") == "checkbox" and not f.get("checked") and f.get("id") in ids:
+    from collections import Counter
+
+    boxes = [f for f in await session.describe_form() if f.get("type") == "checkbox"]
+    per_question = Counter((f.get("section") or "", f.get("label") or "") for f in boxes)
+    for f in boxes:
+        if not f.get("checked") and f.get("id") in ids:
+            # One box of a choice list ("Yes, I have a disability / No / I
+            # do not want to answer") is an answer, not an acknowledgement:
+            # ticking the first flagged one once declared a disability.
+            if per_question[(f.get("section") or "", f.get("label") or "")] > 1:
+                continue
+            if (_SELF_ID.search(f.get("label") or "") or _SELF_ID.search(f.get("option_label") or "")
+                    or _NO_BANK.search(f.get("label") or "")):
+                continue
             try:
                 await session.fill(f["selector"], "yes", f)
                 session._declined.discard(f["selector"])
@@ -178,7 +212,12 @@ async def _tick_invalid_boxes(session: ApplySession) -> int:
     return ticked
 
 
-_CODE_WALL = re.compile(r"verification code|code (was |has been )?sent|enter the code|one-time (code|password)|confirm your identity", re.I)
+_CODE_WALL = re.compile(r"verification code|code (was |has been )?sent|enter the code|one-time (code|password)|confirm your identity|"
+                        r"verification (e-?mail|link)|verify your account|account-verification", re.I)
+# A portal that will not sign a new account in until its e-mail is verified
+# (Medtronic's and Motorola's Workday tenants).
+_VERIFY_WALL = re.compile(r"verify your account|account (may )?need(s)? verification|resend (account )?verification|"
+                          r"verification e-?mail (has been |was )?sent|check your (e-?mail|inbox) to (verify|activate|confirm)", re.I)
 # A page that sent the applicant an e-mail and now waits for its link to be
 # opened ("check your inbox to continue"): nothing to type, a link to follow.
 _LINK_WALL = re.compile(r"check your (e-?mail|inbox)|we('ve| have)? (sent|e-?mailed) (you )?(a|an) (link|e-?mail)|link to (continue|verify|sign in|log in)|"
@@ -268,6 +307,7 @@ async def _create_account(session: ApplySession, profile: Profile) -> str:
     email = str(profile.career.get("personal_information", {}).get("email") or profile.flat_answers().get("personal.email") or "")
     if not password or not email:
         return ""
+    started = time.time()
 
     async def controls():
         try:
@@ -284,16 +324,43 @@ async def _create_account(session: ApplySession, profile: Profile) -> str:
                     return True
         return False
 
+    def emails_of(fields: list[dict]) -> list[dict]:
+        return [f for f in fields if f.get("type") in ("text", "email")
+                and re.search(r"e-?mail|username", (f.get("label") or "") + " " + (f.get("name") or ""), re.I)]
+
+    def passwords_of(fields: list[dict]) -> list[dict]:
+        return [f for f in fields if f.get("type") == "password"]
+
+    async def put(f: dict, value: str) -> None:
+        """Set one credential directly, on a control found again the instant
+        before: Workday redraws the account form as the password rules light
+        up, and a control tagged a moment earlier is gone with the redraw."""
+        for attempt in range(3):
+            try:
+                loc = await session._locate(f["selector"], f)
+                await loc.click(timeout=3000)
+                await loc.fill(value, timeout=3000)
+                return
+            except Exception:
+                if attempt == 2:
+                    raise
+                await session._page.wait_for_timeout(500)
+                same = [g for g in await session.describe_form()
+                        if g.get("type") == f.get("type") and (g.get("label") or "") == (f.get("label") or "")]
+                if same:
+                    f = same[0]
+
     async def fill_credentials(verify: bool) -> bool:
         fields = await session.describe_form()
-        emails = [f for f in fields if f.get("type") in ("text", "email") and re.search(r"e-?mail|username", (f.get("label") or "") + " " + (f.get("name") or ""), re.I)]
-        passwords = [f for f in fields if f.get("type") == "password"]
-        if not emails or not passwords or (verify and len(passwords) < 2):
+        if not emails_of(fields) or not passwords_of(fields) or (verify and len(passwords_of(fields)) < 2):
             return False
-        await session.fill(emails[0]["selector"], email, emails[0])
-        for f in passwords:
-            await session.fill(f["selector"], password, f)
-        for f in fields:
+        await put(emails_of(fields)[0], email)
+        n_pw = len(passwords_of(fields))
+        for i in range(n_pw):
+            fresh = passwords_of(await session.describe_form())
+            if i < len(fresh):
+                await put(fresh[i], password)
+        for f in await session.describe_form():
             if f.get("type") == "checkbox" and not f.get("checked"):
                 try:
                     await session.fill(f["selector"], "yes", f)
@@ -317,6 +384,11 @@ async def _create_account(session: ApplySession, profile: Profile) -> str:
     # The create-account form, reached by its link when the sign-in form is
     # what shows; Workday shows both behind one "Create Account" toggle.
     fields = await session.describe_form()
+    if not any(f.get("type") == "password" for f in fields):
+        # A wall of sign-in routes (Google, LinkedIn, e-mail) before any
+        # form — Medline's Workday: the e-mail route leads to the account form.
+        if await click_text(r"sign in with e-?mail|continue with e-?mail|use (my )?e-?mail( address)?|apply with e-?mail"):
+            fields = await session.describe_form()
     if not any(f.get("type") == "password" and re.search(r"verify|confirm|re-?enter", f.get("label") or "", re.I) for f in fields):
         await click_text(r"create (an )?account|sign up|register|new user")
     created = False
@@ -332,6 +404,46 @@ async def _create_account(session: ApplySession, profile: Profile) -> str:
         await click_text(r"sign in with email|use (my )?email|continue with email|sign in|log in|already have an account.*")
         if await fill_credentials(verify=False):
             await press(r"sign in|log in")
+    # A tenant that will not sign the new account in until its e-mail is
+    # verified (Medtronic, Motorola): with the inbox configured, the
+    # verification link is followed and the sign-in tried once more;
+    # without it, the wall is named so the loop stops retrying it.
+    if _VERIFY_WALL.search((await session.read_text())[:4000]):
+        if mailbox.configured():
+            # Workday mails the link once, when the account is made; a later
+            # sign-in only offers to send it again ("Resend Account
+            # Verification"). The sender names the tenant one way or another
+            # (deluxe@otp.workday.com, CrewCentral_noreply@vanguardhr.com), so
+            # only mail naming it in its sender or subject counts. Ask, wait
+            # for it, and failing that take the link sent at creation if the
+            # inbox still has it from the last few days.
+            host = re.sub(r"^https?://([^/]+).*$", r"\1", _page_url(session) or "")
+            tenant = host.split(".")[0] if host.endswith("myworkdayjobs.com") else ""
+            require = [tenant] if len(tenant) >= 4 else None
+            hints = ["verif", "activat", "confirm", "account"] + ([tenant] if tenant else [])
+            asked_at = time.time()
+            asked = await click_text(r"resend (account )?verification( e-?mail)?|resend( verification)? e-?mail|"
+                                     r"send (the )?(verification )?(e-?mail|link) again")
+            found = await mailbox.fetch_secret_async(asked_at if asked else started, hints, timeout_s=150, require=require)
+            if not (found or {}).get("link"):
+                found = await mailbox.fetch_secret_async(time.time() - 3 * 86400, hints, timeout_s=0, require=require)
+            link = (found or {}).get("link")
+            if link:
+                try:
+                    await session.goto(link)
+                    await session._page.wait_for_timeout(1500)
+                except Exception:
+                    pass
+                await click_text(r"sign in with email|use (my )?email|continue with email|sign in|log in")
+                if await fill_credentials(verify=False):
+                    await press(r"sign in|log in")
+                if await detect_blocker(session, after_apply=True) != "login_required":
+                    try:
+                        await session.save_logins()
+                    except Exception:
+                        pass
+                    return "verified"
+        return "verify_email"
     blocker = await detect_blocker(session, after_apply=True)
     if blocker == "login_required":
         return ""
@@ -470,7 +582,7 @@ def _autofill_boilerplate(label: str, field: dict, options: list[str] | None = N
         # The same date split into Workday's three boxes.
         part = m.group(3).lower()
         return datetime.now().strftime("%m" if part == "month" else "%d" if part == "day" else "%Y")
-    if field.get("type") == "checkbox" and not opts_now and field.get("required") and "?" not in label:
+    if field.get("type") == "checkbox" and not opts_now and field.get("required") and "?" not in label and not _NO_BANK.search(label):
         # A required lone checkbox under a statement — "Your application will
         # be reviewed for one position at a time" — is an acknowledgement box,
         # whatever words it uses. Nobody puts a real question behind one.
@@ -484,10 +596,14 @@ def _autofill_boilerplate(label: str, field: dict, options: list[str] | None = N
             for opt in opts:
                 if re.match(r"^\s*(yes|i agree|agree|i accept|accept|i acknowledge|acknowledge)\b", opt, re.I):
                     return opt
-    if opts_now and (_SELF_ID.search(label) or _SELF_ID.search(field.get("section") or "")):
+    if opts_now and (_SELF_ID.search(label) or _SELF_ID.search(field.get("section") or "")
+                     or any(_SELF_ID.search(o) for o in opts_now)):
+        # Voluntary self-identification — known by its question, its heading,
+        # or its own options ("Yes, I have a disability…" under "Please check
+        # one of the boxes below"): the decline option, as the bank says for EEO.
         for opt in opts_now:
             if any(w in opt.lower() for w in _DECLINE_WORDS):
-                return opt  # voluntary self-identification: the decline option, as the bank says for EEO
+                return opt
     if field.get("required") and opts_now and "?" not in label and all(_ACK_OPTION.match(o) for o in opts_now if o.strip()):
         # A statement to acknowledge ("Reminder: you may apply for one role
         # only") whose every option is a form of yes: the only answer there is.
@@ -497,6 +613,12 @@ def _autofill_boilerplate(label: str, field: dict, options: list[str] | None = N
         # A required "who referred you" box with no referral to name: the
         # honest answer, rather than a stalled application or someone's name.
         return "N/A — no referral; found the posting on a job board"
+    if (field.get("required") and not opts_now and field.get("type") in ("text", "textarea", "")
+            and re.search(r"^\s*(what is |please (provide|enter|list) )?(their|his or her|his/her|the (employee|referrer|referring employee|contact)'?s?) "
+                          r"(full |first |last )?(name|e-?mail( address)?|phone( number)?|title|department|relationship)\b", label, re.I)):
+        # "What is their name?" — the detail of a referrer or contact the
+        # form asks for after a No: there is nobody to name.
+        return "N/A"
     if _SOURCE_FIELD.search(label) and field.get("combobox") and not opts_now:
         return None  # a searchable picker (Workday): its list is read live and the option chosen from it
     if _SOURCE_FIELD.search(label):
@@ -589,6 +711,18 @@ def _missing_labels(errors: list[str]) -> set[str]:
     for e in errors:
         for part in re.split(r"\s*\|\s*|\n", e):
             part = part.strip()
+            # Workday: "Error-From The field From is required and must have a
+            # value.", "Error: The field Date is required…", "Invalid LinkedIn URL".
+            m3 = re.search(r"the field (.+?) is required", part, re.I)
+            if m3:
+                out.add(m3.group(1).strip().lower())
+                continue
+            m4 = re.match(r"^error\s*[-–:]\s*(.+?)(?:\s+(?:the field|invalid|is required|please)\b.*)?$", part, re.I)
+            if m4 and len(m4.group(1)) <= 80:
+                out.add(m4.group(1).strip().rstrip(".").lower())
+            m5 = re.search(r"\binvalid\s+(.+?)\s*(?:url|format|value|entry|address)?\s*\.?$", part, re.I)
+            if m5 and len(m5.group(1)) <= 40:
+                out.add(m5.group(1).strip().lower())
             m = _MISSING_FIELD.search(part)
             if m:
                 named = m.group(1).strip().rstrip(".").strip().lower()
@@ -618,7 +752,19 @@ async def _fill_form(session: ApplySession, profile: Profile, pdf_path: Path, po
     # Ashby puts an "autofill from your résumé" uploader above the real Resume
     # field. When a form has several file inputs, only the résumé-labelled ones
     # get the PDF; a lone unlabelled one gets it regardless.
+    # Workday carries the résumé of the account's last application into a
+    # new one: before this posting's first upload, whatever PDF the page
+    # already holds is that carry-over and is taken off, so one résumé goes
+    # — and a slot that took a file already in this session is not fed a
+    # second copy by a repair round.
+    if not session._uploaded:
+        try:
+            await session.remove_stale_uploads(Path(pdf_path))
+        except Exception:
+            pass
     for f in resume_like or file_fields:
+        if f["selector"] in session._uploaded or (f.get("label") or "") in session._uploaded:
+            continue
         try:
             await session.upload(f["selector"], pdf_path, label=f.get("label", ""))
         except Exception as e:
@@ -694,7 +840,7 @@ async def _fill_form(session: ApplySession, profile: Profile, pdf_path: Path, po
     # the form's own words rather than the profile's.
     for f in fields:
         if f.get("combobox") and not f.get("options") and f.get("type") != "file":
-            if _SEARCH_PICKER.search(f.get("label") or ""):
+            if _is_search_picker(f):
                 continue  # a search box: what it shows unopened is suggestions, not a list
             try:
                 f["options"] = await session.combobox_options(f["selector"], f)
@@ -730,7 +876,8 @@ async def _fill_form(session: ApplySession, profile: Profile, pdf_path: Path, po
     # questions) may need a few rounds, as long as each one makes progress.
     for _ in range(3):
         before = len(unresolved) + len(await session.unfilled_required(force_required))
-        unresolved = await _repair(session, profile, posting_text, decided, sources, unresolved, force_required=force_required)
+        unresolved = await _repair(session, profile, posting_text, decided, sources, unresolved, force_required=force_required,
+                                   docs_dir=Path(pdf_path).parent / "documents")
         after = len(unresolved) + len(await session.unfilled_required(force_required))
         if not unresolved or after >= before:
             break
@@ -801,6 +948,16 @@ async def _decide(question: str, field: dict, options: list[str], profile: Profi
         # the wrong thing there.
         decided[key] = None
         return None
+    if _NO_BANK.search(question):
+        # "I currently work here" under a work-experience entry is a fact
+        # about that role, decided with the entry by the plan — never the
+        # bank's "currently enrolled: Yes", never an acknowledgement box.
+        d = plan.get(planner.question_key(question, widget, section)) if plan is not None else None
+        answer = d.answer if d is not None and not d.essay else None
+        if answer is not None:
+            sources[(section, question)] = "form plan" + (f": {d.reason}" if d.reason else "")
+        decided[key] = answer
+        return answer
     if field.get("combobox") and re.search(r"\b(city|location)\b", question, re.I) and not re.search(r"work|prefer|office|relocat", question, re.I):
         # A place picker lists "Durham, NC, US" beside five other Durhams:
         # the whole place, not the bare city, is what tells them apart.
@@ -897,8 +1054,39 @@ async def _fill_group(session: ApplySession, members: list[dict], options: list[
         raise ValueError(f"no option matches {answer!r}")
 
 
+# A page's way of saying a field it shows filled did not take: the value
+# never reached the site's own state, or it wants another one.
+_REJECTED_ERR = re.compile(r"is required|must have a value|required field|cannot be (blank|empty)|invalid", re.I)
 _NUMERIC_ERR = re.compile(r"valid (currency )?amount|numeric|numbers? only|must be a (valid )?number|digits only|whole number", re.I)
 _VALUE_ERR = re.compile(r"\b(valid|invalid|format|numeric|number|amount|digits|too long|too short|at least|at most)\b", re.I)
+
+
+_MONEY_Q = re.compile(r"\b(compensation|salary|pay|wage|rate|earnings|remuneration)\b", re.I)
+
+
+def _money_answer(profile: Profile, label: str, field: dict, answer: str | None) -> str | None:
+    """A money question answered as one number in the unit the question
+    names. "$30-40 per hour" typed into Workday's "Desired Total Annual
+    Compensation" box once became 3040: the annual figure the bank holds
+    goes to an annual box, the hourly one to an hourly box, and a range
+    becomes its midpoint."""
+    if not answer or not label or not _MONEY_Q.search(label) or field.get("options") or field.get("combobox"):
+        return answer
+    if field.get("type") not in ("text", "number", "", "textarea"):
+        return answer
+    if re.fullmatch(r"\s*\$?\s*[\d,]+(\.\d+)?\s*", answer):
+        return re.sub(r"[^\d.]", "", answer)
+    flat = profile.flat_answers()
+    hourly = _as_amount(str(flat.get("salary_expectations.hourly_rate_usd") or "")) or _as_amount(answer)
+    annual = _as_amount(str(flat.get("salary_expectations.annual_salary_expectation") or ""))
+    if re.search(r"\b(hour|hourly|hr)\b", label, re.I):
+        return hourly or answer
+    if re.search(r"annual|year|total|salary|compensation", label, re.I):
+        if annual:
+            return annual
+        if hourly and re.search(r"\bhour", answer, re.I):
+            return str(int(float(hourly) * 2080))
+    return _as_amount(answer) or answer
 
 
 def _as_amount(text: str) -> str | None:
@@ -922,7 +1110,7 @@ def _as_amount(text: str) -> str | None:
 
 async def _repair(session: ApplySession, profile: Profile, posting_text: str,
                   decided: dict[tuple, str | None], sources: dict[tuple, str], unresolved: list[str],
-                  limit: int = 24, force_required: set[str] | None = None) -> list[str]:
+                  limit: int = 24, force_required: set[str] | None = None, docs_dir: Path | None = None) -> list[str]:
     """Required questions the form still shows empty after filling — an
     answer the widget would not take, a question the plan skipped, a field
     that appeared late — go back to the model one at a time with what was
@@ -934,14 +1122,15 @@ async def _repair(session: ApplySession, profile: Profile, posting_text: str,
     # A field the page rejected while it holds a value ("Salary Range Must be
     # a valid currency amount") is not empty, so it is not in `still`; it
     # still needs a different answer.
-    rejected = [e for e in errors if _VALUE_ERR.search(e)]
-    if rejected:
+    rejected = [e for e in errors if _VALUE_ERR.search(e) or _REJECTED_ERR.search(e)]
+    named = _missing_labels(errors)
+    if rejected or named:
         seen = {f["id"] for f in still}
         for f in fields:
             label = (f.get("label") or "").strip()
             if f["id"] in seen or not f.get("value") or not label or f.get("type") in ("file", "checkbox", "radio"):
                 continue
-            if any(label[:30].lower() in e.lower() for e in rejected):
+            if any(label[:30].lower() in e.lower() for e in rejected) or _demanded(label, named):
                 still.append(f)
                 seen.add(f["id"])
     if not still:
@@ -949,7 +1138,9 @@ async def _repair(session: ApplySession, profile: Profile, posting_text: str,
     groups, grouped = _group(fields)
     remaining: list[str] = []
     for f in still[:limit]:
+        searched = []
         members = next((ms for ms in groups.values() if any(m["id"] == f["id"] for m in ms)), None) if f["id"] in grouped else None
+        seed = ""
         if members:
             label = next((m["label"] for m in members if m.get("label")), "")
             options = [m.get("option_label") or "" for m in members]
@@ -957,7 +1148,8 @@ async def _repair(session: ApplySession, profile: Profile, posting_text: str,
         else:
             label = f.get("label", "")
             options = list(f.get("options") or [])
-            if f.get("combobox") and not options:
+            search_picker = _is_search_picker(f)
+            if f.get("combobox") and not options and not search_picker:
                 try:
                     options = await session.combobox_options(f["selector"], f)
                 except Exception:
@@ -965,21 +1157,46 @@ async def _repair(session: ApplySession, profile: Profile, posting_text: str,
             widget = planner.widget_of(f)
             searched: list[str] = []
             if f.get("combobox") and not options:
-                # A search picker lists nothing until something is typed:
-                # type what was tried (or the bank's answer) and read what the
-                # page offers for it, so the choice is made from real entries.
+                # A search picker lists nothing until something is typed — and
+                # what it shows unopened is the top of an index, never the
+                # choices (a Field of Study picker opened on "Accounting", and
+                # the model, handed that as the list, chose it). Type what was
+                # tried (or the bank's answer), then each part of it ("Computer
+                # Science" out of "Computer Science and Mathematics"), and read
+                # what the page offers, so the choice is made from real entries.
                 seed = str(decided.get((f.get("section") or "", label, ())) or _bank(profile, label, {**f, "required": True}, [], strong=True)[0] or "")
-                if seed:
+                if re.search(r"\b(city|location)\b", label, re.I) and not re.search(r"work|prefer|office|relocat", label, re.I):
+                    # A place picker searched with the bare city ("Durham") lists
+                    # six Durhams; the whole place tells them apart.
+                    flat = profile.flat_answers()
+                    place = ", ".join(str(flat.get(k)) for k in ("address.city", "address.state", "address.country") if flat.get(k))
+                    seed = place or seed
+                for attempt in ([seed] + _value_parts(seed)) if seed else []:
                     try:
-                        searched = await session.combobox_search(f["selector"], f, seed)
+                        searched = await session.combobox_search(f["selector"], f, attempt)
                     except Exception:
                         searched = []
                     if searched:
-                        options = searched
+                        break
+                if searched:
+                    options = searched
         if f.get("type") == "file":
             # An upload that was tried and failed keeps its own error; one
-            # never tried is a file the profile does not have.
+            # never tried is a file the profile does not have — unless its
+            # label is itself a prompt (a cover letter the page turned out to
+            # require at submit), which is written from the record and attached.
             earlier = next((u for u in unresolved if label and u.startswith(label[:40])), None)
+            kind = _document_prompt(label) if label and not earlier else None
+            if kind:
+                try:
+                    written = await _write_document(profile, label, kind, posting_text, docs_dir or Path("output") / "documents")
+                    if written is not None:
+                        await session.upload(f["selector"], written, label=label)
+                        sources[(f.get("section") or "", label)] = f"{kind} written from the record"
+                        continue
+                except Exception as e:
+                    remaining.append(f"{label} ({_brief(e)})")
+                    continue
             remaining.append(earlier or f"{label} — a file the profile does not have")
             continue
         section = f.get("section") or ""
@@ -1002,12 +1219,15 @@ async def _repair(session: ApplySession, profile: Profile, posting_text: str,
             quick = None  # the site just refused exactly this; the model sees the error and the live options instead
         if quick is None and previous and not options and _NUMERIC_ERR.search(error or ""):
             quick = _as_amount(str(previous))  # the page wants the number, not the sentence around it
-        if quick is None and previous and searched:
+        if quick is None and searched:
             # The entry the page itself offers for what was tried — "Durham,
-            # NC, US" for "Durham, NC, United States" — when one clearly fits.
-            j = closest_option(str(previous), searched)
-            if j is not None:
-                quick = searched[j]
+            # NC, US" for "Durham, NC, United States", "Computer Science" for
+            # "Computer Science and Mathematics" — when one clearly fits.
+            for cand in [c for c in (previous, seed) if c] + _value_parts(str(previous or seed)):
+                j = closest_option(str(cand), searched)
+                if j is not None:
+                    quick = searched[j]
+                    break
         try:
             if quick is not None:
                 d = Decision(quick, reason="rule or answer bank")
@@ -1027,12 +1247,35 @@ async def _repair(session: ApplySession, profile: Profile, posting_text: str,
             if members:
                 await _fill_group(session, members, options, d.answer)
             else:
-                await session.fill(f["selector"], d.answer, f)
+                await session.fill(f["selector"], _money_answer(profile, label, f, d.answer), f)
         except Exception as e:
             remaining.append(f"{label} ({_brief(e)})")
     for f in still[limit:]:
         remaining.append(f.get("label") or f.get("name") or "?")
     return remaining
+
+
+# Questions whose answer is a hard fact the bank holds, where a value a page
+# already shows may be an earlier attempt's mistake rather than the truth.
+_HARD_FACT_Q = re.compile(r"sponsor|visa|authori[sz]|citizen|clearance|relocat|18 years|drug|background check|eligib", re.I)
+
+
+def _same_answer(answer: str, held: str, options: list[str]) -> bool:
+    """Whether what the page holds already means the bank's answer: the same
+    option, the same words, or both a yes (or both a no)."""
+    a, h = " ".join(answer.split()).lower(), " ".join(held.split()).lower()
+    if not h:
+        return False
+    if a == h or a in h or h in a:
+        return True
+    if options:
+        ia = _pick_option(answer, [{"label": o, "value": o} for o in options])
+        ih = _pick_option(held, [{"label": o, "value": o} for o in options])
+        if ia is not None and ih is not None:
+            return ia == ih
+    yes = re.compile(r"^(yes|y|true)\b", re.I)
+    no = re.compile(r"^(no|n|false)\b", re.I)
+    return bool((yes.match(a) and yes.match(h)) or (no.match(a) and no.match(h)))
 
 
 _NEXT_WORDS = re.compile(
@@ -1053,15 +1296,71 @@ async def _fill_pass(session: ApplySession, profile: Profile, fields: list[dict]
     unresolved: list[str] = []
     groups, grouped = _group(fields)
 
+    # "I currently work here" before anything else in its entry: ticking it
+    # takes the entry's End date boxes off the page (Greenhouse, Workday),
+    # which would otherwise be filled with a date the site then refuses as
+    # "must be in the past" for a role that has not ended.
+    gone: set[str] = set()
+    for f in fields:
+        if (f.get("type") != "checkbox" or f["id"] in grouped or f.get("checked")
+                or not _CURRENT_ROLE.search(f.get("label") or "")):
+            continue
+        answer = await _decide(f["label"], f, [], profile, posting_text, decided, sources, plan, planner.widget_of(f))
+        if answer is None or str(answer).strip().lower() not in _YES_WORDS:
+            continue
+        try:
+            await session.fill(f["selector"], answer, f)
+        except Exception as e:
+            unresolved.append(f"{f['label']} ({_brief(e)})")
+            continue
+        gone.add(f["id"])
+        m = re.search(r"\d+", f.get("dom_id") or f.get("name") or "")
+        if m:
+            n = m.group(0)
+            for g in fields:
+                did = g.get("dom_id") or ""
+                if re.search(r"end[-_]?date", did, re.I) and re.search(rf"(?<!\d){n}(?!\d)", did):
+                    gone.add(g["id"])
+    fields = [f for f in fields if f["id"] not in gone]
+
     # Single controls first — text, pickers, yes/no toggles — and the option
     # groups after them, so a picker's remount does not undo a box checked
     # before it.
     for f in fields:
         if f["id"] in grouped or f.get("type") == "file":
             continue
-        # Already filled — a retry pass, or the site prefilled it. A checkbox
-        # is judged by its checked state: its value reads "on" either way.
+        # Already filled — a retry pass, the site's own prefill, or an earlier
+        # attempt's saved draft (Workday keeps one per account). A checkbox is
+        # judged by its checked state: its value reads "on" either way. On a
+        # hard fact the bank holds — sponsorship, authorization, clearance —
+        # a draft that contradicts the bank is corrected, never kept.
         if (f.get("checked") if f.get("type") in ("checkbox", "radio") else f.get("value")):
+            if f.get("type") in ("checkbox", "radio") or not _HARD_FACT_Q.search(f.get("label") or ""):
+                continue
+            held = str(f.get("value") or "")
+            opts_now = f.get("options") or []
+            if f.get("combobox") and not opts_now:
+                try:
+                    opts_now = await session.combobox_options(f["selector"], f)
+                except Exception:
+                    opts_now = []
+            answer, why = _bank(profile, f["label"], f, opts_now, strong=True)
+            why = f"answer bank: {why}" if answer is not None else ""
+            if answer is None and plan is not None:
+                # The bank cannot always match a long question ("Will you now
+                # or in the future require visa sponsorship for employment?");
+                # the plan, which saw the profile's own sponsorship answer, can.
+                d = plan.get(planner.question_key(f["label"], planner.widget_of(f), f.get("section") or ""))
+                if d is not None and d.answer and not d.essay:
+                    answer, why = d.answer, "form plan" + (f": {d.reason}" if d.reason else "")
+            if answer is None or _same_answer(answer, held, opts_now):
+                continue
+            sources[(f.get("section") or "", f["label"])] = f"{why} (over a saved draft of {held!r})"
+            try:
+                await session.fill(f["selector"], answer, f)
+            except Exception as e:
+                if f.get("required"):
+                    unresolved.append(f"{f['label']} ({_brief(e)})")
             continue
         options = f.get("options") or []
         if f.get("combobox") and not options:
@@ -1078,6 +1377,7 @@ async def _fill_pass(session: ApplySession, profile: Profile, fields: list[dict]
             if f.get("required"):
                 unresolved.append(f["label"])
             continue
+        answer = _money_answer(profile, f["label"], f, answer)
         try:
             await session.fill(f["selector"], answer, f)
         except Exception as e:
@@ -1146,7 +1446,8 @@ async def run_batch(
             raise ValueError("run_batch needs a queue_path or entries")
         entries = load_queue(queue_path)
     entries = list(entries)
-    apply_once = bool(profile.answers.get("search", {}).get("apply_once_at_company", True))
+    from .profile import apply_once_at_company
+    apply_once = apply_once_at_company(profile.answers)
     retry_statuses = RETRYABLE if not retry_all else set(s for s in
         ("applied", "tailored_only", "ready_not_submitted", "skipped", "needs_review", *RETRYABLE))
 
@@ -1163,16 +1464,27 @@ async def run_batch(
                 await session.reset()
             except Exception:
                 pass
-            outcome = await _process_one(session, profile, entry, out_dir, shots_dir, apply_once, state, dry_run)
+            try:
+                outcome = await _process_one(session, profile, entry, out_dir, shots_dir, apply_once, state, dry_run)
+            except Exception as e:
+                # One posting's page must never end the pass: whatever the
+                # browser threw is that posting's record, and the next one runs.
+                outcome = Outcome(entry_id=entry.id, status="error", company=entry.company_hint, role=entry.title,
+                                  detail=f"the attempt broke off: {_brief(e)}")
             if outcome.status == "error" and _NETWORK_ERROR.search(outcome.detail or ""):
                 # The connection dropped, not the posting. Wait for it to come
                 # back rather than racing through the rest of the list offline,
                 # then try this one again.
                 _now("waiting for the internet connection", entry)
                 if await _wait_for_network():
-                    outcome = await _process_one(session, profile, entry, out_dir, shots_dir, apply_once, state, dry_run)
+                    try:
+                        outcome = await _process_one(session, profile, entry, out_dir, shots_dir, apply_once, state, dry_run)
+                    except Exception as e:
+                        outcome = Outcome(entry_id=entry.id, status="error", company=entry.company_hint, role=entry.title,
+                                          detail=f"the attempt broke off: {_brief(e)}")
             _now("idle")
             outcome.when = datetime.now().astimezone().isoformat(timespec="seconds")
+            outcome.worker = _worker()
             counts[outcome.status] = counts.get(outcome.status, 0) + 1
             state.record(entry.id, asdict(outcome))
             _append_report_row(report_path, outcome)
@@ -1183,6 +1495,30 @@ async def run_batch(
         await session.stop()
 
     return {"counts": counts, "total": len(entries), "report": str(report_path), "state": str(state.path)}
+
+
+def _inbox_wall(state: RunState, entry: QueueEntry, prev_rec: dict | None = None) -> str | None:
+    """Why this posting waits for the applicant's inbox, or None: it met an
+    e-mail-code wall itself, or another posting at its company did. Every
+    attempt at such a wall mails the applicant one more code, so a company's
+    other postings wait with the first rather than mailing a code apiece —
+    until RESUME_TAILOR_IMAP_PASSWORD is set, when every one is worth a try."""
+    if mailbox.configured():
+        return None
+    prev_rec = prev_rec if prev_rec is not None else (state.done.get(entry.id) or {})
+    if (prev_rec.get("detail") or "").startswith("re-queued"):
+        return None  # the user put it back in the queue by hand: try it, code or no code
+    if mailbox.waiting_for_inbox(prev_rec):
+        return prev_rec.get("detail") or "waiting for the inbox to be configured"
+    key = company_key(entry.company_hint)
+    if not key:
+        return None
+    for rec_id, rec in state.done.items():
+        if rec_id != entry.id and mailbox.waiting_for_inbox(rec) and company_key(rec.get("company") or "") == key:
+            return (f"{entry.company_hint} e-mails a verification code before its form (another posting there hit that wall) — "
+                    f"not attempted, so as not to mail you one more code; set {mailbox.ENV_HINT} (a Google app password) "
+                    "in ~/.resume-tailor/env and the tool will read it")
+    return None
 
 
 def _needs_approval(profile: Profile, *names: str) -> bool:
@@ -1208,11 +1544,12 @@ async def _process_one(session: ApplySession, profile: Profile, entry: QueueEntr
     prev_rec = state.done.get(entry.id) or {}
     if (prev_rec.get("detail") or "").startswith("re-queued"):
         judge_gate = False  # the user put it back in the queue by hand: apply, whatever the judges say
-    if (prev_rec.get("status") == "needs_login" and _CODE_WALL.search(prev_rec.get("detail") or "")
-            and not mailbox.configured()):
+    wall = _inbox_wall(state, entry, prev_rec)
+    if wall:
         # Every attempt at an e-mail-code wall mails the applicant a fresh
-        # code. Until the inbox is configured there is nothing new to try.
-        o.status, o.detail = "needs_login", prev_rec.get("detail") or "waiting for the inbox to be configured"
+        # code. Until the inbox is configured there is nothing new to try —
+        # at this posting or at any other of the company's.
+        o.status, o.detail = "needs_login", wall
         o.pdf, o.fit, o.answers, o.screenshot = prev_rec.get("pdf", ""), prev_rec.get("fit", ""), prev_rec.get("answers") or [], prev_rec.get("screenshot", "")
         return o
     # A company goes by two names here: the listing's ("National Information
@@ -1267,6 +1604,8 @@ async def _process_one(session: ApplySession, profile: Profile, entry: QueueEntr
     # then the application goes in anyway. Only an eligibility barrier —
     # citizenship, clearance, degree level, graduation window — still stops it.
     apply_below_bar = bool(search.get("apply_below_bar", True))
+    if os.environ.get("RESUME_TAILOR_APPLY_BELOW_BAR", "").strip().lower() in ("0", "false", "no"):
+        apply_below_bar = False  # the launch script's word: every judge at the bar, or the posting is held
 
     prev = state.done.get(entry.id) or {}
     # A cached resume and verdict stand only when the verdict was a pass at
@@ -1384,6 +1723,16 @@ async def _process_one(session: ApplySession, profile: Profile, entry: QueueEntr
         except Exception as e:
             how = ""
             print(f"  account step failed: {_brief(e)}", file=sys.stderr, flush=True)
+        if how == "verify_email":
+            # The account exists; the portal wants its e-mail verified first.
+            # Named as an e-mail wall, so the loop leaves it alone until the
+            # inbox is configured rather than retrying it every pass.
+            o.status = "needs_login"
+            o.detail = ("this site e-mailed an account-verification link and wants it opened before any sign-in — "
+                        + ("the inbox showed no verification e-mail in time; " if mailbox.configured() else
+                           "set RESUME_TAILOR_IMAP_PASSWORD (a Google app password) in ~/.resume-tailor/env and the tool will follow it; ")
+                        + f"or open it in Chrome, verify by hand, and rerun: {_page_url(session) or apply_url}")
+            return o
         if how:
             blocker = await detect_blocker(session, after_apply=True)
             if blocker == "no_form_found" and await session.click_apply_control():
@@ -1400,7 +1749,21 @@ async def _process_one(session: ApplySession, profile: Profile, entry: QueueEntr
     if blocker == "posting_gone":
         o.status, o.detail = "skipped", "the posting is no longer there — the page says it was removed or closed"
         return o
+    if blocker == "already_applied":
+        o.status, o.detail = "skipped", "the site says this account has already applied for this job — nothing to send"
+        return o
     if blocker == "no_form_found":
+        try:
+            page_text = (await session.read_text()).strip()
+        except Exception:
+            page_text = ""
+        if len(page_text) < 80 or re.search(r"\bERR_[A-Z_]+\b|site can.t be reached|no internet", page_text, re.I):
+            # A page with nothing on it is a load that failed — the
+            # connection dropped, or the page was still blank when read —
+            # not a posting without a form: it takes the network
+            # wait-and-retry, and does not use up a review attempt.
+            o.status, o.detail = "error", "could not load the application form: the page came up blank or as a browser error"
+            return o
         o.status, o.detail = "needs_review", "no application form was found on this page"
         return o
 
@@ -1455,11 +1818,52 @@ async def _process_one(session: ApplySession, profile: Profile, entry: QueueEntr
                 # scanner could not name (Oracle's e-mail step). Ticked; again.
                 await session.advance(nxt["selector"])
             if await _step_signature(session) == page_before:
-                # Still the same step: the site refused to move on. Re-filling
-                # the same page nine times would only pile up answers.
-                complaints = [e for e in await session.errors() if not re.match(r"rt-\d+: ", e)][:4]
-                unresolved = [f"the page did not advance past this step" + (": " + "; ".join(complaints) if complaints else "")]
-                break
+                # Still the same step: the site refused to move on. When it
+                # says which fields (Workday: "The field From is required and
+                # must have a value", "Invalid LinkedIn URL"), those are
+                # decided again with the complaint in view and the step is
+                # pressed once more — twice at most. Re-filling the same page
+                # nine times would only pile up answers.
+                moved = False
+                for round_no in range(2):
+                    errors = await session.errors()
+                    demanded = set(_missing_labels(errors))
+                    invalid_ids = {m.group(1) for e in errors for m in [re.match(r"(rt-\d+): ", e)] if m}
+                    for f in await session.describe_form():
+                        label = (f.get("label") or "").strip()
+                        if label and (f.get("id") in invalid_ids or any(
+                                label[:30].lower() in e.lower() for e in errors if not re.match(r"rt-\d+: ", e))):
+                            demanded.add(label.lower())
+                    if not demanded:
+                        if round_no == 0 and not errors:
+                            # Nothing named and nothing said: the click may have
+                            # gone to a menu the page left open (Workday's last
+                            # dropdown). Once more, after closing it.
+                            try:
+                                await session._page.keyboard.press("Escape")
+                            except Exception:
+                                pass
+                            await session.advance(nxt["selector"])
+                            if await _step_signature(session) != page_before:
+                                moved = True
+                        break
+                    _now(f"repairing the step (round {round_no + 1})", entry, url=apply_url)
+                    unresolved, more = await _fill_form(session, profile, pdf_path, jd_text, force_required=demanded)
+                    o.answers = o.answers + more
+                    if unresolved or await session.unfilled_required(demanded):
+                        break
+                    buttons = await session.buttons()
+                    again = _pick_next_button(buttons) or await _ask_button(buttons, "next")
+                    if again is None or _NOT_SUBMIT.search(again.get("text", "")):
+                        break
+                    await session.advance(again["selector"])
+                    if await _step_signature(session) != page_before:
+                        moved = True
+                        break
+                if not moved:
+                    complaints = [e for e in await session.errors() if not re.match(r"rt-\d+: ", e)][:4]
+                    unresolved = unresolved or [f"the page did not advance past this step" + (": " + "; ".join(complaints) if complaints else "")]
+                    break
             unresolved, more = await _fill_form(session, profile, pdf_path, jd_text)
             o.answers = o.answers + more
     except Exception as e:
@@ -1509,18 +1913,27 @@ async def _process_one(session: ApplySession, profile: Profile, entry: QueueEntr
     if dry_run:
         o.status, o.detail = "ready_not_submitted", "dry run — filled and screenshotted, submit not clicked"
         return o
-    # A page with nothing on it is a step still loading, never a form to
-    # send: pressing whatever button it shows (Oracle's NEXT on a blank
+    # A multi-step form ends on a Review page — the answers as text, no
+    # controls, and the Submit — the one page a submit is meant for. Any other
+    # page with nothing on it is a step still loading or a wall, never a form
+    # to send: pressing whatever button it shows (Oracle's NEXT on a blank
     # verification step) once produced a false "applied".
-    if not await session._wait_for_fields(10):
+    buttons = await session.buttons()
+    review_page = await _is_review_page(session, profile, buttons)
+    if not review_page and not await session._wait_for_fields(10):
         shot = await session.screenshot(shots_dir / f"{_safe(entry.id)}-needs-review.png")
-        o.status, o.detail = "needs_review", "the form disappeared before submit — the page shows no fields"
+        if any(_SIGNIN_TEXT.search(b.get("text") or "") for b in buttons):
+            o.status = "needs_login"
+            o.detail = ("this site wants an account or a sign-in before its form — the tool does not create accounts; "
+                        f"open it in Chrome to finish by hand, or log in once and rerun: {_page_url(session) or apply_url}")
+        else:
+            o.status, o.detail = "needs_review", "the form disappeared before submit — the page shows no fields"
         o.screenshot = str(shot)
         return o
     if not any(a.get("answer") for a in o.answers):
         o.status, o.detail = "needs_review", "nothing was filled on this page; not submitted"
         return o
-    if not _looks_like_application(await session.describe_form()):
+    if not review_page and not _looks_like_application(await session.describe_form()):
         # A posting page's "Apply now" is not a submit, however the button
         # picker reads it: the page must hold the application itself.
         shot = await session.screenshot(shots_dir / f"{_safe(entry.id)}-needs-review.png")
@@ -1604,6 +2017,23 @@ async def _process_one(session: ApplySession, profile: Profile, entry: QueueEntr
     return o
 
 
+async def _is_review_page(session: ApplySession, profile: Profile, buttons: list[dict]) -> bool:
+    """Whether the page is a multi-step form's Review page: a Submit control,
+    no application controls, and the answers shown back — the word Review,
+    or the applicant's own e-mail address, in the text."""
+    if _pick_submit_button(buttons) is None:
+        return False
+    try:
+        fields = await session.describe_form()
+        text = (await session.read_text())[:12000]
+    except Exception:
+        return False
+    if _looks_like_application(fields):
+        return False
+    email = str(profile.career.get("personal_information", {}).get("email") or profile.flat_answers().get("personal.email") or "").strip().lower()
+    return bool(re.search(r"\breview\b", text[:4000], re.I)) or bool(email and email in text.lower())
+
+
 def _wall_url(record: dict | None, entry: QueueEntry) -> str:
     """Where the site stopped the tool last time — the sign-in page it was
     sent to — or the posting's apply URL."""
@@ -1625,7 +2055,8 @@ async def login_and_apply(profile: Profile, entry: QueueEntry, out_dir: str | Pa
     shots_dir = out_dir / "screenshots"
     shots_dir.mkdir(parents=True, exist_ok=True)
     state = RunState.load(state_path or out_dir / "batch-state.json")
-    apply_once = bool(profile.answers.get("search", {}).get("apply_once_at_company", True))
+    from .profile import apply_once_at_company
+    apply_once = apply_once_at_company(profile.answers)
     record = state.done.get(entry.id) or {}
     o = Outcome(entry_id=entry.id, status="by_hand", company=record.get("company") or entry.company_hint, role=entry.title,
                 pdf=record.get("pdf", ""), fit=record.get("fit", ""))
@@ -1700,7 +2131,8 @@ async def review_by_hand(profile: Profile, entry: QueueEntry, out_dir: str | Pat
     shots_dir = out_dir / "screenshots"
     shots_dir.mkdir(parents=True, exist_ok=True)
     state = RunState.load(state_path or out_dir / "batch-state.json")
-    apply_once = bool(profile.answers.get("search", {}).get("apply_once_at_company", True))
+    from .profile import apply_once_at_company
+    apply_once = apply_once_at_company(profile.answers)
     # A profile of its own per posting, so the headless loop and any number
     # of review windows never fight over one Chrome profile — and a login the
     # user creates for a site stays with that posting's window.
@@ -1773,7 +2205,7 @@ def _safe(s: str) -> str:
 # often than the site's (four in a row this afternoon), so it takes the
 # same wait-and-retry as an outright disconnect.
 _NETWORK_ERROR = re.compile(r"ERR_INTERNET_DISCONNECTED|ERR_NETWORK_CHANGED|ERR_NAME_NOT_RESOLVED|ERR_CONNECTION_(RESET|REFUSED|TIMED_OUT)|"
-                            r"ERR_ADDRESS_UNREACHABLE|ERR_TIMED_OUT|Page\.goto: Timeout \d+ms exceeded")
+                            r"ERR_ADDRESS_UNREACHABLE|ERR_TIMED_OUT|Page\.goto: Timeout \d+ms exceeded|the page came up blank")
 
 
 async def _wait_for_network(timeout_s: float = 3600, every_s: float = 20) -> bool:
@@ -1794,18 +2226,33 @@ async def _wait_for_network(timeout_s: float = 3600, every_s: float = 20) -> boo
 CURRENT_FILE = Path.home() / ".resume-tailor" / "current.json"
 
 
+def _worker() -> str:
+    """This process's worker number ("0".."3") when it is one of several
+    parallel loops (RESUME_TAILOR_SHARD=k/n), else empty."""
+    import os
+
+    return (os.environ.get("RESUME_TAILOR_SHARD") or "").split("/")[0].strip()
+
+
+def _current_file() -> Path:
+    w = _worker()
+    return CURRENT_FILE.with_name(f"current-w{w}.json") if w else CURRENT_FILE
+
+
 def _now(stage: str, entry: QueueEntry | None = None, **extra) -> None:
     """What this process is doing right now, for the dashboard: the posting
-    and the stage. Best effort; a failure to write it changes nothing."""
+    and the stage. One file per worker. Best effort; a failure to write it
+    changes nothing."""
     try:
         import json
         import os
 
         CURRENT_FILE.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"stage": stage, "pid": os.getpid(), "at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        payload = {"stage": stage, "pid": os.getpid(), "worker": _worker(),
+                   "at": datetime.now().astimezone().isoformat(timespec="seconds"),
                    "entry_id": entry.id if entry else "", "company": entry.company_hint if entry else "",
                    "role": entry.title if entry else "", **extra}
-        CURRENT_FILE.write_text(json.dumps(payload), encoding="utf-8")
+        _current_file().write_text(json.dumps(payload), encoding="utf-8")
     except Exception:
         pass
 

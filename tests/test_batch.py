@@ -84,6 +84,89 @@ with tempfile.TemporaryDirectory() as d:
     check("held_at: an applied company is not 'held'", not _held.held_at("Acme"))
     check("held_at: unknown company", not _held.held_at("Nowhere Inc"))
 
+    # A required statement — an instruction to the applicant — is acknowledged, not guessed at.
+    _one_role = ("We will only consider you for one role/location at a time. Therefore, if you are interested in "
+                 "multiple roles, please submit an application for your first preference only.*")
+    check("boilerplate: a required 'one role at a time' statement with Yes/No takes Yes",
+          _autofill_boilerplate(_one_role, {"type": "radio", "required": True}, ["Yes", "No"]) == "Yes")
+    check("boilerplate: the same statement as a lone required box is ticked",
+          _autofill_boilerplate(_one_role, {"type": "checkbox", "required": True}, []) == "yes")
+    check("boilerplate: a real question with Yes/No is still not acknowledged",
+          _autofill_boilerplate("Have you worked at Optiver before?*", {"type": "radio", "required": True}, ["Yes", "No"]) is None)
+
+    # --- trivial required questions that used to stall an application ---
+    from resume_tailor.planner import _ASKS_ABOUT_OWN_TIES, _SILENCE, _NO_LIKE, _title_to_company, THIRD_PARTY
+    from resume_tailor.profile import Profile as _P
+    _amex ="Do you or your spouse or life partner have an Immediate Family Member or a Close Personal Relationship with a current American Express employee?*"
+    check("ties: a question about the candidate's own family ties is not 'about someone else'",
+          bool(THIRD_PARTY.search(_amex)) and bool(_ASKS_ABOUT_OWN_TIES.search(_amex)))
+    check("ties: the record's silence answers it No", bool(_SILENCE.search(_amex)) and bool(_NO_LIKE.match("No")))
+    check("ties: a referrer's own name is still about someone else", not _ASKS_ABOUT_OWN_TIES.search("Referrer's full name*"))
+    check("boilerplate: 'What is their name?' after a No is N/A",
+          _autofill_boilerplate("What is their name?*", {"type": "textarea", "required": True}, []) == "N/A")
+    check("boilerplate: an optional 'their name' stays blank",
+          _autofill_boilerplate("What is their name?", {"type": "textarea", "required": False}, []) is None)
+    _rec = _P(career={"experience_details": [{"position": "Undergraduate Teaching Assistant — CS 210 Introduction to Computer Systems", "company": "Duke University, Department of Computer Science"}]}, answers={}, root=Path("."))
+    check("employer: a role title given for 'most recent employer' becomes its company",
+          _title_to_company(_rec, "Undergraduate Teaching Assistant — CS 210 Introduction to Computer Systems") == "Duke University, Department of Computer Science")
+    check("employer: a company name is left alone", _title_to_company(_rec, "Duke University") is None)
+
+    # --- a saved draft never outranks the bank on a hard fact ---
+    from resume_tailor.batch import _HARD_FACT_Q, _same_answer
+    check("draft: a sponsorship question is a hard fact", bool(_HARD_FACT_Q.search("Will you now or in the future require visa sponsorship?")))
+    check("draft: a preferred contact method is not", not _HARD_FACT_Q.search("Preferred Contact Method"))
+    check("draft: 'No' held against the bank's 'No' is the same answer", _same_answer("No", "No", ["Yes", "No"]))
+    check("draft: 'Yes' held against the bank's 'No' is not", not _same_answer("No", "Yes", ["Yes", "No"]))
+    check("draft: the bank's wording maps onto the page's option", _same_answer("Yes", "Yes, without restriction", ["Yes, without restriction", "No"]))
+    check("draft: an empty box is not an answer", not _same_answer("No", "", ["Yes", "No"]))
+
+    # --- money questions: one number, in the box's own unit ---
+    from resume_tailor.batch import _money_answer
+    _pay = _P(career={}, answers={"salary_expectations": {"hourly_rate_usd": "35", "annual_salary_expectation": "$70,000",
+                                                          "desired_compensation": "$30-40 per hour"}}, root=Path("."))
+    check("money: an annual box gets the annual figure, not 3040",
+          _money_answer(_pay, "Desired Total Annual Compensation", {"type": "text"}, "$30-40 per hour") == "70000")
+    check("money: an hourly box gets the hourly figure",
+          _money_answer(_pay, "Expected hourly pay rate", {"type": "text"}, "$30-40 per hour") == "35")
+    check("money: a number already is left as digits",
+          _money_answer(_pay, "Salary expectation", {"type": "text"}, "$70,000") == "70000")
+    check("money: a dropdown of bands is not touched",
+          _money_answer(_pay, "Salary expectation", {"type": "text", "options": ["$60k-$80k"]}, "$60k-$80k") == "$60k-$80k")
+    check("money: a question that is not about money is not touched",
+          _money_answer(_pay, "Rate your Python skill", {"type": "text"}, "Expert") == "Expert")
+
+    # --- the résumé on its skeleton: every role, every slot, the given file name ---
+    from resume_tailor.compose import document_from_base
+    from resume_tailor.models import Bullet, RoleDraft
+    from resume_tailor.profile import Profile as _P
+    from resume_tailor.tailor import _slot_of, resume_file_name
+    _career = {"personal_information": {"name": "Ada", "surname": "Lovelace", "email": "ada@x.org", "phone": "1", "github": "https://github.com/ada"},
+               "education_details": [{"education_level": "B.S.", "field_of_study": "CS", "institution": "Duke", "location": "Durham, NC", "year_of_completion": "2028"}],
+               "experience_details": [{"company": "Acme", "position": "Intern", "employment_period": "2026", "location": "NYC"},
+                                      {"company": "Beta", "position": "RA", "employment_period": "2025", "location": "Durham"}]}
+    _base = {"file_name": "Ada_Lovelace_resume.pdf", "header": {"email": "ada@duke.edu"},
+             "education": {"coursework": "OS, DB", "lines": ["Teaching Assistant: CS 210"]},
+             "roles": [{"id": "exp0", "title": "Intern", "org": "Acme Inc", "dates": "2026", "location": "NYC", "base": ["Did A", "Did B"]},
+                       {"id": "exp1", "title": "RA", "org": "Beta Lab", "dates": "2025", "location": "Durham", "base": ["Did C"]}],
+             "projects": [{"name": "Proj", "tech": "Python", "dates": "2025", "bullets": ["Built P"]}],
+             "skills": [{"label": "Languages", "terms": "Python, C"}], "honors": ["Won X"]}
+    _drafts = [RoleDraft(evidence_id="exp0", bullets=[Bullet(action="Did A for the posting", outcome="", source_fact_ids=["exp0.b0"], numerals_used=[], derived_numerals=[])])]
+    _html = document_from_base(_career, _base, _drafts)
+    check("skeleton: every role appears in the skeleton's order", _html.index("Acme Inc") < _html.index("Beta Lab"))
+    check("skeleton: a role with a draft shows the tailored bullet", "Did A for the posting" in _html)
+    check("skeleton: a role without a draft shows its own words", "Did C" in _html)
+    check("skeleton: projects, skills, honors and the education lines are printed as written",
+          all(s in _html for s in ("Built P", "Python, C", "Won X", "OS, DB", "Teaching Assistant:")))
+    check("skeleton: the header e-mail override wins", "ada@duke.edu" in _html and "ada@x.org" not in _html)
+    check("skeleton: no company name in the file name",
+          resume_file_name(_P(career=_career, answers={}, root=Path("."), base_resume=_base)) == "Ada_Lovelace_resume.pdf")
+    check("skeleton: the file name falls back to First_Last_resume.pdf",
+          resume_file_name(_P(career=_career, answers={}, root=Path("."))) == "Ada_Lovelace_resume.pdf")
+    check("skeleton: a reworded bullet is matched to its slot by the base id it cites",
+          _slot_of(Bullet(action="x", outcome="", source_fact_ids=["exp0.r1", "exp0.b1"], numerals_used=[], derived_numerals=[]), "exp0") == 1)
+    _p = _P(career=_career, answers={}, root=Path("."), base_resume=_base)
+    check("skeleton: base bullets are citable facts", _p.evidence_index().get("exp0.b1", "").endswith("résumé: Did B"))
+
     # Two processes on one state file: the watch and a hand-run retry. Each
     # must keep the other's records, and the later write must not clobber.
     a, b = RunState.load(spath), RunState.load(spath)
@@ -496,6 +579,20 @@ _one_list = [
 ]
 _g2, _grouped2 = _group(_one_list)
 check("group: boxes sharing a name and a question are one list", _grouped2 == {"l1", "l2"})
+from resume_tailor.apply import _relabel_greenhouse
+_gh = [{"id": "a", "dom_id": "company-name-0", "label": "Company name*", "section": "Phone", "type": "text"},
+       {"id": "b", "dom_id": "end-date-year-0", "label": "End date year*", "section": "Phone", "type": "text"},
+       {"id": "c", "dom_id": "current-role-0_1", "name": "current-role-0", "label": "Employment", "section": "Phone", "type": "checkbox"},
+       {"id": "d", "dom_id": "school--0", "label": "School*", "section": "Phone", "type": "text"},
+       {"id": "e", "dom_id": "question_68958854", "label": "Are you at least 18?*", "section": "Phone", "type": "text"}]
+_relabel_greenhouse(_gh)
+check("greenhouse: employment fields get a Work Experience section", _gh[0]["section"] == "Work Experience 1" and _gh[1]["section"] == "Work Experience 1")
+check("greenhouse: the current-role box is named", _gh[2]["label"] == "I currently work here" and _gh[2]["section"] == "Work Experience 1")
+check("greenhouse: education fields get an Education section", _gh[3]["section"] == "Education 1")
+check("greenhouse: other questions untouched", _gh[4]["section"] == "Phone")
+from resume_tailor.batch import _bank as _bank_fn
+check("bank: under an Education section the school answers", _bank_fn(_bank3, "University", {"section": "Education 1", "type": "text"}, [])[0] == "Duke University")
+check("bank: under a Work Experience section the bank says nothing", _bank_fn(_bank3, "University", {"section": "Work Experience 1", "type": "text"}, [])[0] is None)
 check("picker: 'Raleigh, NC' finds Raleigh", _AS._match_option("Raleigh, NC", _opts) == 2)
 _edu = _P(career={"personal_information": {"name": "A", "surname": "B"}},
           answers={"availability": {"earliest_start_date": "May 2027"},
@@ -629,6 +726,9 @@ check("blocker: 'verify you are human' is a wall even with fields present",
 check("blocker: a password field without a file input is a login wall",
       blocker_verdict([{"type": "email"}, {"type": "password"}], "Sign in to continue") == "login_required")
 check("blocker: no fields at all is no form", blocker_verdict([], "Loading...") == "no_form_found")
+check("blocker: Workday's already-applied page, signed in, is not a missing form",
+      blocker_verdict([], "Software Engineering Intern - Summer 2027 You've already applied for this job. View My Applications",
+                      "https://x.wd5.myworkdayjobs.com/en-US/careers/job/Chicago/SWE-Intern", after_apply=True) == "already_applied")
 check("blocker: Google's account sign-in page is a login wall even with only an email box",
       blocker_verdict([{"type": "email"}], "Sign in to continue to Google Careers",
                       "https://accounts.google.com/v3/signin/identifier?continue=x") == "login_required")
@@ -709,6 +809,60 @@ check("picker: an ambiguous word stays ambiguous", ApplySession._match_option("D
 check("mailbox: a one-time pass code is read", extract_code("Please confirm your identity using this one-time pass code: 756506") == "756506")
 check("mailbox: a requisition number is not a code", extract_code("Thanks for applying! Requisition 253299") is None)
 check("planner: a graduate GPA field answers by silence", bool(_SILENCE.search("GPA (Graduate)*")) and bool(_NO_LIKE.search("Other/Not Applicable")))
+
+# --- e-mail-code walls wait for the inbox, company-wide -------------------
+
+from resume_tailor import mailbox as _mailbox
+from resume_tailor.batch import _inbox_wall
+from resume_tailor.discover import _worn_out
+
+_real_configured = _mailbox.configured
+_mailbox.configured = lambda: False
+try:
+    with tempfile.TemporaryDirectory() as d:
+        st = RunState.load(Path(d) / "state.json")
+        wall = ("this site e-mailed a verification code and wants it typed in before the form — "
+                "set RESUME_TAILOR_IMAP_PASSWORD (a Google app password) in ~/.resume-tailor/env and the tool will read it")
+        st.record("amex-1", {"status": "needs_login", "company": "American Express", "detail": wall})
+        st.record("amex-1", {"status": "needs_login", "company": "American Express", "detail": wall})
+        st.record("bny-1", {"status": "needs_login", "company": "BNY",
+                            "detail": "this site wants an account or a sign-in before its form"})
+        amex1 = QueueEntry(id="amex-1", url="https://x/1", company_hint="American Express")
+        amex2 = QueueEntry(id="amex-2", url="https://x/2", company_hint="American Express, Inc.")
+        bny2 = QueueEntry(id="bny-2", url="https://x/3", company_hint="BNY")
+        acme = QueueEntry(id="acme-1", url="https://x/4", company_hint="Acme")
+        check("inbox wall: the posting that met the wall waits", _inbox_wall(st, amex1) == wall)
+        check("inbox wall: another posting at the same company waits too, however the name is spelt",
+              "RESUME_TAILOR_IMAP_PASSWORD" in (_inbox_wall(st, amex2) or ""), _inbox_wall(st, amex2))
+        check("inbox wall: a plain sign-in wall does not park the company", _inbox_wall(st, bny2) is None)
+        check("inbox wall: another company is not parked", _inbox_wall(st, acme) is None)
+        check("inbox wall: a parked record is worn out while the inbox is unconfigured",
+              _worn_out(st.done["amex-1"], inbox=False))
+        check("inbox wall: ...and worth a try the moment it is, whatever its count",
+              not _worn_out(dict(st.done["amex-1"], attempts=25), inbox=True))
+        check("inbox wall: a wall met with the inbox configured counts as a real failure",
+              _worn_out({"status": "needs_login", "attempts": 2,
+                         "detail": "this site e-mailed a verification code — the inbox showed no code in time"}, inbox=True))
+        check("inbox wall: a re-queue by hand is never worn out",
+              not _worn_out(dict(st.done["amex-1"], detail="re-queued by hand"), inbox=False))
+        st.record("amex-1", {"status": "needs_login", "company": "American Express",
+                             "detail": "this site e-mailed a verification code — the inbox showed no code in time"})
+        check("inbox wall: the first real attempt starts the count over",
+              st.done["amex-1"]["attempts"] == 1, st.done["amex-1"]["attempts"])
+        st.record("amex-3", {"status": "needs_login", "company": "American Express", "detail": "re-queued by hand"})
+        check("inbox wall: a hand re-queue at a parked company is tried anyway",
+              _inbox_wall(st, QueueEntry(id="amex-3", url="https://x/5", company_hint="American Express")) is None)
+        _mailbox.configured = lambda: True
+        check("inbox wall: nothing waits once the inbox is configured",
+              _inbox_wall(st, amex2) is None and _inbox_wall(st, amex1) is None)
+finally:
+    _mailbox.configured = _real_configured
+
+from resume_tailor.batch import _NETWORK_ERROR
+
+check("network: a blank page takes the wait-and-retry path",
+      bool(_NETWORK_ERROR.search("could not load the application form: the page came up blank or as a browser error")))
+check("network: a real missing form does not", not _NETWORK_ERROR.search("no application form was found on this page"))
 
 width = max(len(n) for n, _, _ in RESULTS)
 failed = 0

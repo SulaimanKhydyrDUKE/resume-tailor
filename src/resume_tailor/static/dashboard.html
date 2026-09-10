@@ -72,6 +72,21 @@
   .actions button.quiet { background: var(--panel); color: var(--ink); border-color: var(--line); }
   .actions button:disabled { opacity: .5; cursor: default; }
   .actions .msg { flex-basis: 100%; color: var(--muted); font-size: 13px; }
+  .workers { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 12px; text-align: left; }
+  .worker { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+  .worker h4 { margin: 0 0 6px; font-size: 14px; display: flex; align-items: center; gap: 8px; }
+  .worker h4 small { color: var(--muted); font-weight: 400; }
+  .worker .stage { font-size: 13px; margin: 2px 0 8px; }
+  .worker .stage b { font-weight: 600; }
+  .worker .idle { color: var(--muted); }
+  .worker ul { list-style: none; margin: 0 0 8px; padding: 0; }
+  .worker li { display: flex; justify-content: space-between; gap: 8px; font-size: 12.5px; padding: 3px 0; border-top: 1px solid var(--line); }
+  .worker li span:first-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .worker li .t { color: var(--muted); white-space: nowrap; }
+  .worker pre { font-size: 11px; white-space: pre-wrap; background: #f9fafb; padding: 8px; border-radius: 8px; max-height: 150px; overflow: auto; margin: 0; color: #374151; }
+  .workers-head { display: flex; justify-content: space-between; align-items: baseline; margin: 0 0 10px; }
+  .workers-head h3 { margin: 0; font-size: 14px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .chip.link { border-style: dashed; }
 </style>
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
@@ -140,10 +155,62 @@ function Judges({ fit }) {
   );
 }
 
-function Header({ data, err, filter, setFilter, q, setQ }) {
+function workerName(w) {
+  return w === "fresh" ? "Fresh lane" : "Worker " + (Number(w) + 1);
+}
+
+// One card per process the supervisor runs: what it is doing this minute,
+// its last outcomes, and the last lines it wrote to the log.
+function Workers({ data, onPick }) {
+  const w = data?.watch || {};
+  const procs = w.processes || [];
+  const nowBy = {};
+  for (const n of data?.workers_now || []) nowBy[String(n.worker ?? "")] = n;
+  const apps = data?.applications || [];
+  if (!procs.length) return <div className="empty">no workers are running (start the loop with overnight.sh)</div>;
+  return (
+    <div>
+      <div className="workers-head">
+        <h3>Where each worker is</h3>
+        <span className="watch">{w.label}{data?.pool && data.pool.new != null ? ` · ${data.pool.new} postings waiting in the pool` : ""}</span>
+      </div>
+      <div className="workers">
+        {procs.map(p => {
+          const key = String(p.worker);
+          const now = nowBy[key];
+          const recent = apps.filter(a => String(a.worker) === key).slice(0, 4);
+          const logs = (w.worker_logs || {})[key === "fresh" ? "fresh" : "w" + key] || [];
+          return (
+            <div className="worker" key={key}>
+              <h4><span className={"dot " + (p.alive ? "on" : "")}></span>{workerName(key)} <small>{p.alive ? "pid " + p.pid : "down"}{key === "fresh" ? " · every source, every 5 min" : ""}</small></h4>
+              {now && now.stage && now.stage !== "idle"
+                ? <div className="stage"><b>{now.company || "?"}</b>{now.role ? " — " + now.role : ""}<br />{now.stage} since {new Date(now.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</div>
+                : <div className="stage idle">{p.alive ? (key === "fresh" ? "watching the sources; nothing new since the last poll" : "idle between passes (next look within 10 min)") : "not running"}</div>}
+              {recent.length ? (
+                <ul>
+                  {recent.map(a => (
+                    <li key={a.id} onClick={() => onPick(a.id)} style={{ cursor: "pointer" }}>
+                      <span>{a.company || "?"}{a.role ? " — " + a.role : ""}</span>
+                      <span className="t"><Badge status={a.status} /> {a.when ? new Date(a.when).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : ""}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              {logs.length ? <pre>{logs.join("\n")}</pre> : null}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function Header({ data, err, filter, setFilter, q, setQ, showWorkers }) {
   const counts = data?.counts || {};
   const total = Object.values(counts).reduce((a, b) => a + b, 0);
   const w = data?.watch || {};
+  const busy = (data?.workers_now || []).filter(n => n.stage && n.stage !== "idle").length;
+  const procs = (w.processes || []).filter(p => p.alive).length;
   return (
     <header>
       <h1>Applications</h1>
@@ -151,12 +218,12 @@ function Header({ data, err, filter, setFilter, q, setQ }) {
         <span className={"dot " + (w.running || w.pass_running ? "on" : "")}></span>
         <b>{w.label || (w.running ? "loop running" : "loop stopped")}</b>
         {data?.pool && data.pool.new != null ? <span className="muted"> · {data.pool.new} new postings waiting in the pool ({data.pool.cached} discovered)</span> : null}
-        {data?.now ? <span> · <b>now:</b> {data.now.company || "?"}{data.now.role ? " — " + data.now.role : ""} · {data.now.stage} since {new Date(data.now.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</span>
-                   : <span> · idle between postings</span>}
+        {procs ? <span> · <b>{busy} of {procs}</b> busy right now</span> : <span> · idle</span>}
         {data ? <span> · refreshed {new Date(data.generated_at).toLocaleTimeString()}</span> : null}
         {err ? <span className="err"> · {err}</span> : null}
       </span>
       <div className="chips">
+        <span className="chip link" onClick={showWorkers}>Workers<small>{procs}</small></span>
         <span className={"chip " + (filter === "all" ? "active" : "")} onClick={() => setFilter("all")}>All<small>{total}</small></span>
         {ORDER.filter(s => counts[s]).map(s => (
           <span key={s} className={"chip " + (filter === s ? "active" : "")} onClick={() => setFilter(s)}>
@@ -178,6 +245,7 @@ function Row({ app, active, onClick }) {
         {app.when ? <span>{fmtWhen(app.when)}</span> : <span>earlier</span>}
         {app.fit ? <span>{parseFit(app.fit).map(j => j.score).join(" / ")}</span> : null}
         {app.locations?.length ? <span>{app.locations.slice(0, 2).join("; ")}</span> : null}
+        {app.worker !== undefined && app.worker !== "" ? <span>{workerName(String(app.worker))}</span> : null}
       </div>
     </div>
   );
@@ -335,7 +403,7 @@ function App() {
 
   return (
     <div className="app">
-      <Header data={data} err={err} filter={filter} setFilter={setFilter} q={q} setQ={setQ} />
+      <Header data={data} err={err} filter={filter} setFilter={setFilter} q={q} setQ={setQ} showWorkers={() => setSel(null)} />
       <div className="body">
         <aside>
           {apps.map(a => <Row key={a.id} app={a} active={a.id === sel} onClick={() => setSel(a.id)} />)}
@@ -344,14 +412,17 @@ function App() {
         </aside>
         <main>
           {current ? <Detail app={current} /> : (
-            <div className="empty">
-              <p>Pick an application on the left.</p>
-              {data?.watch?.log_tail?.length ? (
-                <details className="log" open>
-                  <summary>loop log (last lines)</summary>
-                  <pre>{data.watch.log_tail.join("\n")}</pre>
-                </details>
-              ) : null}
+            <div>
+              <Workers data={data} onPick={setSel} />
+              <div className="empty" style={{ padding: "30px 0 0" }}>
+                <p>Pick an application on the left for its answers, résumé and screenshots.</p>
+                {data?.watch?.log_tail?.length ? (
+                  <details className="log">
+                    <summary>whole loop log (last lines)</summary>
+                    <pre>{data.watch.log_tail.join("\n")}</pre>
+                  </details>
+                ) : null}
+              </div>
             </div>
           )}
         </main>

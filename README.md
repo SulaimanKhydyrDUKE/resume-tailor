@@ -81,6 +81,19 @@ sponsorship, notice period, salary, relocation. Filled once, looked up per form.
 pbpaste | .venv/bin/resume-tailor tailor -
 ```
 
+### Tailoring on your own résumé's skeleton
+
+Put a `resume/base.yaml` under `~/.resume-tailor/` and every tailored résumé
+keeps its shape: the roles you list, in that order, each with exactly as many
+bullets as you wrote; the projects, skills lines and honors exactly as written;
+one page; the file name you name (`file_name`, so an upload is
+`First_Last_resume.pdf` rather than a company slug). The tailorer then rewords
+each role bullet toward the posting's own terms — starting from your wording,
+keeping every number, gated and audited like any draft, and falling back to
+your words where a rewording fails. The `jake` style renders the LaTeX
+résumé look. See `~/.resume-tailor/resume/base.yaml` for the shape; roles are
+named by their `exp` id in `career.yaml` order.
+
 You get a PDF plus a report: positioning, hard-requirement coverage, gaps the
 posting asks for that you do not cover, and any claim the audit could not trace
 back to your record. **Read the unsupported-claims list before sending

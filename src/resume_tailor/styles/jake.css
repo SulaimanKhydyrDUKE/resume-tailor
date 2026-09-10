@@ -1,0 +1,98 @@
+/* jake $ the LaTeX résumé look: serif, small-caps ruled sections, dates on the right */
+
+/* A replica of the Jake Gutierrez LaTeX template (letterpaper, 11pt):
+   small-caps section titles over a rule, two-column headings with the title
+   bold on the left and the dates on the right, tight bullets. Real text in
+   source order — the heading rows are plain two-cell tables, which a parser
+   reads left to right as one line. */
+
+* { box-sizing: border-box; }
+
+body {
+  font-family: "Times New Roman", "Latin Modern Roman", "CMU Serif", Times, serif;
+  font-size: 10.5pt;
+  line-height: 1.22;
+  color: #000;
+  margin: 0;
+  max-width: 100%;
+  /* An "ffi" ligature extracts as "Of ice" from the PDF; the parser must see "Office". */
+  font-variant-ligatures: none;
+}
+
+header { text-align: center; margin-bottom: 6px; }
+
+/* No CSS small caps anywhere: Chromium's PDF text layer breaks a synthesized
+   small-cap word into "S ULAIMAN", and a parser never finds the name again.
+   Upper case with a little tracking reads the same and extracts whole. */
+header h1 {
+  font-size: 21pt;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 0 0 1px;
+}
+
+.contact-info { font-size: 9.5pt; }
+.contact-info p { display: inline; margin: 0; }
+.contact-info a { color: #000; text-decoration: underline; }
+.contact-info .sep { margin: 0 5px; }
+
+section { margin-bottom: 4px; }
+
+h2 {
+  font-size: 11pt;
+  font-weight: 400;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  border-bottom: 1px solid #000;
+  padding-bottom: 0;
+  margin: 6px 0 3px;
+}
+
+/* One heading row: title / dates, then subtitle / location. */
+table.row { width: 100%; border-collapse: collapse; margin: 3px 0 0; }
+table.row td { padding: 0; vertical-align: top; }
+table.row td.r { text-align: right; white-space: nowrap; padding-left: 12px; }
+table.row .t { font-weight: 700; }
+table.row .s { font-style: italic; font-size: 9.5pt; }
+table.row .d { font-size: 10.5pt; }
+table.row .l { font-style: italic; font-size: 9.5pt; }
+
+.entry { margin: 0 0 2px 10px; }
+.entry.project table.row .t { font-weight: 700; }
+.entry.project .tech { font-style: italic; font-weight: 400; font-size: 9.5pt; }
+
+ul { margin: 1px 0 2px; padding-left: 16px; }
+li { margin: 0 0 1px; font-size: 9.7pt; line-height: 1.22; }
+li strong { font-weight: 700; }
+
+.edu-lines { margin: 1px 0 0 10px; }
+.edu-lines li { font-size: 9.7pt; }
+
+.skills { margin-left: 10px; }
+.skills p { margin: 0 0 1px; font-size: 9.7pt; }
+.skills strong { font-weight: 700; }
+
+.honors ul { padding-left: 16px; margin-left: 0; }
+.honors li { font-size: 9.7pt; }
+
+p { margin: 0; }
+a { color: #000; text-decoration: none; }
+a.u { text-decoration: underline; }
+
+.entry, li { page-break-inside: avoid; break-inside: avoid; }
+h2 { page-break-after: avoid; break-after: avoid; }
+
+@page { size: Letter; margin: 0.5in 0.55in; }
+
+/* Tighter notches for a render that spills onto a second page. */
+body.compact-1 { font-size: 10pt; line-height: 1.18; }
+body.compact-1 li, body.compact-1 .skills p, body.compact-1 .edu-lines li, body.compact-1 .honors li { font-size: 9.3pt; line-height: 1.18; }
+body.compact-1 h2 { margin: 4px 0 2px; }
+body.compact-1 header h1 { font-size: 20pt; }
+
+body.compact-2 { font-size: 9.6pt; line-height: 1.14; }
+body.compact-2 li, body.compact-2 .skills p, body.compact-2 .edu-lines li, body.compact-2 .honors li { font-size: 9pt; line-height: 1.14; }
+body.compact-2 h2 { margin: 3px 0 1px; font-size: 11pt; }
+body.compact-2 header h1 { font-size: 18pt; }
+body.compact-2 table.row { margin-top: 2px; }

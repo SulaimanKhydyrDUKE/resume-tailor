@@ -155,8 +155,14 @@ class RunState:
                 fcntl.flock(lock, fcntl.LOCK_UN)
 
     def record(self, entry_id: str, outcome: dict[str, Any]) -> None:
+        from .mailbox import waiting_for_inbox
+
         prior = self.done.get(entry_id) or {}
-        outcome["attempts"] = int(prior.get("attempts") or 0) + 1
+        # A posting parked for want of the inbox was never really tried: its
+        # first attempt once the inbox is configured starts the count over,
+        # so the passes it sat out do not use up its retries.
+        base = 0 if waiting_for_inbox(prior) and not waiting_for_inbox(outcome) else int(prior.get("attempts") or 0)
+        outcome["attempts"] = base + 1
         self.done[entry_id] = outcome
         self._touched.add(entry_id)
         self.save()

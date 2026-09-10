@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import re
 import shutil
 import sys
 import time
@@ -208,36 +209,133 @@ async def _watch(args: argparse.Namespace) -> int:
         print(f"error: {e}", file=sys.stderr)
         return 1
 
+    import json
+    import os
+
     out = Path(args.out)
     prefs = Prefs.from_profile(profile)
+    shard = _parse_shard(getattr(args, "shard", None))
+    fresh = bool(getattr(args, "fresh", False))
+    tag = ""
+    profile_dir = None
+    if shard is not None:
+        k, n = shard
+        os.environ["RESUME_TAILOR_SHARD"] = f"{k}/{n}"
+        tag = f"[w{k}] "
+        # Worker 0 keeps the browser profile the user logged into by hand;
+        # the others get their own (saved site cookies reach every one).
+        profile_dir = DEFAULT_PROFILE_DIR / ("browser-profile" if k == 0 else f"browser-profile-w{k}")
+    if fresh:
+        # The fresh lane: every few minutes, every source; a posting that was
+        # not there at the last look is announced and applied to at once,
+        # ahead of the workers' next pass. What was already listed when the
+        # lane started is the workers' backlog, not news.
+        os.environ["RESUME_TAILOR_SHARD"] = "fresh"
+        tag = "[fresh] "
+        profile_dir = DEFAULT_PROFILE_DIR / "browser-profile-fresh"
+    seen_path = out / "fresh-seen.json"
+    seen: set[str] | None = None
+    if fresh and seen_path.is_file():
+        try:
+            seen = set(json.loads(seen_path.read_text(encoding="utf-8")))
+        except Exception:
+            seen = None
+    retries_first = bool(getattr(args, "retries_first", False))
 
     def report(o):
-        line = f"  [{o.status:16}] {o.company or '?':24} {o.role or ''}"
+        line = f"  {tag}[{o.status:16}] {o.company or '?':24} {o.role or ''}"
         if getattr(o, "fit", ""):
             line += f"  [{o.fit}]"
-        print(line if not o.detail else f"{line}  — {o.detail}", file=sys.stderr)
+        print(line if not o.detail else f"{line}  — {o.detail}", file=sys.stderr, flush=True)
 
     while True:
         listings, changed = refresh(out, args.source)
         state = RunState.load(out / "batch-state.json")
-        entries, excluded = select(listings, prefs, state, limit=args.max_per_run)
         stamp = time.strftime("%H:%M")
-        print(f"[{stamp}] {len(listings)} listings ({'updated' if changed else 'unchanged'}), "
-              f"{len(entries)} new to apply to", file=sys.stderr)
+        if fresh:
+            ids_now = {str(l.get("id") or l.get("url")) for l in listings}
+            if seen is None:
+                seen = ids_now
+                seen_path.write_text(json.dumps(sorted(seen)), encoding="utf-8")
+                print(f"{tag}[{stamp}] tracker armed: {len(seen)} listings on file; anything new is applied to within "
+                      f"{args.interval:g} min", file=sys.stderr, flush=True)
+                _notify("resume-tailor tracker armed", f"{len(seen)} listings on file; new postings are applied to within {args.interval:g} minutes")
+            else:
+                new_ids = ids_now - seen
+                seen |= ids_now
+                seen_path.write_text(json.dumps(sorted(seen)), encoding="utf-8")
+                entries, excluded = select(listings, prefs, state, limit=args.max_per_run)
+                entries = [e for e in entries if e.id in new_ids]
+                print(f"{tag}[{stamp}] {len(listings)} listings ({'updated' if changed else 'unchanged'}), "
+                      f"{len(new_ids)} new on the sources, {len(entries)} worth applying to", file=sys.stderr, flush=True)
+                if entries:
+                    by_id = {l.get("id") or l.get("url"): l for l in listings}
+                    for e in entries:
+                        print(f"    {tag}" + describe(e, by_id.get(e.id)), file=sys.stderr, flush=True)
+                    _notify(f"{len(entries)} new internship posting{'s' if len(entries) > 1 else ''}",
+                            "; ".join(f"{e.company_hint}: {e.title}"[:70] for e in entries[:3]) + (" …" if len(entries) > 3 else ""))
+                    summary = await run_batch(
+                        profile=profile, entries=entries, out_dir=out, dry_run=args.dry_run,
+                        headless=not args.show, pause_seconds=args.pause, on_progress=report,
+                        profile_dir=profile_dir,
+                    )
+                    counts = summary["counts"]
+                    print(f"{tag}[{stamp}] fresh pass: {counts}", file=sys.stderr, flush=True)
+                    _notify(f"applied to {counts.get('applied', 0)} of {len(entries)} new posting{'s' if len(entries) > 1 else ''}",
+                            ", ".join(f"{k} {v}" for k, v in counts.items()))
+            if args.once:
+                break
+            await asyncio.sleep(args.interval * 60)
+            continue
+        entries, excluded = select(listings, prefs, state, limit=args.max_per_run, shard=shard,
+                                   retries_first=retries_first)
+        retries_first = False  # the first pass deals the earlier review items; later ones interleave
+        print(f"{tag}[{stamp}] {len(listings)} listings ({'updated' if changed else 'unchanged'}), "
+              f"{len(entries)} to apply to" + (f" (worker {shard[0] + 1} of {shard[1]})" if shard else ""),
+              file=sys.stderr, flush=True)
         if entries:
             by_id = {l.get("id") or l.get("url"): l for l in listings}
             for e in entries:
-                print("    " + describe(e, by_id.get(e.id)), file=sys.stderr)
+                print(f"    {tag}" + describe(e, by_id.get(e.id)), file=sys.stderr, flush=True)
             summary = await run_batch(
                 profile=profile, entries=entries, out_dir=out, dry_run=args.dry_run,
                 headless=not args.show, pause_seconds=args.pause, on_progress=report,
+                profile_dir=profile_dir,
             )
-            print(f"[{stamp}] this pass: {summary['counts']}", file=sys.stderr)
+            print(f"{tag}[{stamp}] this pass: {summary['counts']}", file=sys.stderr, flush=True)
         if args.once:
             break
-        print(f"  next check in {args.interval} min", file=sys.stderr)
-        await asyncio.sleep(args.interval * 60)
+        # A full pass means the pool holds more: back within a minute rather
+        # than the full interval, which is for the quiet hours.
+        wait = args.interval if len(entries) < (args.max_per_run or 0) else min(args.interval, 1.0)
+        print(f"  {tag}next check in {wait:g} min", file=sys.stderr, flush=True)
+        await asyncio.sleep(wait * 60)
     return 0
+
+
+def _notify(title: str, text: str) -> None:
+    """A desktop notification (macOS Notification Center); silent elsewhere
+    and on any failure — the log carries the same line either way."""
+    import json
+    import subprocess
+
+    if sys.platform != "darwin":
+        return
+    try:
+        script = f'display notification {json.dumps(text[:200])} with title {json.dumps(title[:80])} sound name "Glass"'
+        subprocess.run(["osascript", "-e", script], capture_output=True, timeout=5)
+    except Exception:
+        pass
+
+
+def _parse_shard(text: str | None) -> tuple[int, int] | None:
+    """"1/4" -> (1, 4): this process is worker 1 of 4."""
+    if not text:
+        return None
+    m = re.fullmatch(r"\s*(\d+)\s*/\s*(\d+)\s*", text)
+    if not m or int(m.group(2)) < 1 or not (0 <= int(m.group(1)) < int(m.group(2))):
+        raise SystemExit(f"--shard wants K/N with 0 <= K < N, not {text!r}")
+    return int(m.group(1)), int(m.group(2))
 
 
 PROJECT_ROOT = EXAMPLES.parent
@@ -245,15 +343,61 @@ PID_FILE = DEFAULT_PROFILE_DIR / "watch.pid"
 LOG_FILE = DEFAULT_PROFILE_DIR / "watch.log"
 
 
-def _watch_pid() -> int | None:
+def _pid_file(worker: int) -> Path:
+    return PID_FILE.with_name(f"watch-w{worker}.pid")
+
+
+def _alive(path: Path) -> int | None:
+    """The pid a file names, when that process is still there."""
     import os
 
     try:
-        pid = int(PID_FILE.read_text().strip())
+        pid = int(path.read_text().strip())
         os.kill(pid, 0)
         return pid
     except (OSError, ValueError):
         return None
+
+
+def _watch_pid() -> int | None:
+    return _alive(PID_FILE)
+
+
+def _workers() -> dict[int, int | None]:
+    """Worker number -> its pid when alive (None when its file is stale),
+    from the per-worker pid files; the plain watch.pid is worker 0."""
+    out: dict[int, int | None] = {}
+    for p in sorted(DEFAULT_PROFILE_DIR.glob("watch-w*.pid")):
+        m = re.fullmatch(r"watch-w(\d+)\.pid", p.name)
+        if m:
+            out[int(m.group(1))] = _alive(p)
+    if PID_FILE.is_file() and 0 not in out:
+        out[0] = _alive(PID_FILE)
+    return out
+
+
+FRESH_PID_FILE = DEFAULT_PROFILE_DIR / "fresh.pid"
+
+
+def _fresh_pid() -> int | None:
+    return _alive(FRESH_PID_FILE) if FRESH_PID_FILE.is_file() else None
+
+
+def _status_line() -> str:
+    """The first line of `status`: what the supervisor reads to decide
+    whether every worker is up."""
+    workers = _workers()
+    fresh = _fresh_pid()
+    fresh_note = (f"; fresh lane running (pid {fresh})" if fresh
+                  else ("; fresh lane down" if FRESH_PID_FILE.is_file() else ""))
+    if not workers:
+        return "watch: not running" + fresh_note
+    up = {k: pid for k, pid in workers.items() if pid}
+    n = max(workers) + 1
+    if not up:
+        return f"watch: not running (0 of {n} workers)" + fresh_note
+    pids = ", ".join(str(up[k]) for k in sorted(up))
+    return f"watch: running, {len(up)} of {n} workers (pids {pids})" + fresh_note
 
 
 def cmd_start(args: argparse.Namespace) -> int:
@@ -262,26 +406,57 @@ def cmd_start(args: argparse.Namespace) -> int:
     import os
     import subprocess
 
-    if pid := _watch_pid():
-        print(f"already running (pid {pid}). `resume-tailor status` to see it, `resume-tailor stop` to end it.")
+    workers = max(1, int(getattr(args, "workers", 1) or 1))
+    running = {k: pid for k, pid in _workers().items() if pid}
+    if workers == 1 and running:
+        print(f"already running ({_status_line()}). `resume-tailor status` to see it, `resume-tailor stop` to end it.")
         return 1
-    cmd = [sys.executable, "-m", "resume_tailor.cli", "watch",
-           "--interval", str(args.interval), "--max-per-run", str(args.max_per_run),
-           "--pause", str(args.pause), "--out", str(PROJECT_ROOT / args.out)]
-    if args.show:
-        cmd.append("--show")
-    if args.dry_run:
-        cmd.append("--dry-run")
     # A leftover placeholder key would shadow an `ant auth login` profile; it is
     # irrelevant to the OpenAI provider either way.
     env = {k: v for k, v in os.environ.items() if not (k == "ANTHROPIC_API_KEY" and v in ("", "YOUR_KEY_HERE"))}
     DEFAULT_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
-    log = open(LOG_FILE, "a", buffering=1)
-    proc = subprocess.Popen(cmd, cwd=PROJECT_ROOT, stdout=log, stderr=subprocess.STDOUT,
-                            stdin=subprocess.DEVNULL, start_new_session=True, env=env)
-    PID_FILE.write_text(str(proc.pid))
-    print(f"started watch (pid {proc.pid}) — {'DRY RUN, nothing will be submitted' if args.dry_run else 'applying for real'}")
-    print(f"  every {args.interval} min, up to {args.max_per_run} postings per pass")
+    started = []
+    for k in range(workers):
+        if k in running:
+            continue  # this worker is up; only the missing ones are launched
+        cmd = [sys.executable, "-m", "resume_tailor.cli", "watch",
+               "--interval", str(args.interval), "--max-per-run", str(args.max_per_run),
+               "--pause", str(args.pause), "--out", str(PROJECT_ROOT / args.out)]
+        if workers > 1:
+            cmd += ["--shard", f"{k}/{workers}"]
+        if getattr(args, "retries_first", False):
+            cmd.append("--retries-first")
+        if args.show:
+            cmd.append("--show")
+        if args.dry_run:
+            cmd.append("--dry-run")
+        log = open(LOG_FILE, "a", buffering=1)
+        proc = subprocess.Popen(cmd, cwd=PROJECT_ROOT, stdout=log, stderr=subprocess.STDOUT,
+                                stdin=subprocess.DEVNULL, start_new_session=True, env=env)
+        if workers > 1:
+            _pid_file(k).write_text(str(proc.pid))
+        if k == 0:
+            PID_FILE.write_text(str(proc.pid))
+        started.append((k, proc.pid))
+    if getattr(args, "fresh", False) and not _fresh_pid():
+        # The fresh lane: every source every few minutes, new postings applied to at once.
+        cmd = [sys.executable, "-m", "resume_tailor.cli", "watch", "--fresh",
+               "--interval", str(getattr(args, "fresh_interval", 5)), "--max-per-run", "10",
+               "--pause", "5", "--out", str(PROJECT_ROOT / args.out)]
+        if args.dry_run:
+            cmd.append("--dry-run")
+        log = open(LOG_FILE, "a", buffering=1)
+        proc = subprocess.Popen(cmd, cwd=PROJECT_ROOT, stdout=log, stderr=subprocess.STDOUT,
+                                stdin=subprocess.DEVNULL, start_new_session=True, env=env)
+        FRESH_PID_FILE.write_text(str(proc.pid))
+        started.append(("fresh", proc.pid))
+    if not started:
+        print(f"every worker is up ({_status_line()})")
+        return 0
+    who = ", ".join(f"worker {k} pid {pid}" for k, pid in started) if workers > 1 or len(started) > 1 else f"pid {started[0][1]}"
+    print(f"started watch ({who}) — {'DRY RUN, nothing will be submitted' if args.dry_run else 'applying for real'}")
+    print(f"  every {args.interval} min, up to {args.max_per_run} postings per pass"
+          + (f", {workers} workers by company" if workers > 1 else ""))
     print(f"  log:    {LOG_FILE}\n  status: resume-tailor status\n  stop:   resume-tailor stop")
     return 0
 
@@ -291,20 +466,36 @@ def cmd_stop(args: argparse.Namespace) -> int:
     import signal
     import time
 
-    pid = _watch_pid()
-    if not pid:
-        print("no watch running")
+    def clear_pid_files() -> None:
         PID_FILE.unlink(missing_ok=True)
+        FRESH_PID_FILE.unlink(missing_ok=True)
+        for p in DEFAULT_PROFILE_DIR.glob("watch-w*.pid"):
+            p.unlink(missing_ok=True)
+
+    alive = {k: pid for k, pid in _workers().items() if pid}
+    if _fresh_pid():
+        alive["fresh"] = _fresh_pid()
+    if not alive:
+        print("no watch running")
+        clear_pid_files()
         return 0
-    os.kill(pid, signal.SIGTERM)
+    for pid in alive.values():
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
     for _ in range(20):
         time.sleep(0.25)
-        if _watch_pid() is None:
+        if not any(_alive(p) for p in [PID_FILE, FRESH_PID_FILE, *DEFAULT_PROFILE_DIR.glob("watch-w*.pid")] if p.is_file()):
             break
     else:
-        os.kill(pid, signal.SIGKILL)
-    PID_FILE.unlink(missing_ok=True)
-    print(f"stopped watch (pid {pid})")
+        for pid in alive.values():
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+    clear_pid_files()
+    print("stopped watch (" + ", ".join(f"worker {k} pid {pid}" for k, pid in sorted(alive.items(), key=lambda kv: str(kv[0]))) + ")")
     return 0
 
 
@@ -313,8 +504,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 
     from .queue import RunState
 
-    pid = _watch_pid()
-    print(f"watch: {f'running (pid {pid})' if pid else 'not running'}")
+    print(_status_line())
     state = RunState.load(PROJECT_ROOT / args.out / "batch-state.json")
     if not state.done:
         print("no attempts recorded yet")
@@ -449,7 +639,8 @@ async def _submit(args: argparse.Namespace) -> int:
     shots = out / "screenshots"
     shots.mkdir(parents=True, exist_ok=True)
     state = RunState.load(out / "batch-state.json")
-    apply_once = bool(profile.answers.get("search", {}).get("apply_once_at_company", True))
+    from .profile import apply_once_at_company
+    apply_once = apply_once_at_company(profile.answers)
     session = ApplySession(headless=True, profile_dir=DEFAULT_PROFILE_DIR.parent / "approve-profiles" / _safe(entry.id)[:16])
     print(f"submitting {entry.company_hint} — {entry.title}", file=sys.stderr, flush=True)
     try:
@@ -543,6 +734,9 @@ def main() -> int:
     pw.add_argument("--show", action="store_true", help="show the browser window (hidden by default)")
     pw.add_argument("--pause", type=float, default=20.0, help="seconds between applications")
     pw.add_argument("--source", default=None, help="listings.json URL (default: SimplifyJobs Summer2027)")
+    pw.add_argument("--shard", default=None, help="K/N: this process is worker K of N; it takes every N-th company")
+    pw.add_argument("--retries-first", action="store_true", help="first pass: the earlier review items before any new posting")
+    pw.add_argument("--fresh", action="store_true", help="the fresh lane: poll every source each interval and apply at once to postings that just appeared")
     pw.add_argument("--out", default="output")
     pw.add_argument("--profile", help=f"profile directory (default {DEFAULT_PROFILE_DIR})")
     pw.set_defaults(func=lambda a: asyncio.run(_watch(_with_source(a))))
@@ -551,6 +745,10 @@ def main() -> int:
     pst.add_argument("--interval", type=int, default=30, help="minutes between passes over the feed")
     pst.add_argument("--max-per-run", type=int, default=25, help="postings attempted per pass")
     pst.add_argument("--pause", type=float, default=15.0, help="seconds between applications")
+    pst.add_argument("--workers", type=int, default=1, help="parallel loops, each owning every N-th company (default 1)")
+    pst.add_argument("--retries-first", action="store_true", help="first pass: the earlier review items before any new posting")
+    pst.add_argument("--fresh", action="store_true", help="also run the fresh lane: every source every few minutes, new postings applied to at once, with a desktop notification")
+    pst.add_argument("--fresh-interval", type=float, default=5, help="minutes between the fresh lane's polls (default 5)")
     pst.add_argument("--show", action="store_true", help="show the browser window (hidden by default)")
     pst.add_argument("--dry-run", action="store_true", help="fill and screenshot, never submit")
     pst.add_argument("--out", default="output")

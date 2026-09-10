@@ -62,7 +62,9 @@ check("season without a year rejected", evaluate(L(title="Software Engineer Wint
 check("season without a year kept when summer is also named", evaluate(L(title="Summer/Fall Software Intern"), P) == "")
 check("no season at all kept", evaluate(L(title="Software Engineer Co-op"), P) == "")
 check("Fall 2026 + Summer 2027 accepted", evaluate(L(terms=["Fall 2026", "Summer 2027"]), P) == "")
-check("AI/ML category rejected", evaluate(L(category="AI/ML/Data"), P).startswith("category"))
+check("AI/ML category read by default (its title gate decides)", not evaluate(L(category="AI/ML/Data"), P).startswith("category"))
+check("AI/ML category rejected when the profile narrows categories to software",
+      evaluate(L(category="AI/ML/Data"), Prefs(categories=["software"])).startswith("category"))
 check("'Software Engineering' category accepted", evaluate(L(category="Software Engineering"), P) == "")
 check("hardware title rejected", evaluate(L(title="Hardware Engineer Intern"), P).startswith("title"))
 check("product specialist rejected", evaluate(L(title="Product Specialist Intern"), P).startswith("title"))
@@ -97,7 +99,7 @@ with tempfile.TemporaryDirectory() as d:
         L(id="gh-old", company_name="Acme", date_posted=100),                                                # form
         L(id="gh-new", company_name="Beta", url="https://job-boards.greenhouse.io/beta/jobs/2", date_posted=500),  # form, newer
         L(id="tt", company_name="TikTok", url="https://lifeattiktok.com/search/1", date_posted=700),          # other
-        L(id="done-1", company_name="Done Co"),                                                              # attempted, applied
+        L(id="done-1", company_name="Done Co", url="https://jobs.lever.co/doneco/1"),                                                              # attempted, applied
         L(id="retry-1", company_name="Retry Co", url="https://jobs.lever.co/co/r"),                          # attempted, retryable
         L(id="dup-co", company_name="Old Co", url="https://jobs.lever.co/oldco/1"),                          # company already applied
         L(id="abroad", company_name="Abroad Co", locations=["Berlin, Germany"]),
@@ -198,6 +200,99 @@ with tempfile.TemporaryDirectory() as d:
     check("retry cap: two attempts still retried", "w2" in _worn_ids)
     check("retry cap: errors keep retrying", "w3" in _worn_ids)
     check("retry cap: a hand re-queue is exempt", "w4" in _worn_ids)
+
+
+# --- the AI/ML/Data category: engineering titles in, quant and research out ---
+from resume_tailor.discover import evaluate as _eval, Prefs as _Prefs
+def _l(title, category):
+    return {"id": "x", "url": "https://boards.greenhouse.io/x/jobs/1", "company_name": "X", "title": title,
+            "locations": ["Durham, NC"], "date_posted": 1700000000, "terms": ["Summer 2027"], "category": category,
+            "active": True, "is_visible": True, "degrees": []}
+check("ai category: a machine learning engineer intern is worth reading", _eval(_l("Machine Learning Engineer Intern", "AI/ML/Data"), _Prefs()) == "")
+check("ai category: a data science intern is worth reading", _eval(_l("Data Science Intern - Summer 2027", "AI/ML/Data"), _Prefs()) == "")
+check("ai category: a quant title stays out", _eval(_l("Quantitative Researcher Intern", "AI/ML/Data"), _Prefs()).startswith("title"))
+check("ai category: a marketing analytics title stays out", _eval(_l("Marketing Data Intern", "AI/ML/Data"), _Prefs()).startswith("title"))
+check("ai category: hardware is still not read", _eval(_l("Hardware Engineer Intern", "Hardware Engineering"), _Prefs()).startswith("category"))
+check("ai category: a profile can narrow the categories", _eval(_l("Machine Learning Engineer Intern", "AI/ML/Data"), _Prefs(categories=["software"])).startswith("category"))
+
+# --- sharding: every company on one worker; every listing on some worker ---
+from resume_tailor.discover import shard_of, select as _select, Prefs as _Prefs
+_pool = [{"id": f"s{i}", "url": f"https://boards.greenhouse.io/x/jobs/{i}", "company_name": c, "title": "Software Engineer Intern",
+          "locations": ["Durham, NC"], "date_posted": 1700000000 + i, "terms": ["Summer 2027"], "category": "Software Engineering",
+          "active": True, "is_visible": True, "degrees": []}
+         for i, c in enumerate(["Acme", "Acme Inc.", "The Acme Company", "Beta Corp", "Gamma", "Delta Labs", "Epsilon", "Zeta", "Eta", "Theta"])]
+check("shard: a company's spellings land on one worker",
+      len({shard_of(l, 4) for l in _pool if "acme" in l["company_name"].lower()}) == 1)
+_by_shard = {k: {e.id for e in _select(_pool, _Prefs(apply_once_at_company=False), None, shard=(k, 4))[0]} for k in range(4)}
+check("shard: the four workers' slices are disjoint", all(not (_by_shard[a] & _by_shard[b]) for a in range(4) for b in range(4) if a < b))
+check("shard: the four workers' slices cover the pool", set().union(*_by_shard.values()) == {l["id"] for l in _pool})
+check("shard: an unsharded select is the whole pool", len(_select(_pool, _Prefs(apply_once_at_company=False), None)[0]) == len(_pool))
+_excl = _select(_pool, _Prefs(apply_once_at_company=False), None, shard=(0, 4))[1]
+check("shard: the rest are counted as other workers' companies", _excl.get("other workers' companies", 0) == len(_pool) - len(_by_shard[0]))
+
+# --- the Software category vouches for plain titles; fit orders the pool; login walls stop retrying ---
+from resume_tailor.discover import _worn_out as _worn, LOGIN_RETRY_CAP as _LCAP
+check("gate: Software category vouches for 'Technology Intern'", evaluate(L(title="Technology Intern"), P) == "")
+check("gate: Software category vouches for 'Computer Science Intern'", evaluate(L(title="Computer Science Intern"), P) == "")
+check("gate: a Software-category operations title still stays out", evaluate(L(title="Customer Operations Intern"), P) == "title: not software")
+
+_fit = [L(id="ds", company_name="DataCo", title="Data Science Intern", category="AI/ML/Data", date_posted=900),
+        L(id="ba", company_name="BizCo", title="Business Analyst Intern", category="Analyst", date_posted=800),
+        L(id="swe", company_name="SoftCo", title="Software Engineer Intern", date_posted=100)]
+_order = [e.id for e in select(_fit, Prefs(apply_once_at_company=False), None)[0]]
+check("order: software roles lead, analyst next, AI/ML/Data last, however new", _order == ["swe", "ba", "ds"], str(_order))
+check("gate: the AI/ML/Data category vouches for its own titles", evaluate(L(title="Research Scientist Intern", category="AI/ML/Data"), P) == "")
+check("gate: a quant title in the AI/ML/Data category still stays out",
+      evaluate(L(title="Quantitative Research Intern", category="AI/ML/Data"), P) == "title: not an engineering role")
+check("gate: the Product category admits product management interns", evaluate(L(title="Product Management Intern", category="Product"), P) == "")
+check("gate: the Product category admits product manager interns", evaluate(L(title="Product Manager Intern - Summer 2027", category="Product"), P) == "")
+check("gate: a product specialist stays out", evaluate(L(title="Product Specialist Intern", category="Product"), P) == "title: not an engineering role")
+check("gate: a profile can leave Product out", evaluate(L(title="Product Manager Intern", category="Product"), Prefs(categories=["software"])) == "category: Product")
+_pm = [L(id="pm", company_name="PmCo", title="Product Manager Intern", category="Product", date_posted=950)] + _fit
+check("order: product comes after AI/ML/Data", [e.id for e in select(_pm, Prefs(apply_once_at_company=False), None)[0]] == ["swe", "ba", "ds", "pm"])
+import os as _os
+_os.environ["RESUME_TAILOR_APPLY_ONCE_AT_COMPANY"] = "0"
+try:
+    from resume_tailor.profile import apply_once_at_company as _once
+    check("apply once: the environment can switch the rule off", _once({"search": {"apply_once_at_company": True}}) is False)
+    _os.environ["RESUME_TAILOR_APPLY_ONCE_AT_COMPANY"] = "1"
+    check("apply once: or on", _once({"search": {"apply_once_at_company": False}}) is True)
+    del _os.environ["RESUME_TAILOR_APPLY_ONCE_AT_COMPANY"]
+    check("apply once: unset, the profile decides (on unless set)", _once({}) is True and _once({"search": {"apply_once_at_company": False}}) is False)
+finally:
+    _os.environ.pop("RESUME_TAILOR_APPLY_ONCE_AT_COMPANY", None)
+_held = RunState(path=Path(tempfile.mkdtemp()) / "state.json")
+_held.record("h1", {"status": "fit_rejected", "company": "Shure"}); _held.record("h2", {"status": "fit_rejected", "company": "Shure"})
+_third = [L(id="h3", company_name="Shure", title="Cloud Software Engineer Intern")]
+check("held twice: blocks the company only under the one-per-company rule",
+      [e.id for e in select(_third, Prefs(apply_once_at_company=True), _held)[0]] == []
+      and [e.id for e in select(_third, Prefs(apply_once_at_company=False), _held)[0]] == ["h3"])
+_days = [L(id="old-swe", date_posted=100),
+         L(id="new-pm", company_name="PmCo", title="Product Manager Intern", category="Product", date_posted=100 + 3 * 86400)]
+check("order: a newer day goes first whatever the fit", [e.id for e in select(_days, Prefs(apply_once_at_company=False), None)[0]] == ["new-pm", "old-swe"])
+_same = RunState(path=Path(tempfile.mkdtemp()) / "state.json")
+_same.record("a1", {"status": "applied", "company": "Acme"})
+_twice = [L(id="a1", url="https://job-boards.greenhouse.io/acme/jobs/9"), L(id="a2", url="https://job-boards.greenhouse.io/acme/jobs/9")]
+_ids, _why = select(_twice, Prefs(apply_once_at_company=False), _same)
+check("same link: a second id for an attempted link is not attempted again", [e.id for e in _ids] == [] and _why.get("same link already attempted") == 1)
+_dup = RunState(path=Path(tempfile.mkdtemp()) / "state.json")
+_dup.record("sn1", {"status": "applied", "company": "Sierra Nevada", "role": "Software Engineer Intern"})
+_pair = [L(id="sn1", company_name="Sierra Nevada", url="https://sn.wd1.myworkdayjobs.com/a"),
+         L(id="sn2", company_name="Sierra Nevada", url="https://sn.wd1.myworkdayjobs.com/b")]
+check("same title: a second posting with the same title is attempted when the per-company rule is off",
+      [e.id for e in select(_pair, Prefs(apply_once_at_company=False), _dup)[0]] == ["sn2"]
+      and [e.id for e in select(_pair, Prefs(apply_once_at_company=True), _dup)[0]] == [])
+_wall = RunState(path=Path(tempfile.mkdtemp()) / "state.json")
+for _ in range(_LCAP + 1):
+    _wall.record("wall", {"status": "needs_login", "detail": "this site wants an account or a sign-in"})
+check("retry cap: a login wall is parked after repeated attempts", _worn(_wall.done["wall"]))
+check("retry cap: a login wall is left out of the pool",
+      [e.id for e in select([L(id="wall", company_name="Wall Co", url="https://wall.wd1.myworkdayjobs.com/j")], P, _wall)[0]] == [])
+_wall.record("wall", {"status": "needs_login", "detail": "re-queued by hand"})
+check("retry cap: a hand re-queue lifts it", not _worn(_wall.done["wall"]))
+_once = RunState(path=Path(tempfile.mkdtemp()) / "state.json")
+_once.record("wall1", {"status": "needs_login", "detail": "this site wants an account"})
+check("retry cap: one login wall is still retried", not _worn(_once.done["wall1"]))
 
 width = max(len(n) for n, _, _ in RESULTS)
 failed = 0

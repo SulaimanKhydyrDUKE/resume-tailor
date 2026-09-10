@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import time
 import urllib.error
@@ -69,10 +70,22 @@ _TITLE_YES = re.compile(
 # The analyst lists the user added: business, technology, systems, data
 # analyst internships — never financial or quantitative ones (_TITLE_NO).
 _TITLE_ANALYST = re.compile(r"business analy|technology analy|systems? analy|data analy|it analy|product analy|operations analy|analytics", re.I)
+# The AI/ML/Data category's engineering-flavoured titles: the ones a record
+# of LLM services, embedding retrieval and on-device inference speaks to.
+# Pure research and quant titles stay out (_TITLE_NO).
+_TITLE_AI = re.compile(r"machine learning|\bml\b|\bai\b|artificial intelligence|deep learning|computer vision|\bnlp\b|\bllm|"
+                       r"data scien|applied scien|research engineer|data engineer|mlops|generative", re.I)
+# Titles the Software category itself vouches for: the list's curators put
+# "Technology Intern", "Computer Science Intern" and "Application Development
+# Intern" under Software, and the judges still decide the fit.
+_TITLE_SOFT = re.compile(r"technolog|application|computer|\bit\b|mobile|python|java|automation|\bai\b|digital|"
+                         r"r&d|research and development|^\s*(summer |\d{4} )?intern(ship)?\b", re.I)
+# The Product category's own titles: product management and product interns.
+_TITLE_PRODUCT = re.compile(r"product", re.I)
 _TITLE_NO = re.compile(
     r"job listings?( page)?|careers? page|all (open )?(jobs|positions|roles)|open positions$|talent (community|network)|"
     r"hardware|electrical|mechanical|civil|chemical|aerospace|manufacturing|process engineer|"
-    r"product manager|product specialist|program manager|marketing|sales|recruit|talent|"
+    r"product specialist|program manager|marketing|sales|recruit|talent|"
     r"human resources|\bhr\b|finance|financial|accountant|data entry|quantitative|\bquant\b|"
     r"trader|trading|graphic|technician|it support|help ?desk|information technology|"
     r"network engineer|field engineer|test technician|\bux\b|ui/ux|ux/ui",
@@ -114,6 +127,9 @@ def title_terms(title: str) -> set[str]:
     return out
 
 
+DEFAULT_CATEGORIES = ["software", "analyst", "ai/ml", "data", "product"]
+
+
 @dataclass
 class Prefs:
     terms: list[str] = field(default_factory=lambda: ["Summer 2027"])
@@ -125,19 +141,28 @@ class Prefs:
     apply_once_at_company: bool = True
     positions: list[str] = field(default_factory=list)
     jobright_account: bool = False  # the tool's browser is signed in to jobright.ai, so its links resolve
+    # Listing categories worth reading (substrings of the source's category):
+    # software, the analyst lists, AI/ML/Data and Product — the title gate
+    # keeps out what no category makes ours (quant, hardware, sales, HR) and
+    # the judges still decide the fit.
+    categories: list[str] = field(default_factory=lambda: list(DEFAULT_CATEGORIES))
 
     @classmethod
     def from_profile(cls, profile) -> "Prefs":
-        s = profile.answers.get("search", {}) or {}
+        from .profile import apply_once_at_company as _apply_once
+
+        s_all = profile.answers
+        s = s_all.get("search", {}) or {}
         return cls(
             positions=list(s.get("positions") or []),
+            categories=[str(c).lower() for c in (s.get("categories") or DEFAULT_CATEGORIES)],
             terms=list(s.get("terms") or ["Summer 2027"]),
             title_blacklist=list(s.get("title_blacklist") or []),
             company_blacklist=list(s.get("company_blacklist") or []),
             location_blacklist=list(s.get("location_blacklist") or []),
             require_us=bool(s.get("require_us", True)),
             exclude_phd_only=bool(s.get("exclude_phd_only", True)),
-            apply_once_at_company=bool(s.get("apply_once_at_company", True)),
+            apply_once_at_company=_apply_once(s_all),
             jobright_account=bool(s.get("jobright_account", False)),
         )
 
@@ -247,10 +272,26 @@ def fetch_tables(sources: list[tuple[str, str]] | None = None, timeout: float = 
 
 
 def load_cached(out_dir: Path) -> tuple[dict, list[dict] | None]:
+    """The last fetch's metadata and listings. A file another worker is
+    replacing this instant, or one left half-written, reads as no cache."""
     meta_path, cache_path = out_dir / "discover-state.json", out_dir / "listings-cache.json"
-    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.is_file() else {}
-    cache = json.loads(cache_path.read_text(encoding="utf-8")) if cache_path.is_file() else None
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.is_file() else {}
+    except (json.JSONDecodeError, OSError):
+        meta = {}
+    try:
+        cache = json.loads(cache_path.read_text(encoding="utf-8")) if cache_path.is_file() else None
+    except (json.JSONDecodeError, OSError):
+        cache = None
     return meta, cache
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    """Written whole or not at all: four workers refresh the same cache, and a
+    reader must never see one of them halfway through."""
+    tmp = path.with_name(f"{path.name}.tmp{os.getpid()}")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def refresh(out_dir: str | Path, url: str = DEFAULT_URL,
@@ -258,8 +299,20 @@ def refresh(out_dir: str | Path, url: str = DEFAULT_URL,
     """Fetch if changed, else reuse the cached copy; the README-table sources
     are re-read every time and merged in (a posting already known from the
     JSON feed keeps that record). Returns (listings, changed)."""
+    import fcntl
+
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    # One worker fetches at a time; the next finds the fresh etag and gets a 304.
+    with open(out_dir / "discover.lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            return _refresh_locked(out_dir, url, table_sources)
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def _refresh_locked(out_dir: Path, url: str, table_sources: list[tuple[str, str]] | None) -> tuple[list[dict], bool]:
     meta, cache = load_cached(out_dir)
     cached_simplify = [l for l in (cache or []) if not str(l.get("id", "")).startswith("gh:")]
     listings, etag = fetch(url, etag=meta.get("etag") if cache is not None else None)
@@ -283,10 +336,10 @@ def refresh(out_dir: str | Path, url: str = DEFAULT_URL,
     before = {l.get("id") for l in (cache or [])}
     merged = listings + extra
     changed = changed or any(l["id"] not in before for l in extra)
-    (out_dir / "listings-cache.json").write_text(json.dumps(merged), encoding="utf-8")
+    _write_atomic(out_dir / "listings-cache.json", json.dumps(merged))
     meta.update({"etag": etag, "last_fetch": int(time.time()), "count": len(merged), "source": url,
                  "table_sources": {n: sum(1 for l in tables if l["source"] == n) for n, _ in (table_sources if table_sources is not None else TABLE_SOURCES)}})
-    (out_dir / "discover-state.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    _write_atomic(out_dir / "discover-state.json", json.dumps(meta, indent=2))
     return merged, changed
 
 
@@ -326,14 +379,18 @@ def evaluate(listing: dict, prefs: Prefs) -> str:
     if prefs.terms and season and not any(t.lower().startswith(season.lower()) for t in prefs.terms):
         return "other term: " + season
     category = (listing.get("category") or "").lower()
-    if "software" not in category and "analyst" not in category:
+    if not any(c in category for c in prefs.categories):
         return f"category: {listing.get('category') or '?'}"
     title = listing.get("title") or ""
     if listing.get("source") and not re.search(r"intern|co-?op", title, re.I):
         return "title: not an internship"  # the table lists carry new-grad rows too
     if _TITLE_NO.search(title):
         return "title: not an engineering role"
-    if not (_TITLE_YES.search(title) or ("analyst" in category and _TITLE_ANALYST.search(title))):
+    ai_category = "ai" in category or "ml" in category or "data" in category
+    if not (_TITLE_YES.search(title) or ("analyst" in category and _TITLE_ANALYST.search(title))
+            or ai_category
+            or ("software" in category and _TITLE_SOFT.search(title))
+            or ("product" in category and _TITLE_PRODUCT.search(title))):
         return "title: not software"
     if any(b.lower() in title.lower() for b in prefs.title_blacklist):
         return "title blacklist"
@@ -353,6 +410,22 @@ def evaluate(listing: dict, prefs: Prefs) -> str:
     if "jobright.ai/" in listing["url"] and not prefs.jobright_account:
         return "link goes through jobright.ai (needs a jobright sign-in)"
     return ""
+
+
+def _posted_day(listing: dict) -> int:
+    return int(listing.get("date_posted") or 0) // 86400
+
+
+def _fit_rank(listing: dict) -> int:
+    title = listing.get("title") or ""
+    category = (listing.get("category") or "").lower()
+    if _TITLE_YES.search(title) or "software" in category:
+        return 0
+    if _TITLE_ANALYST.search(title) or "analyst" in category:
+        return 1
+    if "product" in category:
+        return 3
+    return 2
 
 
 def _rank(url: str) -> int:
@@ -423,23 +496,54 @@ def to_entry(listing: dict) -> QueueEntry:
 
 
 RETRY_CAP = 3
+LOGIN_RETRY_CAP = 2
 
 
-def _worn_out(rec: dict) -> bool:
-    """Three attempts that all ended in needs_review or blocked, none of
-    them a hand re-queue."""
-    return (rec.get("status") in ("needs_review", "blocked") and int(rec.get("attempts") or 0) >= RETRY_CAP
-            and not (rec.get("detail") or "").startswith("re-queued"))
+def shard_of(listing: dict, workers: int) -> int:
+    """Which of `workers` parallel loops a listing belongs to. Every posting
+    of a company lands on the same worker, so apply-once-per-company holds
+    across workers without any of them asking the others."""
+    from .queue import company_key
+
+    key = company_key(listing.get("company_name") or "") or str(listing.get("id") or listing.get("url") or "")
+    return int(hashlib.sha1(key.encode("utf-8")).hexdigest(), 16) % max(1, workers)
+
+
+def _worn_out(rec: dict, inbox: bool | None = None) -> bool:
+    """Three attempts that all ended in needs_review or blocked, or two that
+    ended at a login wall — none of them a hand re-queue. A wall only a
+    person can pass (a sign-in, an e-mailed link) costs minutes of browser
+    time per retry and does not change on its own; `review` re-queues it.
+
+    A wall that only wants the applicant's inbox is worn out for exactly as
+    long as the inbox is unconfigured (`inbox`, read once by the caller): the
+    moment RESUME_TAILOR_IMAP_PASSWORD is set, every such posting is worth a
+    try, whatever its count says — the passes it sat out were not attempts."""
+    from . import mailbox
+
+    if (rec.get("detail") or "").startswith("re-queued"):
+        return False
+    attempts = int(rec.get("attempts") or 0)
+    if rec.get("status") == "needs_login":
+        if mailbox.waiting_for_inbox(rec):
+            return not (mailbox.configured() if inbox is None else inbox)
+        return attempts >= LOGIN_RETRY_CAP
+    return rec.get("status") in ("needs_review", "blocked") and attempts >= RETRY_CAP
 
 
 def select(listings: list[dict], prefs: Prefs, state: RunState | None = None,
-           limit: int | None = None) -> tuple[list[QueueEntry], dict[str, int]]:
+           limit: int | None = None, shard: tuple[int, int] | None = None,
+           retries_first: bool = False) -> tuple[list[QueueEntry], dict[str, int]]:
     """Listings worth attempting, in the order to attempt them: direct-form ATS
     hosts first, then unknown hosts, then the ones that will want an account —
     newest first within each. Also returns a count of why the rest were left
-    out, so a quiet run can be told apart from a broken filter."""
-    from .batch import RETRYABLE
+    out, so a quiet run can be told apart from a broken filter.
 
+    `shard` = (k, n) keeps only the k-th of n workers' companies (see
+    shard_of); `retries_first` deals every retry before any new posting —
+    for a first pass after a fix to the form layer."""
+    from . import mailbox
+    from .batch import RETRYABLE
     from .queue import company_key
 
     excluded: dict[str, int] = {}
@@ -456,8 +560,13 @@ def select(listings: list[dict], prefs: Prefs, state: RunState | None = None,
     # verdict is about depth of fit with that company's work, which does not
     # change from one of its titles to the next.
     holds_at: dict[str, int] = {}
+    # The same link can be listed twice with two ids (one row per location):
+    # one attempt covers both, whatever the per-company rule says.
+    attempted_urls: set[str] = set()
     if state is not None:
         by_listing_id = {l.get("id") or l.get("url"): l for l in listings}
+        attempted_urls = {(by_listing_id.get(rid) or {}).get("url") or "" for rid, rec in state.done.items()
+                          if rec.get("status") not in RETRYABLE} - {""}
         for rec_id, rec in state.done.items():
             if rec.get("status") in RETRYABLE:
                 continue
@@ -480,16 +589,24 @@ def select(listings: list[dict], prefs: Prefs, state: RunState | None = None,
             role_key = role_key_of(l.get("company_name") or "", l.get("title") or "")
             if state.already_attempted(l.get("id") or l.get("url", ""), RETRYABLE):
                 reason = "already attempted"
+            elif l.get("url") in attempted_urls and (l.get("id") or l.get("url")) not in state.done:
+                reason = "same link already attempted"
             elif prefs.apply_once_at_company and state.has_applied(l.get("company_name") or ""):
                 reason = "already applied at company"
-            elif role_key in judged_roles:
+            elif prefs.apply_once_at_company and role_key in judged_roles:
                 reason = "same role already judged"
-            elif holds_at.get(role_key[0], 0) >= 2:
+            elif prefs.apply_once_at_company and holds_at.get(role_key[0], 0) >= 2:
                 reason = "company held twice by the judges"
         if reason:
             excluded[reason] = excluded.get(reason, 0) + 1
         else:
             kept.append(l)
+    if shard is not None:
+        k, n = shard
+        before = len(kept)
+        kept = [l for l in kept if shard_of(l, n) == k]
+        if before - len(kept):
+            excluded["other workers' companies"] = before - len(kept)
     if prefs.apply_once_at_company:
         before = len(kept)
         kept = one_per_company(kept, prefs)
@@ -507,7 +624,12 @@ def select(listings: list[dict], prefs: Prefs, state: RunState | None = None,
             return 1
         return 0 if prior.get("status") == "ready_not_submitted" else 2
 
-    kept.sort(key=lambda l: (stage(l), _rank(l["url"]), -(l.get("date_posted") or 0)))
+    # Within a stage, the newest postings first, by the day they went up:
+    # an application in a posting's first days is read, one in its third
+    # week often is not. Within a day, the roles the user is actually after
+    # first (software before analyst before AI/ML/Data before product), then
+    # the hosts with a direct form.
+    kept.sort(key=lambda l: (stage(l), -_posted_day(l), _fit_rank(l), _rank(l["url"]), -(l.get("date_posted") or 0)))
     # Retries are cheap (resume and verdicts cached) and usually follow a fix
     # to the form layer, so they are dealt in — one after every three new
     # postings — rather than left behind the whole never-attempted pool.
@@ -518,11 +640,21 @@ def select(listings: list[dict], prefs: Prefs, state: RunState | None = None,
     # not for another pass; it stays on the dashboard and out of the deal.
     # Errors and login walls keep retrying: a network blip or a login by
     # the user changes them without any code change.
-    retries = [l for l in kept if stage(l) == 2 and not _worn_out(attempted.get(l.get("id") or l.get("url")) or {})]
+    inbox = mailbox.configured()  # once per pass, not once per record: it reads the env file
+    retries = [l for l in kept if stage(l) == 2 and not _worn_out(attempted.get(l.get("id") or l.get("url")) or {}, inbox)]
+    # The least-tried first: a posting never retried since the last fix to
+    # the form layer goes before one that just failed again a pass ago.
+    retries.sort(key=lambda l: int((attempted.get(l.get("id") or l.get("url")) or {}).get("attempts") or 0))
     for l in kept:
-        if stage(l) == 2 and _worn_out(attempted.get(l.get("id") or l.get("url")) or {}):
-            excluded["needs review, three attempts"] = excluded.get("needs review, three attempts", 0) + 1
+        rec = attempted.get(l.get("id") or l.get("url")) or {}
+        if stage(l) == 2 and _worn_out(rec, inbox):
+            why = ("waiting for the inbox (set RESUME_TAILOR_IMAP_PASSWORD)" if mailbox.waiting_for_inbox(rec)
+                   else "needs review, three attempts")
+            excluded[why] = excluded.get(why, 0) + 1
     kept = ready
+    if retries_first:
+        kept += retries
+        retries = []
     while new or retries:
         kept += new[:3]
         del new[:3]

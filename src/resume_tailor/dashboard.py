@@ -41,21 +41,38 @@ def _file_url(out_dir: Path, path: str | None) -> str | None:
     return "/files/" + rel.as_posix()
 
 
+def _alive(path: Path) -> int | None:
+    try:
+        pid = int(path.read_text().strip())
+        os.kill(pid, 0)
+        return pid
+    except (OSError, ValueError):
+        return None
+
+
 def watch_status(profile_dir: Path = DEFAULT_PROFILE_DIR) -> dict:
     pid_file, log = profile_dir / "watch.pid", profile_dir / "watch.log"
-    pid, running = None, False
-    try:
-        pid = int(pid_file.read_text().strip())
-        os.kill(pid, 0)
-        running = True
-    except (OSError, ValueError):
-        pass
+    # One pid file per worker (watch-w0.pid …) when the loop runs as several;
+    # the plain watch.pid is worker 0 either way.
+    worker_pids = {p.name: _alive(p) for p in sorted(profile_dir.glob("watch-w*.pid"))}
+    if pid_file.is_file() and "watch-w0.pid" not in worker_pids:
+        worker_pids["watch.pid"] = _alive(pid_file)
+    up = [p for p in worker_pids.values() if p]
+    pid, running = (up[0] if up else None), bool(up)
     tail: list[str] = []
     last_pass = None
+    worker_logs: dict[str, list[str]] = {}
     if log.is_file():
-        lines = log.read_text(errors="replace").splitlines()
+        lines = log.read_text(errors="replace").splitlines()[-4000:]
         tail = lines[-15:]
         last_pass = next((line for line in reversed(lines) if re.match(r"^\[\d\d:\d\d\] ", line)), None)
+        # The last few lines each worker wrote: its pass header, its queue,
+        # its outcomes — the tag it prefixes ("[w2] ", "[fresh] ") says whose.
+        for line in lines:
+            m = re.match(r"^\s*\[(w\d+|fresh)\] ", line)
+            if m:
+                worker_logs.setdefault(m.group(1), []).append(line.strip())
+        worker_logs = {k: v[-8:] for k, v in worker_logs.items()}
     # A retry pass (the overnight supervisor's first act) runs with the loop
     # deliberately stopped; the page should say so rather than "stopped".
     pass_running, pass_pid = False, None
@@ -67,9 +84,20 @@ def watch_status(profile_dir: Path = DEFAULT_PROFILE_DIR) -> dict:
             pass_running, pass_pid = (cpid != pid), cpid
     except (OSError, ValueError, json.JSONDecodeError):
         pass
+    workers_label = f" ({len(up)} of {len(worker_pids)} workers)" if len(worker_pids) > 1 else ""
+    fresh_pid = _alive(profile_dir / "fresh.pid") if (profile_dir / "fresh.pid").is_file() else None
+    # One row per process the supervisor runs: alive or not, by pid file.
+    processes = []
+    for name, p in sorted(worker_pids.items()):
+        m = re.match(r"watch-w(\d+)\.pid", name)
+        processes.append({"worker": m.group(1) if m else "0", "pid": p, "alive": bool(p)})
+    if (profile_dir / "fresh.pid").is_file():
+        processes.append({"worker": "fresh", "pid": fresh_pid, "alive": bool(fresh_pid)})
     return {"running": running, "pid": pid if running else None, "last_pass": last_pass, "log_tail": tail,
-            "pass_running": pass_running, "pass_pid": pass_pid,
-            "label": "loop running" if running else ("retry pass running (the loop resumes when it ends)" if pass_running else "loop stopped")}
+            "pass_running": pass_running, "pass_pid": pass_pid, "workers": len(up), "workers_expected": len(worker_pids),
+            "processes": processes, "worker_logs": worker_logs, "fresh_running": bool(fresh_pid),
+            "label": ("loop running" + workers_label + (" + fresh lane" if fresh_pid else "")) if running
+                     else ("retry pass running (the loop resumes when it ends)" if pass_running else "loop stopped")}
 
 
 def pool_status(out_dir: Path) -> dict:
@@ -133,25 +161,32 @@ def build_index(out_dir: str | Path, profile_dir: Path = DEFAULT_PROFILE_DIR) ->
             "screenshots": shots.get(_safe(eid), {}),
             "answers": rec.get("answers") or [],
             "coverage": rec.get("coverage") or {},
+            "worker": rec.get("worker") or "",
         })
     apps.sort(key=lambda a: a["when"], reverse=True)
-    now = None
-    current = profile_dir / "current.json"
-    try:
-        if current.is_file() and time.time() - current.stat().st_mtime < 1800:
-            now = json.loads(current.read_text(encoding="utf-8"))
-            if now.get("stage") == "idle":
-                now = None
-            else:
-                try:
-                    os.kill(int(now.get("pid") or 0), 0)
-                except (OSError, ValueError):
-                    now = None  # the process that wrote it is gone
-    except Exception:
-        now = None
+    # What each live process is doing: current.json for a lone loop or a
+    # retry pass, current-w<k>.json per worker. `now` is the freshest of them.
+    workers_now: list[dict] = []
+    for current in sorted(profile_dir.glob("current*.json")):
+        try:
+            if time.time() - current.stat().st_mtime >= 1800:
+                continue
+            info = json.loads(current.read_text(encoding="utf-8"))
+            if info.get("stage") == "idle":
+                continue
+            os.kill(int(info.get("pid") or 0), 0)  # the process that wrote it must still be there
+            info["_mtime"] = current.stat().st_mtime
+            workers_now.append(info)
+        except Exception:
+            continue
+    workers_now.sort(key=lambda i: -i.get("_mtime", 0))
+    for info in workers_now:
+        info.pop("_mtime", None)
+    now = workers_now[0] if workers_now else None
     return {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "now": now,
+        "workers_now": workers_now,
         "watch": watch_status(profile_dir),
         "pool": pool_status(out_dir),
         "counts": dict(Counter(a["status"] for a in apps)),

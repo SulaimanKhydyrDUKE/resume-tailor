@@ -38,7 +38,7 @@ from . import gates
 from .compose import document
 from .llm import get_llm
 from .models import (
-    Bullet, JobSpec, RoleDraft, Selection, SkillGroup, SkillsDraft,
+    Bullet, JobSpec, RoleDraft, RolePlan, Selection, SkillGroup, SkillsDraft,
 )
 from .profile import Profile
 from .render import extract_pdf_text, page_count, render_pdf_async, render_to_fit_async  # noqa: F401
@@ -189,7 +189,11 @@ State the positioning in one sentence: the angle a reader should come away with.
 
 # --- stage 3 ----------------------------------------------------------------
 
-async def draft_role(profile: Profile, job: JobSpec, sel: Selection, plan, revision: str | None = None) -> RoleDraft | None:
+async def draft_role(profile: Profile, job: JobSpec, sel: Selection, plan, revision: str | None = None,
+                     base_bullets: list[str] | None = None) -> RoleDraft | None:
+    """`base_bullets` — the applicant's own résumé wording for this role —
+    turns the draft into a rewording: the same bullets, in order, each
+    changed only where the posting's terms are supported by the facts."""
     if plan.bullet_count <= 0:
         return None
     exp = (profile.career.get("experience_details") or [])[int(plan.evidence_id.removeprefix("exp"))]
@@ -201,23 +205,40 @@ async def draft_role(profile: Profile, job: JobSpec, sel: Selection, plan, revis
     # A role cannot earn more bullets than it has facts. Left uncapped, a plan
     # asking for five from a three-fact role is an instruction to split facts
     # in two — which is exactly what happened.
-    n_facts = sum(1 for k in index if k.startswith(plan.evidence_id + ".r"))
-    n = min(plan.bullet_count, n_facts)
+    n_facts = sum(1 for k in index if k.startswith(plan.evidence_id + ".r") or k.startswith(plan.evidence_id + ".b"))
+    n = len(base_bullets) if base_bullets else min(plan.bullet_count, n_facts)
     if n <= 0:
         return None
+    base_block = ""
+    if base_bullets:
+        keywords = sorted({k for r in job.requirements for k in r.keywords})[:30]
+        listed = "\n".join(f"{plan.evidence_id}.b{j}: {t}" for j, t in enumerate(base_bullets))
+        base_block = f"""
+
+THE APPLICANT'S OWN RÉSUMÉ WORDING FOR THIS ROLE — the starting point
+{listed}
+
+Write exactly {n} bullets, one per résumé bullet above and in that order. Each \
+is that bullet, reworded only where the posting's own terms are supported by \
+the facts: keep its substance, keep every number exactly as written, keep its \
+length within about a fifth of the original, and put the whole sentence in \
+`action` with `outcome` empty. A bullet the posting gives no reason to touch \
+comes back as it is. Cite the bullet's own id ({plan.evidence_id}.b0, …) in \
+source_fact_ids, plus any other fact it draws on.
+POSTING TERMS TO ECHO WHERE THE FACTS SUPPORT THEM: {', '.join(keywords) or '(none extracted)'}"""
     # This role's facts are the only ids it may cite — the gate enforces that —
     # so the full index is not sent. On a low tokens-per-minute tier that shared
     # prefix was most of every draft call's cost.
     draft = await _parse(
         [{"type": "text", "text": _SYSTEM_ROLE}],
-        f"""Write at most {n} bullet(s) for this one role — one bullet per fact.
+        f"""Write {'exactly' if base_bullets else 'at most'} {n} bullet(s) for this one role{'' if base_bullets else ' — one bullet per fact'}.
 
 ROLE BEING WRITTEN: {exp.get('position', '')} at {exp.get('company', '')}
 FOCUS FOR THIS POSTING: {plan.focus}
 POSITIONING: {sel.positioning}
 
 FACTS AVAILABLE FOR THIS ROLE (cite only these ids)
-{facts}
+{facts}{base_block}
 
 Rules:
 - One fact, one bullet. Never split a single fact into two bullets to fill the \
@@ -406,6 +427,123 @@ def score_coverage(job: JobSpec, pdf_text: str) -> dict[str, Any]:
 
 # --- assembly ---------------------------------------------------------------
 
+def _slot_of(bullet: Bullet, evidence_id: str) -> int | None:
+    """Which base bullet a tailored one stands for, from the base id it cites."""
+    for fid in bullet.source_fact_ids:
+        m = re.fullmatch(re.escape(evidence_id) + r"\.b(\d+)", fid.strip())
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def resume_file_name(profile: Profile) -> str:
+    """The name the PDF is uploaded under: the skeleton's, else
+    First_Last_resume.pdf — never the company or the role."""
+    named = str((profile.base_resume or {}).get("file_name") or "").strip()
+    if named:
+        return named
+    stem = re.sub(r"[^A-Za-z0-9]+", "_", profile.full_name or "resume").strip("_") or "resume"
+    return f"{stem}_resume.pdf"
+
+
+async def _tailor_on_base(profile: Profile, job: JobSpec, out_dir: str | Path, label: str,
+                          revision: str | None, variant: str, say) -> TailorResult:
+    """The résumé on its skeleton (resume/base.yaml): the same roles in the
+    same order with the same number of bullets, each bullet a rewording of
+    the applicant's own toward the posting's terms — gated and audited like
+    any draft, and standing in its own words where a rewording fails — and
+    the projects, skills and honors as the skeleton writes them. One page,
+    one file name."""
+    base = profile.base_resume or {}
+    index = profile.evidence_index()
+    roles = [r for r in (base.get("roles") or []) if re.fullmatch(r"exp\d+", str(r.get("id") or "")) and r.get("base")]
+    keywords = sorted({k for r in job.requirements for k in r.keywords})
+    focus = "Echo the posting's own terms where this role's facts support them: " + (", ".join(keywords[:20]) or "(none extracted)")
+    plans = [RolePlan(evidence_id=str(r["id"]), bullet_count=len(r["base"]), focus=focus) for r in roles]
+    selection = Selection(matches=[], role_plans=plans, include_project_ids=[], gaps=[],
+                          positioning=f"{job.role_title} applicant" + (f" at {job.company}" if job.company else "")
+                          + " whose record is read in the posting's own terms")
+    say(f"rewording {len(plans)} role(s) on the résumé skeleton (in parallel, paced to your rate limit)…")
+    drafts_raw = await asyncio.gather(*(
+        draft_role(profile, job, selection, p, revision, base_bullets=[str(b) for b in r["base"]])
+        for p, r in zip(plans, roles)))
+    exp_drafts = [d for d in drafts_raw if d is not None]
+    n_bullets = sum(len(d.bullets) for d in exp_drafts)
+    say(f"{n_bullets} bullets reworded; running the deterministic gates…")
+    flagged = deterministic_gate(index, exp_drafts)
+    dropped = await audit_and_repair(index, exp_drafts, flagged)
+
+    # Every slot is filled: the tailored bullet that survived the gates and
+    # the audit, else the résumé's own wording for that slot.
+    by_id = {d.evidence_id: d for d in exp_drafts}
+    filled: list[RoleDraft] = []
+    for r, p in zip(roles, plans):
+        base_bullets = [str(b) for b in r["base"]]
+        slots: list[Bullet | None] = [None] * len(base_bullets)
+        loose: list[Bullet] = []
+        for b in (by_id[p.evidence_id].bullets if p.evidence_id in by_id else []):
+            j = _slot_of(b, p.evidence_id)
+            if j is not None and 0 <= j < len(slots) and slots[j] is None:
+                slots[j] = b
+            else:
+                loose.append(b)
+        for j in range(len(slots)):
+            if slots[j] is None and loose:
+                slots[j] = loose.pop(0)
+        bullets = [s if s is not None else Bullet(action=base_bullets[j], outcome="",
+                                                  source_fact_ids=[f"{p.evidence_id}.b{j}"],
+                                                  numerals_used=[], derived_numerals=[])
+                   for j, s in enumerate(slots)]
+        filled.append(RoleDraft(evidence_id=p.evidence_id, bullets=bullets))
+    exp_drafts = filled
+    say(f"{len(dropped)} rewording(s) fell back to the résumé's own words; rendering…")
+
+    from .compose import document_from_base
+
+    style = str(base.get("style") or "jake")
+    max_pages = int(base.get("max_pages") or 1)
+    file_name = resume_file_name(profile)
+    slug = (re.sub(r"[^a-z0-9]+", "-", f"{job.company}-{job.role_title}".lower()).strip("-") or label) + variant
+    target = Path(out_dir) / "resumes" / slug / file_name
+    html = document_from_base(profile.career, base, exp_drafts)
+    pdf_path, pages, notch = await render_to_fit_async(html, target, style=style,
+                                                       title=profile.full_name or "Resume", max_pages=max_pages)
+    if notch:
+        say(f"fitted to one page at compact notch {notch}")
+    # Still over the page: the longest role gives up its last bullet, once
+    # per round, until it fits — the skeleton's shape kept as far as it can be.
+    trimmed = 0
+    while pages > max_pages and trimmed < 6:
+        victim = max(exp_drafts, key=lambda d: len(d.bullets), default=None)
+        if victim is None or len(victim.bullets) <= 1:
+            break
+        victim.bullets.pop()
+        trimmed += 1
+        html = document_from_base(profile.career, base, exp_drafts)
+        pdf_path, pages, notch = await render_to_fit_async(html, target, style=style,
+                                                           title=profile.full_name or "Resume", max_pages=max_pages)
+    if trimmed:
+        say(f"trimmed {trimmed} bullet(s) so the résumé fits one page")
+    pdf_text = extract_pdf_text(pdf_path)
+    pi = profile.career.get("personal_information", {}) or {}
+    email = str((base.get("header") or {}).get("email") or pi.get("email", ""))
+    render_violations = gates.check_rendered(pdf_text, {"email": email, "name": profile.full_name})
+    warnings: list[str] = []
+    if dropped:
+        warnings.append(f"{len(dropped)} rewording(s) failed verification and stand in the résumé's own words.")
+    if render_violations:
+        warnings.append(f"{len(render_violations)} issue(s) found in the rendered PDF's own text layer.")
+    if pages > max_pages:
+        warnings.append(f"{pages} pages — the skeleton would not fit on {max_pages}.")
+    return TailorResult(
+        pdf_path=pdf_path, html=html, job=job, selection=selection,
+        coverage=score_coverage(job, pdf_text), pages=pages,
+        roles_included=len(exp_drafts),
+        dropped_claims=dropped, render_violations=[str(v) for v in render_violations],
+        warnings=warnings,
+    )
+
+
 async def tailor(profile: Profile, job_description: str, style: str = "clean",
                   out_dir: str | Path = "output", label: str = "role",
                   log=None, revision: str | None = None, variant: str = "",
@@ -421,6 +559,8 @@ async def tailor(profile: Profile, job_description: str, style: str = "clean",
         job = await read_posting(job_description)
     say(f"{job.role_title}{' at ' + job.company if job.company else ''} — "
         f"{len(job.requirements)} requirements found; selecting evidence…")
+    if profile.base_resume:
+        return await _tailor_on_base(profile, job, out_dir, label, revision, variant, say)
     selection = await select_evidence(profile, job, revision)
     index = profile.evidence_index()
 

@@ -276,6 +276,11 @@ _FIELD_JS = r"""
            : (combo ? comboValue(el) : (el.value || chipValue(el))),
       files: type === 'file' ? [...(el.files || [])].map(f => f.name) : undefined,
       combobox: combo,
+      // A picker over a search index rather than a fixed list: Workday's
+      // selectinput ("Search" placeholder, enterkeyhint=search), a "type to
+      // add" box. What such a picker shows unopened is the top of the index.
+      search: combo && (el.getAttribute('data-uxi-widget-type') === 'selectinput' || el.getAttribute('enterkeyhint') === 'search'
+        || /^(search|type to (add|search)|start typing)/i.test(el.placeholder || '')),
       section: sectionOf(el),
       placeholder: el.placeholder || '',
       hint: hintOf(el),
@@ -308,11 +313,34 @@ _FIELD_JS = r"""
   // Custom dropdowns: a button that opens a listbox. What it offers is read
   // when it is opened; what it shows now is its value, unless that is a
   // placeholder or the question itself.
+  // The text block before a control, climbing a few levels: the question a
+  // Workday questionnaire dropdown answers sits in a label-like block above it.
+  const textBefore = (start, levels) => {
+    let node = start;
+    for (let depth = 0; depth < levels && node; depth++) {
+      let sib = node.previousElementSibling;
+      while (sib) {
+        const t = txt(sib);
+        if (t && t.length <= MAXQ && !sib.querySelector('input, select, textarea, button') && !placeholderish(t) && !/^[*✱:\s]+$/.test(t)) return t;
+        sib = sib.previousElementSibling;
+      }
+      node = node.parentElement;
+    }
+    return '';
+  };
   for (const b of document.querySelectorAll('button[aria-haspopup="listbox"], [aria-haspopup="listbox"]:not(input), [role=combobox]:not(input):not(select)')) {
     if (!vis(b) || (b.dataset.rtId && emitted.has(b.dataset.rtId)) || b.closest('[role=listbox]')) continue;
     const id = tagOf(b);
-    const q = questionFor(b);
     const shown = txt(b);
+    let q = questionFor(b);
+    // Workday names a questionnaire dropdown by its value ("Yes Required",
+    // "Select One Required"), and a planner shown that as the question
+    // answered sponsorship and drug-test questions blind. The question is
+    // the text block before the control.
+    if (!q || /\bRequired\s*$/i.test(q) || q === shown || /^(select one|choose one|yes|no)\b[^?]*$/i.test(q)) {
+      const before = textBefore(b, 6);
+      if (before) q = before + ((/\bRequired\s*$/i.test(q) || b.getAttribute('aria-required') === 'true') && !STAR.test(before) ? '*' : '');
+    }
     out.push({
       id, selector: `[data-rt-id="${id}"]`, tag: 'listbox', type: 'listbox', label: q, name: '', dom_id: b.id || '',
       required: (STAR.test(q) || STARLEAD.test(q)) || entryRequired(b) || b.getAttribute('aria-required') === 'true',
@@ -377,7 +405,7 @@ e => {
 # shadow root, rendered as a div.c-spl-autocomplete-…-option). Each entry is
 # tagged so the click lands on the same node the scan saw, whatever order
 # a shadow-piercing locator would put them in.
-_OPTION_SEL = ('[role=option], [role=listbox] li, [id*="-option-"], [class*="__option"]:not([class*="__options"]), '
+_OPTION_SEL = ('[role=option], [role=listbox] li, [id*="-option-"], [class*="__option"]:not([class*="__options"]), .pac-item, '
                '[class*="autocomplete-option"], [class*="autocomplete-default-option"], '
                'spl-select-option, spl-dropdown-item, [class*="dropdown-item"]')
 _OPTIONS_JS = r"""
@@ -391,6 +419,9 @@ _OPTIONS_JS = r"""
 }).filter(o => o.vis && o.t && !o.chip).filter((o, k, all) => !all.some((p, j) => j < k && p.t === o.t))
 """.replace("__OPTION_SEL__", _OPTION_SEL)
 _OPTIONS_JS = _deep(_OPTIONS_JS)
+# A list's way of saying nothing matched — never an entry to choose.
+_NO_RESULTS = re.compile(r"^\s*no (items|results|matches|options|entries)\b|cannot find|can't find|not found|"
+                         r"fill in manually|no results found|nothing found", re.I)
 
 # The page after a submit click: is the form still there, and what is it saying?
 _AFTER_SUBMIT_JS = r"""
@@ -402,7 +433,7 @@ _AFTER_SUBMIT_JS = r"""
   const fields = [...document.querySelectorAll('input:not([type=hidden]), select, textarea')].filter(vis);
   const submit = [...document.querySelectorAll('button, input[type=submit]')]
     .filter(b => vis(b) && /\b(submit|apply|send)\b/i.test(b.innerText || b.value || ''));
-  const errors = [...document.querySelectorAll('[role=alert], [aria-live=assertive], [aria-live=polite], [class*="error" i], [class*="invalid" i], [aria-invalid=true]')]
+  const errors = [...document.querySelectorAll('[role=alert], [aria-live=assertive], [aria-live=polite], [class*="error" i], [class*="invalid" i], [aria-invalid=true], [data-automation-id="inputAlert"], [data-automation-id="errorHeading"] li')]
     .filter(vis).map(e => (e.innerText || e.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim())
     .filter(t => t && t.length < 200);
   // A submit control that is disabled, marked busy, or showing a spinner is
@@ -472,9 +503,11 @@ _ERRORS_JS = r"""
     return s.display !== 'none' && s.visibility !== 'hidden' && r.width > 0 && r.height > 0; };
   const txt = el => (el.innerText || el.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
   const out = [];
-  for (const e of document.querySelectorAll('[role=alert], [aria-live=assertive], [class*="error" i]:not(input):not(select):not(textarea), [class*="invalid" i]:not(input):not(select):not(textarea)')) {
+  // Workday writes its complaints into inputAlert (beside the field) and
+  // errorHeading (the "Errors Found" panel), with no role and no telling class.
+  for (const e of document.querySelectorAll('[role=alert], [aria-live=assertive], [class*="error" i]:not(input):not(select):not(textarea), [class*="invalid" i]:not(input):not(select):not(textarea), [data-automation-id="inputAlert"], [data-automation-id="errorHeading"] li, [data-automation-id="errorMessage"], [data-automation-id="fieldErrorMessage"]')) {
     if (!vis(e)) continue;
-    const t = txt(e); if (t && t.length < 200) out.push(t);
+    const t = txt(e); if (t && t.length < 240) out.push(t);
   }
   for (const c of document.querySelectorAll('[aria-invalid=true]')) {
     const id = c.dataset && c.dataset.rtId; const msg = c.getAttribute('aria-errormessage');
@@ -485,6 +518,11 @@ _ERRORS_JS = r"""
 }
 """
 _ERRORS_JS = _deep(_ERRORS_JS)
+# What a live region announces that is not a complaint: Workday's "page is
+# loaded" and "résumé.pdf successfully uploaded" both come through role=alert,
+# and either one read as an error cut the wait for a step change short.
+_NOT_AN_ERROR = re.compile(r"page is loaded|successfully|uploaded|upload(ed)? complete|has been (added|attached|saved)|"
+                           r"\bloading\b|please wait|^\s*saved\b|^\s*$", re.I)
 
 _US_STATES = {
     "al": "alabama", "ak": "alaska", "az": "arizona", "ar": "arkansas", "ca": "california", "co": "colorado",
@@ -568,6 +606,49 @@ def _date_text(value: str, fmt_hint: str, typ: str) -> str:
     if "yyyy-mm" in h:
         return f"{y:04d}-{mo:02d}"
     return value
+
+
+def _linkedin_url(value: str) -> str:
+    """A LinkedIn address in the form Workday's validator takes: https,
+    www, the profile path — "linkedin.com/in/x" was refused as invalid."""
+    m = re.search(r"linkedin\.com/(in|pub|company)/([A-Za-z0-9_%.\-]+)", value, re.I)
+    return f"https://www.linkedin.com/{m.group(1).lower()}/{m.group(2)}" if m else value
+
+
+def _value_parts(value: str) -> list[str]:
+    """The pieces of a compound answer, each a true answer on its own:
+    "Computer Science and Mathematics" -> ["Computer Science", "Mathematics"],
+    "Python | Java" -> ["Python", "Java"]. Nothing for a one-piece value."""
+    parts = [p.strip(" .") for p in re.split(r"\s*(?:\band\b|&|/|,|\|)\s*", value or "") if p.strip(" .")]
+    seen: list[str] = []
+    for p in parts:
+        if len(p) >= 2 and p.lower() not in {q.lower() for q in seen}:
+            seen.append(p)
+    return seen if len(seen) > 1 else []
+
+
+# "How did you hear about us" and its kin: a hierarchical picker (Workday's
+# Job Boards -> Indeed, Handshake, …) whose leaf is chosen by preference.
+_HEAR_ABOUT = re.compile(r"\b(hear|heard|find|found|learn|learned)\b.*\babout\b|\bsource\b|referral source", re.I)
+_LEAF_PREFERENCE = (r"^\s*other\b|not listed|none of the above", r"college|university|campus|school",
+                    r"job board|job site|job posting|career site|careers? (page|site|website)",
+                    r"internet|online|web ?site|search engine|google", r"github|simplify|handshake|indeed|linkedin")
+
+
+def _preferred_leaf(texts: list[str], source: bool = False) -> int | None:
+    """Which entry of an opened branch to take when none means the answer:
+    "Other" anywhere; for a source picker, then the entries closest to the
+    truth (the postings come from GitHub job lists), in order of preference."""
+    for k, t in enumerate(texts):
+        if re.search(_LEAF_PREFERENCE[0], t, re.I):
+            return k
+    if not source:
+        return None
+    for pat in _LEAF_PREFERENCE[1:]:
+        for k, t in enumerate(texts):
+            if re.search(pat, t, re.I):
+                return k
+    return None
 
 
 def _installed_channel() -> str | None:
@@ -752,8 +833,12 @@ _COOKIE_JS = """
     let node = b.parentElement, depth = 0;
     while (node && depth < 8) {
       const txt = node.innerText || '';
-      if (txt.length > 2500) break;
-      if (/cookie|consent/i.test(txt)) { b.click(); return t; }
+      // A privacy-agreement modal (Jane Street's, over its Greenhouse form)
+      // carries the whole notice, far more text than a cookie strip; a
+      // dialog is allowed that much, anything else is a page, not a banner.
+      const dialog = node.matches('[role=dialog], [aria-modal="true"], [class*="dialog" i], [class*="modal" i], [class*="consent" i], [class*="privacy" i], [class*="cookie" i]');
+      if (txt.length > (dialog ? 12000 : 2500)) break;
+      if (/cookie|consent|privacy|gdpr|agreement/i.test(txt)) { b.click(); return t; }
       node = node.parentElement; depth++;
     }
   }
@@ -1014,9 +1099,10 @@ class ApplySession:
         """Validation messages the form is showing right now."""
         await self.start()
         try:
-            return await self._doc.evaluate(_ERRORS_JS)
+            found = await self._doc.evaluate(_ERRORS_JS)
         except Exception:
             return []
+        return [e for e in found if not _NOT_AN_ERROR.search(e)]
 
     async def read_posting_text(self, max_chars: int = 15000) -> str:
         """The posting itself, not the whole page.
@@ -1036,6 +1122,7 @@ class ApplySession:
         await self.start()
         fields = await self._doc.evaluate(_FIELD_JS)
         _relabel_workday(fields)
+        _relabel_greenhouse(fields)
         return fields
 
     async def buttons(self) -> list[dict]:
@@ -1250,7 +1337,23 @@ class ApplySession:
     async def fill(self, selector: str, value: str, field: dict | None = None) -> None:
         """Put `value` into one control. `field` is the scanner's record for it,
         used to find the control again if the page re-rendered it and to know
-        what kind of widget it is."""
+        what kind of widget it is. A click that something covers — a cookie
+        strip drawn late, a privacy notice — is tried once more after the
+        banner is cleared, since one such modal once cost a whole form."""
+        try:
+            await self._fill_once(selector, value, field)
+        except Exception as e:
+            text = str(e)
+            if "Timeout" not in text and "intercepts pointer events" not in text:
+                raise
+            await self._dismiss_cookie_banner()
+            try:
+                await self._page.keyboard.press("Escape")
+            except Exception:
+                pass
+            await self._fill_once(selector, value, field)
+
+    async def _fill_once(self, selector: str, value: str, field: dict | None = None) -> None:
         await self.start()
         el = await self._locate(selector, field)
         tag = await el.evaluate("e => e.tagName.toLowerCase()")
@@ -1274,6 +1377,8 @@ class ApplySession:
         fmt_hint = " ".join(str((field or {}).get(k) or "") for k in ("placeholder", "hint", "label"))
         if typ in ("date", "month") or re.search(r"yyyy|mm/", fmt_hint, re.I):
             value = _date_text(value, fmt_hint, typ)
+        if "linkedin.com" in value.lower():
+            value = _linkedin_url(value)
         # The scanner's verdict counts too: Workday's search-selects carry
         # none of the ARIA markers, only their own widget attributes.
         is_combobox = bool(field and field.get("combobox")) or await el.evaluate(
@@ -1286,7 +1391,7 @@ class ApplySession:
                 # a list on click and takes nothing typed: choose from it.
                 await self._pick_listbox(el, value)
                 return
-            await self._pick_combobox(el, value)
+            await self._pick_combobox(el, value, field)
             return
         phone_label = bool(re.search(r"\bphone\b", (field or {}).get("label") or "", re.I)) and not re.search(
             r"extension|\bext\b|code|type|device", (field or {}).get("label") or "", re.I)
@@ -1314,14 +1419,9 @@ class ApplySession:
                 # No stays unticked — that is its answer, not an omission.
                 self._declined.add(selector)
             try:
-                await (el.check() if want else el.uncheck())
+                await (el.check(timeout=4000) if want else el.uncheck(timeout=4000))
             except Exception:
-                # A styled control (Ashby's zero-opacity radios) can refuse a
-                # direct click; its label takes the click instead.
-                await el.evaluate("e => { const l = e.labels && e.labels[0]; (l || e).click(); }")
-                await self._page.wait_for_timeout(200)
-                if (await el.is_checked()) != want:
-                    raise
+                await self._toggle_by_hand(selector, field, want)
         elif typ == "number":
             # A numeric input refuses anything but digits — a phone number
             # typed as "+1 910-336-0632" is rejected outright. A range or a
@@ -1344,6 +1444,30 @@ class ApplySession:
         else:
             await self._type(el, value)
 
+    async def _toggle_by_hand(self, selector: str, field: dict | None, want: bool) -> None:
+        """A styled box that refuses Playwright's click (Ashby's zero-opacity
+        radios, Workday's re-rendering checkboxes): its label, then the input
+        through its own click handler, then a forced click — each followed by
+        a fresh look at the control, since the page may have redrawn it."""
+        for how in ("label", "input", "force"):
+            try:
+                el = await self._locate(selector, field)
+                if how == "label":
+                    await el.evaluate("e => { const l = e.labels && e.labels[0]; (l || e).click(); }")
+                elif how == "input":
+                    await el.evaluate("e => e.click()")
+                else:
+                    await el.click(force=True, timeout=2000)
+            except Exception:
+                continue
+            await self._page.wait_for_timeout(300)
+            try:
+                if (await (await self._locate(selector, field)).is_checked()) == want:
+                    return
+            except Exception:
+                continue
+        raise ValueError(f"the box would not {'tick' if want else 'untick'}")
+
     async def _set_value_js(self, el, value: str) -> None:
         """Set an input's value through the native setter and fire input and
         change, so a React-controlled box takes it without keystrokes."""
@@ -1353,6 +1477,50 @@ class ApplySession:
             "d.set.call(e, v); e.dispatchEvent(new Event('input', {bubbles: true})); "
             "e.dispatchEvent(new Event('change', {bubbles: true})); }", value)  # no focus/blur: Workday's month box clears on blur
         await self._page.wait_for_timeout(200)
+
+    async def _type_date_section(self, el, value: str, aid: str) -> None:
+        """Workday's date boxes (dateSectionMonth-input, …Year-input) are
+        spinbuttons that build their value from keystrokes: a value set from
+        script showed "05/2026" on the page while the form said the field was
+        empty. The box sits off-screen behind its display, so it is focused
+        from script and the digits are typed; the setter is the fallback."""
+        digits = re.sub(r"\D", "", value or "")
+        if "Year" in aid:
+            digits = digits[-4:]
+        elif digits:
+            digits = digits.zfill(2)[-2:]
+        if not digits:
+            return
+        page = self._page
+        try:
+            await el.evaluate("e => { e.focus(); try { e.select(); } catch (x) {} }")
+            if not await el.evaluate("e => document.activeElement === e"):
+                # The month box would not take focus from script while its
+                # year box did: focus a sibling box of the same date and step
+                # back to this one with Shift+Tab, as a person's keyboard would.
+                await el.evaluate("""e => {
+                  const wrap = e.closest('[data-automation-id="dateInputWrapper"], [data-automation-id*="dateInput"]') || e.parentElement.parentElement;
+                  const boxes = [...wrap.querySelectorAll('input[data-automation-id^="dateSection"]')];
+                  const other = boxes.find(b => b !== e);
+                  if (other) other.focus();
+                }""")
+                for _ in range(3):
+                    if await el.evaluate("e => document.activeElement === e"):
+                        break
+                    await page.keyboard.press("Shift+Tab")
+                    await page.wait_for_timeout(120)
+                    if await el.evaluate("e => document.activeElement === e"):
+                        break
+                    await page.keyboard.press("Tab")
+                    await page.wait_for_timeout(120)
+            await page.keyboard.type(digits, delay=random.randint(40, 80))
+            await page.wait_for_timeout(250)
+            shown = await el.evaluate("e => e.value || e.getAttribute('aria-valuenow') || ''")
+            if str(shown).lstrip("0") == digits.lstrip("0") and shown:
+                return
+        except Exception:
+            pass
+        await self._set_value_js(el, digits)
 
     async def _type(self, el, value: str) -> None:
         """Enter text the way a person does — the pointer goes to the field,
@@ -1371,7 +1539,7 @@ class ApplySession:
         except Exception:
             aid = ""
         if re.search(r"dateSection(Month|Day|Year)-input", aid or ""):
-            await self._set_value_js(el, value)
+            await self._type_date_section(el, value, aid)
             return
         try:
             await el.scroll_into_view_if_needed(timeout=3000)
@@ -1445,10 +1613,22 @@ class ApplySession:
 
         deadline = time.monotonic() + wait_ms / 1000
         while True:
-            found = await self._doc.evaluate(_OPTIONS_JS)
-            if found or time.monotonic() > deadline:
+            raw = await self._doc.evaluate(_OPTIONS_JS)
+            found = [o for o in raw if not _NO_RESULTS.search(o["t"])]
+            # "No Items." is an answer too: the list has spoken, no need to wait it out.
+            if found or (raw and not found) or time.monotonic() > deadline:
                 return found[: limit + 1]
             await self._page.wait_for_timeout(250)
+
+    async def _searches_on_enter(self, el) -> bool:
+        """Workday's search pickers (its School or University field) run the
+        search only when Enter is pressed — "start typing the name and press
+        Enter", the page says — and show "No Items." until then."""
+        try:
+            return bool(await el.evaluate(
+                "e => e.getAttribute('enterkeyhint') === 'search' || e.getAttribute('data-uxi-widget-type') === 'selectinput'"))
+        except Exception:
+            return False
 
     @staticmethod
     def _match_option(value: str, found: list[dict], loose_prefix: str | None = None) -> int | None:
@@ -1470,6 +1650,12 @@ class ApplySession:
             want = _place_tokens(value)
             if want:
                 same = [k for k, o in enumerate(found) if want <= _place_tokens(o["t"])]
+                if len(same) > 1 and len(want) >= 2:
+                    # "Durham, NC, US" over "Durham County, NC, US": the entry
+                    # that adds the fewest words of its own, when one does.
+                    extra = sorted(same, key=lambda k: len(_place_tokens(found[k]["t"]) - want))
+                    if len(_place_tokens(found[extra[0]]["t"]) - want) < len(_place_tokens(found[extra[1]]["t"]) - want):
+                        same = [extra[0]]
                 i = same[0] if len(same) == 1 else None
         if i is None and loose_prefix:
             # The one entry starting with the typed word — and every other
@@ -1507,7 +1693,73 @@ class ApplySession:
             i = closest_option(value, [o["t"] for o in found])
         return i
 
-    async def _pick_combobox(self, el, value: str) -> None:
+    async def _pick_combobox(self, el, value: str, field: dict | None = None) -> None:
+        """Choose `value` in a search-as-you-type picker — the whole value,
+        then, when nothing means it, each part of a compound one ("Computer
+        Science" out of "Computer Science and Mathematics"). A multi-select
+        (Workday's Skills) takes every part that has an entry."""
+        source = bool(_HEAR_ABOUT.search((field or {}).get("label") or ""))
+        try:
+            multi = await el.evaluate("e => !!e.getAttribute('data-uxi-multiselect-id') || e.getAttribute('aria-multiselectable') === 'true'")
+        except Exception:
+            multi = False
+        # A multi-select takes one entry per part: "Python | Java" from the
+        # plan, "Java, SQL, Git" from a bank line — never one chip of them all.
+        pipes = [p.strip() for p in re.split(r"\s*\|\s*" if "|" in value else r"\s*,\s*", value) if p.strip()]
+        if multi and len(pipes) > 1:
+            taken, missed = 0, []
+            for part in pipes:
+                try:
+                    await self._pick_combobox_one(el, part, source)
+                    taken += 1
+                except ValueError:
+                    missed.append(part)
+            if not taken:
+                raise ValueError(f"no option matches any of {missed[:6]!r} in this picker")
+            return
+        label = (field or {}).get("label") or ""
+        try:
+            await self._pick_combobox_one(el, value, source)
+            return
+        except ValueError as whole:
+            for part in _value_parts(value):
+                try:
+                    await self._pick_combobox_one(el, part, source)
+                    return
+                except ValueError:
+                    continue
+            # A search picker with no entry for the true answer (an employer
+            # its index never heard of): the picker's own "Other" or "Not
+            # listed" is the honest entry, when it offers one. Never for a
+            # place, and never for "how did you hear", which choose their own.
+            searchable = bool((field or {}).get("search")) or await self._searches_on_enter(el)
+            if searchable and not source and not re.search(r"\b(city|location|country|state)\b", label, re.I):
+                for other in ("Other", "Not listed"):
+                    try:
+                        await el.click()
+                        await el.fill("")
+                        await el.press_sequentially(other, delay=25)
+                        found = await self._visible_options(wait_ms=1500)
+                        if not found and await self._searches_on_enter(el):
+                            await page.keyboard.press("Enter")
+                            await page.wait_for_timeout(1200)
+                            found = await self._visible_options(wait_ms=2000)
+                        k = next((i for i, o in enumerate(found) if re.fullmatch(r"(other|others|not (in )?list(ed)?|not applicable|n/a|school not in list)[.\s]*", o["t"], re.I)), None)
+                        if k is not None:
+                            await self._doc.locator(f'[data-rt-opt="{found[k]["id"]}"]').first.click()
+                            await page.wait_for_timeout(400)
+                            if await el.evaluate(_COMBO_VALUE_JS):
+                                await self._close_menu(el)
+                                return
+                    except Exception:
+                        continue
+                try:
+                    await page.keyboard.press("Escape")
+                except Exception:
+                    pass
+            raise whole
+
+    async def _pick_combobox_one(self, el, value: str, source: bool = False) -> None:
         """Choose `value` in a search-as-you-type picker (Ashby's autocomplete,
         Greenhouse's react-select). Type it, read the list that appears, click
         the entry that means it; if the full text filters everything out, try
@@ -1528,6 +1780,11 @@ class ApplySession:
             if typed:
                 await el.press_sequentially(typed, delay=30)
             found = await self._visible_options()
+            if not found and typed and await self._searches_on_enter(el):
+                # The list stays empty until the search is run.
+                await page.keyboard.press("Enter")
+                await page.wait_for_timeout(1500)
+                found = await self._visible_options(wait_ms=2500)
             if not found or (attempt == 2 and len(found) > 60):
                 continue
             offered = offered or [o["t"] for o in found[:8]]
@@ -1564,7 +1821,9 @@ class ApplySession:
             if leaves and leaf_texts != before_texts and not any(l == wanted for l in leaf_texts):
                 j = self._match_option(value, leaves)
                 if j is None:
-                    j = next((k for k, o in enumerate(leaves) if re.fullmatch(r"other|others|not listed", o["t"], re.I)), 0)
+                    j = _preferred_leaf(leaf_texts, source)
+                if j is None:
+                    j = 0
                 leaf = self._doc.locator(f'[data-rt-opt="{leaves[j]["id"]}"]').first
                 try:
                     live = " ".join((await leaf.inner_text()).split())
@@ -1637,6 +1896,10 @@ class ApplySession:
                 await el.fill("")
                 await el.press_sequentially(t[:60], delay=20)
                 found = await self._visible_options(limit, wait_ms=1500)
+                if not found and await self._searches_on_enter(el):
+                    await page.keyboard.press("Enter")
+                    await page.wait_for_timeout(1500)
+                    found = await self._visible_options(limit, wait_ms=2500)
             except Exception:
                 found = []
             # "Cannot find your city? Click here to fill in manually", "No
@@ -1683,6 +1946,10 @@ class ApplySession:
         await self.start()
         page = self._page
         before = page.url
+        # A privacy or cookie modal that arrived since the page was settled
+        # (Microsoft's careers site raises one over the form) would take the
+        # click instead of the button.
+        await self._dismiss_cookie_banner()
         button = self._doc.locator(selector).first
         await button.scroll_into_view_if_needed()
         box = await button.bounding_box()
@@ -1692,7 +1959,17 @@ class ApplySession:
                                   box["y"] + box["height"] * random.uniform(0.3, 0.7),
                                   steps=random.randint(12, 25))
             await page.wait_for_timeout(random.randint(200, 500))
-        await button.click()
+        try:
+            await button.click(timeout=8000)
+        except Exception as first:
+            # Something sits over the button. Clear a banner and try once
+            # more; a control that still cannot be reached is a review item,
+            # never an exception out of the batch.
+            await self._dismiss_cookie_banner()
+            try:
+                await button.click(force=True, timeout=5000)
+            except Exception:
+                return False, f"the submit control could not be clicked — something covers it: {str(first).splitlines()[0][:160]}"
         import time
 
         deadline = time.monotonic() + SUBMIT_WAIT_S
@@ -1721,6 +1998,28 @@ class ApplySession:
             if time.monotonic() > deadline:
                 return False, (f"the submission was still in progress after {SUBMIT_WAIT_S} seconds — it may yet "
                                "have gone through; check your email before retrying")
+
+    async def remove_stale_uploads(self, keep: Path) -> int:
+        """Workday attaches the résumé from the account's last application
+        to a new one. Called before this posting's first upload, so every
+        PDF the page already lists is that carry-over — an earlier résumé,
+        whatever it was named — and is taken off, so one résumé goes."""
+        try:
+            buttons = await self.buttons()
+        except Exception:
+            return 0
+        removed = 0
+        for b in buttons:
+            m = re.match(r"^\s*(?:delete|remove)\s+(.+\.pdf)\s*$", b.get("text") or "", re.I)
+            if not m:
+                continue
+            try:
+                await self._doc.locator(b["selector"]).first.click(timeout=3000)
+                await self._page.wait_for_timeout(700)
+                removed += 1
+            except Exception:
+                continue
+        return removed
 
     async def upload(self, selector: str, file_path: str | Path, label: str = "") -> None:
         await self._upload_impl(selector, file_path, label)
@@ -1974,7 +2273,9 @@ _GONE_PHRASES = ("page you are looking for doesn't exist", "page you're looking 
                  "position is no longer available", "posting is no longer available", "no longer accepting applications",
                  "this job has been closed", "this position has been filled", "job has expired", "posting has expired",
                  "job you are looking for is no longer", "requisition is closed", "this job is not available",
-                 "job not found", "job you requested was not found", "this job is no longer open", "job posting not found")
+                 "job not found", "job you requested was not found", "this job is no longer open", "job posting not found",
+                 "does not exist or is no longer open", "is no longer open", "requested job could not be found",
+                 "job could not be found", "job you were looking for", "position has been closed", "no longer accepting")
 _LOGIN_PATH = re.compile(r"/(signin|sign-in|login|log-in|auth|register|signup|sign-up|create-?account)(/|$)", re.I)
 _SIGNIN_TEXT = re.compile(r"\b(sign in|log ?in|create (an )?account)\b", re.I)
 
@@ -1985,6 +2286,30 @@ _WD_ENTRY = re.compile(r"^(workExperience|education|language|socialNetworkAccoun
 # A date that belongs to no entry — the self-identification form's "Date"
 # (selfIdentifiedDisabilityData--dateSignedOn-dateSectionMonth-input).
 _WD_DATE = re.compile(r"^(?:[\w]+--)?(\w*?)-?dateSection(Month|Day|Year)-input$")
+
+
+# Greenhouse's job-boards form: an employment entry is company-name-0,
+# title-0, start-date-month-0 … current-role-0 (a checkbox the scanner can
+# only name after the heading above it), an education entry school--0,
+# degree--0, discipline--0. The page puts no heading over either, so the
+# scanner files them under whatever came before ("Phone"), and the answer
+# bank's education dates then answer the job's Start/End boxes.
+_GH_EMP = re.compile(r"^(company-name|title|start-date-month|start-date-year|end-date-month|end-date-year|current-role)-(\d+)(?:_\d+)?$")
+_GH_EDU = re.compile(r"^(school|degree|discipline|start-date-month|start-date-year|end-date-month|end-date-year)--(\d+)$")
+
+
+def _relabel_greenhouse(fields: list[dict]) -> None:
+    for f in fields:
+        did = f.get("dom_id") or ""
+        m = _GH_EMP.match(did)
+        if m:
+            f["section"] = f"Work Experience {int(m.group(2)) + 1}"
+            if m.group(1) == "current-role":
+                f["label"] = "I currently work here"
+            continue
+        m = _GH_EDU.match(did)
+        if m:
+            f["section"] = f"Education {int(m.group(2)) + 1}"
 
 
 def _relabel_workday(fields: list[dict]) -> None:
@@ -2016,7 +2341,9 @@ def _relabel_workday(fields: list[dict]) -> None:
         entry = f"{m.group(1)}-{m.group(2)}"
         part, seg = m.group(3), m.group(4)
         if seg:
-            which = "From date" if part.startswith("start") else "To date" if part.startswith("end") else part
+            which = ("From date" if part.startswith("start") else "To date" if part.startswith("end")
+                     else "First year attended" if part.startswith("firstYear")
+                     else "Last year attended (or expected)" if part.startswith("lastYear") else part)
             f["label"] = f"{which} — {seg} ({'MM' if seg == 'Month' else 'YYYY' if seg == 'Year' else 'DD'})" + ("*" if part.startswith("start") else "")
             f["hint"] = "MM" if seg == "Month" else "YYYY" if seg == "Year" else "DD"
         elif part == "currentlyWorkHere":
@@ -2048,14 +2375,34 @@ def _looks_like_application(fields: list[dict]) -> bool:
     return bool((has_name and has_email) or (len(fields) >= 6 and app_words))
 
 
-def blocker_verdict(fields: list[dict], text: str, url: str = "", after_apply: bool = False) -> str | None:
+def _decorative(field: dict) -> bool:
+    """A control that is part of the page's chrome, not of any form: a
+    language or settings menu (Workday's languageSelectorButton read as a
+    listbox made its sign-in wall look like a one-field form), or a progress
+    bar's hidden text box."""
+    where = " ".join(((field.get("dom_id") or ""), (field.get("label") or "")))
+    if field.get("type") in ("listbox", "select-one", "select") and re.search(r"language|locale|settings", where, re.I):
+        return True
+    return bool(re.match(r"^\s*current step \d", field.get("label") or "", re.I))
+
+
+_APPLIED_PHRASES = ("you've already applied", "you have already applied", "already applied for this job",
+                    "already applied to this job", "you already applied")
+
+
+def blocker_verdict(fields: list[dict], text: str, url: str = "", after_apply: bool = False,
+                    controls: list[str] | None = None) -> str | None:
     """The page's kind, from its controls and visible text (see detect_blocker).
     `after_apply` means the Apply control has been clicked: whatever fields
     are here are the form's own first step, and a page offering only
-    sign-in routes is the portal's account wall."""
+    sign-in routes is the portal's account wall. `controls` are the texts
+    of the page's buttons and links, when known."""
     text = text.lower()
+    fields = [f for f in fields if not _decorative(f)]
     if any(p in text for p in _BLOCK_PHRASES):
         return "bot_check"
+    if re.search(r"[?&]notfound=1\b", (url or "").lower()):
+        return "posting_gone"
     # An identity provider's sign-in page — Google's careers site sends
     # applicants to accounts.google.com — shows one field at a time, so the
     # password test below never fires; the address says what it is.
@@ -2068,7 +2415,18 @@ def blocker_verdict(fields: list[dict], text: str, url: str = "", after_apply: b
         return "bot_check"
     if any(f.get("type") == "password" for f in fields) and not any(f.get("type") == "file" for f in fields):
         return "login_required"
+    if controls is not None and after_apply and len(fields) <= 3 and not _looks_like_application(fields):
+        # Nothing but sign-in routes to press (Workday's "Sign in with
+        # Google / LinkedIn / email" wall), and no way on without one.
+        signin = [c for c in controls if _SIGNIN_TEXT.search(c)]
+        onward = [c for c in controls if re.match(r"^\s*(next|continue|save (and|&) continue|apply|submit)\b", c, re.I)]
+        if signin and not onward:
+            return "login_required"
     if not fields or (not after_apply and not _looks_like_application(fields)):
+        if any(p in text for p in _APPLIED_PHRASES):
+            # Workday, signed in, on a job already sent from this account:
+            # "You've already applied for this job. View My Applications".
+            return "already_applied"
         if any(p in text for p in _GONE_PHRASES):
             return "posting_gone"
         if after_apply and len(fields) <= 3 and _SIGNIN_TEXT.search(text):
@@ -2095,4 +2453,8 @@ async def detect_blocker(session: "ApplySession", after_apply: bool = False) -> 
         url = session._page.url
     except Exception:
         url = ""
-    return blocker_verdict(fields, text, url, after_apply)
+    try:
+        controls = [b.get("text") or "" for b in await session.buttons()]
+    except Exception:
+        controls = None
+    return blocker_verdict(fields, text, url, after_apply, controls)
