@@ -249,7 +249,14 @@ async def _watch(args: argparse.Namespace) -> int:
         print(line if not o.detail else f"{line}  — {o.detail}", file=sys.stderr, flush=True)
 
     while True:
-        listings, changed = refresh(out, args.source)
+        try:
+            listings, changed = refresh(out, args.source)
+        except OSError as e:
+            # No cache and no network: a worker that dies here takes the
+            # supervisor's restart to come back. Wait for the network instead.
+            print(f"{tag}[{time.strftime('%H:%M')}] listings unavailable ({str(e)[:80]}); trying again in 2 min", file=sys.stderr, flush=True)
+            time.sleep(120)
+            continue
         state = RunState.load(out / "batch-state.json")
         stamp = time.strftime("%H:%M")
         if fresh:

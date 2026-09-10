@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -315,7 +316,17 @@ def refresh(out_dir: str | Path, url: str = DEFAULT_URL,
 def _refresh_locked(out_dir: Path, url: str, table_sources: list[tuple[str, str]] | None) -> tuple[list[dict], bool]:
     meta, cache = load_cached(out_dir)
     cached_simplify = [l for l in (cache or []) if not str(l.get("id", "")).startswith("gh:")]
-    listings, etag = fetch(url, etag=meta.get("etag") if cache is not None else None)
+    try:
+        listings, etag = fetch(url, etag=meta.get("etag") if cache is not None else None)
+    except OSError as e:
+        # A DNS blip or a dropped connection (this Mac resolves nothing for
+        # a few seconds now and then, and eight workers all fetch at once):
+        # the cached list stands until the next pass. With no cache at all
+        # there is nothing to stand on, and the error is the caller's.
+        if cache is None:
+            raise
+        print(f"  listings fetch failed ({str(e)[:80]}); using the cached copy", file=sys.stderr, flush=True)
+        listings, etag = None, meta.get("etag")
     changed = listings is not None
     if listings is None:
         listings = cached_simplify

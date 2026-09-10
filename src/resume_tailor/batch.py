@@ -1345,6 +1345,10 @@ async def _fill_pass(session: ApplySession, profile: Profile, fields: list[dict]
                 did = g.get("dom_id") or ""
                 if re.search(r"end[-_]?date", did, re.I) and re.search(rf"(?<!\d){n}(?!\d)", did):
                     gone.add(g["id"])
+                    # Greenhouse keeps the boxes in the DOM, hidden: the
+                    # required-empty check and the repair pass must not
+                    # try to fill what the page no longer asks for.
+                    session._declined.add(g["selector"])
     fields = [f for f in fields if f["id"] not in gone]
 
     # Single controls first — text, pickers, yes/no toggles — and the option
@@ -1995,6 +1999,7 @@ async def _process_one(session: ApplySession, profile: Profile, entry: QueueEntr
     # the site rejected leaves the form on the page with its errors showing,
     # and that is a review item — recorded as such, with the screenshot.
     _now("submitting", entry, url=apply_url)
+    submit_started = time.time()
     submitted, why = await session.submit(submit["selector"])
     rounds = 0
     while not submitted and "still on the page" in why and rounds < 3:
@@ -2032,6 +2037,33 @@ async def _process_one(session: ApplySession, profile: Profile, entry: QueueEntr
         except Exception as e:
             why += f"; repair round {rounds} failed: {_brief(e)}"
             break
+    if not submitted and mailbox.configured():
+        # Greenhouse (Coinbase) e-mails a security code after Submit and
+        # holds the application until it is typed in — the "still in
+        # progress" it looked like. Read the code from the inbox and finish,
+        # as a person would.
+        try:
+            boxes = await _code_fields(session)
+        except Exception:
+            boxes = []
+        if boxes:
+            _now("waiting for the security-code e-mail", entry, url=apply_url)
+            found = await mailbox.fetch_secret_async(submit_started, [entry.company_hint, "security code", "code"], timeout_s=180)
+            if found and found.get("code") and await _enter_code(session, found["code"]):
+                await session._page.wait_for_timeout(2500)
+                try:
+                    fields_after = await session.describe_form()
+                    text_after = (await session.read_text()).lower()
+                    still_asking = bool(await _code_fields(session))
+                except Exception:
+                    fields_after, text_after, still_asking = [], "", True
+                if not still_asking and (not _looks_like_application(fields_after) or re.search(
+                        r"thank you for applying|application (has been |was )?(submitted|received)|we'?ve received your application", text_after)):
+                    submitted, why = True, "submitted — verified with the e-mailed security code"
+                else:
+                    why += "; the e-mailed security code was entered but the page still shows the form"
+            else:
+                why += "; the page asked for an e-mailed security code and none arrived in time"
     post_shot = await session.screenshot(shots_dir / f"{_safe(entry.id)}-post-submit.png")
     o.screenshot = str(post_shot)
     if not submitted:
