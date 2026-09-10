@@ -287,13 +287,53 @@ _FIELD_JS = r"""
       maxlength: el.maxLength > 0 ? el.maxLength : undefined,
     };
     if (o.tag === 'select') o.options = [...el.options].map(op => op.label || op.text).filter(Boolean);
-    if (isOption(el)) { o.checked = el.checked; o.option_label = ownLabel(el) || el.value; o.group = el.name || ''; }
+    if (isOption(el)) {
+      o.checked = el.checked; o.option_label = ownLabel(el) || el.value; o.group = el.name || '';
+      // Workday's checkbox groups (disabilityStatus-CheckboxGroup, an
+      // ethnicity list) give their boxes no name: the container is the
+      // group, and the question above it names every box. Read one by one
+      // they were three required boxes, and the first — "Yes, I have a
+      // disability" — got the acknowledgement-box rule.
+      const grp = el.closest('[data-automation-id$="CheckboxGroup"], [data-automation-id$="-checkboxGroup"], [role=group][data-automation-id]');
+      if (grp && !o.group) {
+        o.group = grp.getAttribute('data-automation-id') || 'group';
+        let heading = ''; let n = grp;
+        for (let d = 0; d < 4 && n && !heading; d++) {
+          let sib = n.previousElementSibling;
+          while (sib && !heading) {
+            const t = txt(sib);
+            if (t && t.length <= MAXQ && !sib.querySelector('input, select, textarea') && !placeholderish(t)) heading = t;
+            sib = sib.previousElementSibling;
+          }
+          n = n.parentElement;
+        }
+        o.label = heading || sectionOf(el) || o.label;
+      }
+    }
     // "Autofill my application" / "Autofill from resume" uploaders (Greenhouse,
     // Ashby) parse a résumé into the other fields; they are a convenience, never
     // a required field, whatever asterisk the page header lends them.
     if (type === 'file' && /autofill/i.test(q + ' ' + (o.hint || ''))) o.required = false;
     return o;
   });
+  // An option whose label is the whole group's text — Lever wraps its EEO
+  // radios so the first one's <label> holds every option and description,
+  // "Decline to self-identify" included — takes its own value instead, or
+  // the first line of that text: a decline rule must not match the whole
+  // list and land on the first entry.
+  const byGroup = {};
+  for (const o of out) if (o.group && (o.type === 'radio' || o.type === 'checkbox')) (byGroup[o.group] = byGroup[o.group] || []).push(o);
+  for (const g of Object.values(byGroup)) {
+    if (g.length < 2) continue;
+    for (const o of g) {
+      const mine = (o.option_label || '').toLowerCase();
+      const swallowed = g.some(p => p !== o && p.option_label && p.option_label.length >= 4 && mine.includes(p.option_label.toLowerCase()));
+      if (!swallowed) continue;
+      const el = document.querySelector(`[data-rt-id="${o.id}"]`);
+      const v = el ? (el.value || '') : '';
+      o.option_label = (v && !/^(on|1|true|yes|no)$/i.test(v)) ? v : (o.option_label.split(/\s{2,}|\n/)[0] || o.option_label).slice(0, 80);
+    }
+  }
   // Rich-text editors: a contenteditable box standing in for a textarea (some
   // cover-letter and "additional information" fields). Typed into, not filled.
   // Controls already reported by this scan (a tagged id from an earlier scan is not a reason to skip).
@@ -1582,8 +1622,14 @@ class ApplySession:
         """A custom dropdown — a button that opens a list — chosen from by
         opening it and clicking the entry that means `value`."""
         page = self._page
-        await el.scroll_into_view_if_needed()
-        await el.click()
+        try:
+            await el.scroll_into_view_if_needed()
+            await el.click(timeout=5000)
+        except Exception:
+            # Under a sticky footer (Workday's Back/Next bar covers the Degree
+            # list on a short page): centre it and click through.
+            await el.evaluate("e => e.scrollIntoView({block: 'center'})")
+            await el.click(force=True, timeout=5000)
         found = await self._visible_options()
         i = self._match_option(value, found) if found else None
         if i is None:
@@ -2254,6 +2300,10 @@ class ApplySession:
 # but a false skip costs one job, and a missed one means the run stalls on a
 # page it cannot actually complete. Either way, this never attempts to solve
 # what it finds; it names it and moves on.
+_CHALLENGE_JS = r"""
+() => [...document.querySelectorAll('iframe[src*="hcaptcha.com"], iframe[src*="recaptcha"], iframe[src*="arkoselabs"], iframe[src*="funcaptcha"], iframe[title*="challenge" i], iframe[title*="captcha" i]')]
+  .some(f => { const r = f.getBoundingClientRect(); const s = getComputedStyle(f); return r.width > 200 && r.height > 200 && s.visibility !== 'hidden' && s.display !== 'none'; })
+"""
 _BLOCK_PHRASES = (
     "verify you are human", "i'm not a robot", "unusual traffic",
     "access denied", "are you a robot", "checking your browser",
@@ -2457,4 +2507,12 @@ async def detect_blocker(session: "ApplySession", after_apply: bool = False) -> 
         controls = [b.get("text") or "" for b in await session.buttons()]
     except Exception:
         controls = None
+    try:
+        # A challenge widget on show — hCaptcha's puzzle over Oracle's
+        # create-profile step, a reCAPTCHA image grid — is a wall whatever
+        # the page's own text says.
+        if await session._page.evaluate(_CHALLENGE_JS):
+            return "bot_check"
+    except Exception:
+        pass
     return blocker_verdict(fields, text, url, after_apply, controls)

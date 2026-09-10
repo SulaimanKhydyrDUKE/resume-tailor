@@ -26,12 +26,19 @@ _KINDS = (
     ("bamboohr.com", "bamboohr"),
     ("rippling.com", "rippling"),
     ("workatastartup.com", "workatastartup"),  # Y Combinator's board: apply with a YC account and profile
+    ("lifeattiktok.com", "tiktok"),            # TikTok / ByteDance: a sign-in before any form
+    ("jobs.bytedance.com", "tiktok"),
+    ("eyglobal.yello.co", "yello"),            # EY's Yello portal
+    ("higher.gs.com", "gs"),                   # Goldman Sachs
+    ("jobs.apple.com", "apple"),
+    ("careers.fiserv.com", "fiserv"),
+    ("apply.deloitte.com", "deloitte"),
 )
 
 # Systems that gate every application behind a per-site account. The runner
 # will reach them, hit the login wall, and log needs_login — correct, but each
 # one is a job that needs you to log in once first, so they're sorted last.
-NEEDS_ACCOUNT = {"workday", "icims", "oracle", "taleo", "successfactors", "workatastartup"}
+NEEDS_ACCOUNT = {"workday", "icims", "oracle", "taleo", "successfactors", "workatastartup", "tiktok", "yello", "gs", "apple", "fiserv", "deloitte"}
 
 # Systems whose forms this tool fills without help.
 DIRECT_FORM = {"greenhouse", "lever", "ashby", "workable", "bamboohr", "rippling"}

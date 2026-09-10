@@ -71,7 +71,10 @@ _ACK_OPTION = re.compile(r"^\s*(yes|i understand|understood|i acknowledge|acknow
 # A statement put to the applicant as a required field is an acknowledgement
 # whatever it says: "We will only consider you for one role at a time…"
 # (Optiver), "Reminder that you can only apply for one role" (HRT).
-_CONSENT_WORDS = re.compile(r"\b(certify|agree|confirm|accura|consent|acknowledge|terms|policy|code of conduct|i understand|"
+_CONFERENCE = re.compile(r"conference|career fair|affiliations? with the (below|following) groups", re.I)
+_SOCIO = re.compile(r"household earner|free school meals|highest level of education completed by|parents?'? (highest )?(level of )?education|socio-?economic|first.?generation|primary caregiver", re.I)
+_LANG_SKILL = re.compile(r"language skills in|proficiency in (reading|writing|speaking)|indicate your language|skills in reading, written and spoken", re.I)
+_CONSENT_WORDS = re.compile(r"\b(certify|agree|confirm|accura|consent|acknowledge|terms|policy|code of conduct|i understand|scheduling tool|"
                             r"please note|reminder that|we will only consider|first preference|one (role|position|application)s? at a time)\b", re.I)
 # "How did you hear about us?" — and not "if you were referred, name the
 # person", which is a different question with a factual answer.
@@ -582,10 +585,13 @@ def _autofill_boilerplate(label: str, field: dict, options: list[str] | None = N
         # The same date split into Workday's three boxes.
         part = m.group(3).lower()
         return datetime.now().strftime("%m" if part == "month" else "%d" if part == "day" else "%Y")
-    if field.get("type") == "checkbox" and not opts_now and field.get("required") and "?" not in label and not _NO_BANK.search(label):
+    if (field.get("type") == "checkbox" and not opts_now and field.get("required") and "?" not in label and not _NO_BANK.search(label)
+            and not _SELF_ID.search(" ".join((label, field.get("option_label") or "", field.get("section") or "")))):
         # A required lone checkbox under a statement — "Your application will
         # be reviewed for one position at a time" — is an acknowledgement box,
         # whatever words it uses. Nobody puts a real question behind one.
+        # Never a box on a self-identification form: "Yes, I have a
+        # disability" is a claim about the candidate, not an acknowledgement.
         return "yes"
     if _CONSENT_WORDS.search(label):
         opts = opts_now
@@ -603,6 +609,24 @@ def _autofill_boilerplate(label: str, field: dict, options: list[str] | None = N
         # one of the boxes below"): the decline option, as the bank says for EEO.
         for opt in opts_now:
             if any(w in opt.lower() for w in _DECLINE_WORDS):
+                return opt
+    if _CONFERENCE.search(label):
+        # "Indicate your planned attendance at the listed conferences": none.
+        for opt in opts_now:
+            if re.search(r"\b(none|not attending|will not|no plans?|n/?a|not planning|none of the above)\b", opt, re.I):
+                return opt
+        if not opts_now and field.get("type") in ("text", "textarea", ""):
+            return "None"
+    if opts_now and _SOCIO.search(label):
+        # Socio-economic background (parents' education, household earner,
+        # free school meals): voluntary, and the profile does not hold it.
+        for opt in opts_now:
+            if any(w in opt.lower() for w in _DECLINE_WORDS) or re.search(r"don'?t know|do not know|not sure|unknown", opt, re.I):
+                return opt
+    if opts_now and _LANG_SKILL.search(label) and not re.search(r"\benglish\b", label, re.I):
+        # Reading/writing/speaking skill in a language the record does not list.
+        for opt in opts_now:
+            if re.search(r"^\s*(none|no (knowledge|proficiency|ability|skills?)|not (applicable|proficient)|n/?a|0)\b", opt, re.I):
                 return opt
     if field.get("required") and opts_now and "?" not in label and all(_ACK_OPTION.match(o) for o in opts_now if o.strip()):
         # A statement to acknowledge ("Reminder: you may apply for one role
@@ -1763,6 +1787,13 @@ async def _process_one(session: ApplySession, profile: Profile, entry: QueueEntr
             # not a posting without a form: it takes the network
             # wait-and-retry, and does not use up a review attempt.
             o.status, o.detail = "error", "could not load the application form: the page came up blank or as a browser error"
+            return o
+        if ats.host_kind(entry.apply_url or entry.url) in ats.NEEDS_ACCOUNT:
+            # A portal that shows its form only to an account holder (TikTok,
+            # EY's Yello, Goldman, Apple): a login to do once, not a review.
+            where = _page_url(session) or entry.apply_url
+            o.status = "needs_login"
+            o.detail = f"this site shows its form only to an account holder — log in once in the tool's browser and rerun: {where}"
             return o
         o.status, o.detail = "needs_review", "no application form was found on this page"
         return o

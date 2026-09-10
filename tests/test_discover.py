@@ -84,7 +84,8 @@ check("ashby -> /application", ats.apply_url_for("https://jobs.ashbyhq.com/co/xy
 check("greenhouse unchanged", ats.apply_url_for("https://job-boards.greenhouse.io/acme/jobs/1") == "https://job-boards.greenhouse.io/acme/jobs/1")
 check("workday is account-gated", ats.host_kind("https://bah.wd1.myworkdayjobs.com/x") in ats.NEEDS_ACCOUNT)
 check("work at a startup is account-gated", ats.host_kind("https://www.workatastartup.com/jobs/95003") in ats.NEEDS_ACCOUNT)
-check("tiktok careers is 'other'", ats.host_kind("https://lifeattiktok.com/search/123") == "other")
+check("tiktok careers is account-gated", ats.host_kind("https://lifeattiktok.com/search/123") in ats.NEEDS_ACCOUNT)
+check("a plain careers site is 'other'", ats.host_kind("https://careers.example.com/jobs/123") == "other")
 
 # --- select: dedup, company rule, ordering, limit ----------------------------
 with tempfile.TemporaryDirectory() as d:
@@ -98,7 +99,7 @@ with tempfile.TemporaryDirectory() as d:
         L(id="wd", company_name="Booz", url="https://bah.wd1.myworkdayjobs.com/x", date_posted=900),        # account-gated, newest
         L(id="gh-old", company_name="Acme", date_posted=100),                                                # form
         L(id="gh-new", company_name="Beta", url="https://job-boards.greenhouse.io/beta/jobs/2", date_posted=500),  # form, newer
-        L(id="tt", company_name="TikTok", url="https://lifeattiktok.com/search/1", date_posted=700),          # other
+        L(id="tt", company_name="Tock", url="https://careers.tock.example/jobs/1", date_posted=700),          # other
         L(id="done-1", company_name="Done Co", url="https://jobs.lever.co/doneco/1"),                                                              # attempted, applied
         L(id="retry-1", company_name="Retry Co", url="https://jobs.lever.co/co/r"),                          # attempted, retryable
         L(id="dup-co", company_name="Old Co", url="https://jobs.lever.co/oldco/1"),                          # company already applied

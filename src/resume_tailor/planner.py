@@ -107,6 +107,8 @@ _SYSTEM = (
     "Title and Company beside it), Location, From/To dates and 'I currently work here' describe THAT "
     "role from the record — the role's own city, its dates as MM and YYYY — never the candidate's "
     "home address; fill one entry with the most recent role unless the form has more.\n"
+    "- A question about the posting itself — whether the position is within a given state, which office or "
+    "team it is in, its title — is answered from THE POSTING text, with basis ['posting'].\n"
     "- A GPA field that offers bands: the band containing education.gpa. A GPA, school or date field for "
     "a level the candidate has not done (Graduate, Doctorate, Master's): the option meaning not "
     "applicable or none when offered; otherwise skip it.\n"
@@ -137,6 +139,7 @@ _PREFERENCE = re.compile(r"prefer|preference|which (team|program|track|platform|
 
 # Questions that the record answers by its silence: nothing of the kind on
 # file means No, and No needs no key to rest on.
+_ABOUT_POSTING = re.compile(r"(position|role|job|posting|internship) (you are|you're|you) (applying|interested)|this (position|role|job|posting|internship)|within the state of|located in the state", re.I)
 _SILENCE = re.compile(
     r"employed by|worked (for|at|with)|team member|contract(or|ed| work)|relative|related to|referred|"
     r"family member|immediate family|close (personal )?(relationship|associate|friend)|household|spouse|"
@@ -326,6 +329,8 @@ def rails(answers: list[FieldAnswer], questions: list[dict], profile: Profile) -
         known = [b for b in a.basis if b in flat or b in index or b == "today"]
         # A puzzle is answered by reasoning alone — but only a question that
         # is not about the candidate ("you", "your") can be a puzzle.
+        if not known and ("posting" in a.basis or "reasoning" in a.basis) and _ABOUT_POSTING.search(q["label"]):
+            known = ["posting"]  # a fact about the job, read off the posting
         if not known and "reasoning" in a.basis and (
                 not re.search(r"\byou(r|rs|rself)?\b", q["label"], re.I) or _PREFERENCE.search(q["label"])
                 or (q.get("required") and not _HARD_FACT.search(q["label"])

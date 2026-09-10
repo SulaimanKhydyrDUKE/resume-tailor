@@ -593,6 +593,27 @@ check("greenhouse: other questions untouched", _gh[4]["section"] == "Phone")
 from resume_tailor.batch import _bank as _bank_fn
 check("bank: under an Education section the school answers", _bank_fn(_bank3, "University", {"section": "Education 1", "type": "text"}, [])[0] == "Duke University")
 check("bank: under a Work Experience section the bank says nothing", _bank_fn(_bank3, "University", {"section": "Work Experience 1", "type": "text"}, [])[0] is None)
+check("boilerplate: a lone required box on a disability form is never ticked as an acknowledgement",
+      _autofill_boilerplate("Please check one of the boxes below:*", {"type": "checkbox", "required": True, "option_label": "Yes, I have a disability, or have had one in the past", "section": "Voluntary Self-Identification of Disability"}, []) is None)
+check("boilerplate: a lone required box under a plain statement is still an acknowledgement",
+      _autofill_boilerplate("Your application will be reviewed for one position at a time", {"type": "checkbox", "required": True, "option_label": "", "section": ""}, []) == "yes")
+check("boilerplate: a disability checkbox group takes the decline option",
+      _autofill_boilerplate("Please check one of the boxes below:*", {"type": "checkbox", "required": True, "section": "Voluntary Self-Identification of Disability"},
+                            ["Yes, I have a disability, or have had one in the past", "No, I do not have a disability and have not had one in the past", "I do not want to answer"]) == "I do not want to answer")
+check("boilerplate: conference attendance -> the none option",
+      _autofill_boilerplate("Indicate your planned attendance at the listed conference and/or your affiliations with the below groups (check all that apply):", {"type": "checkbox", "required": True}, ["Grace Hopper Celebration", "NSBE", "None of the above"]) == "None of the above")
+check("boilerplate: socio-economic question -> prefer not to say",
+      _autofill_boilerplate("What is the highest level of education completed by either of your parents?", {"type": "select", "required": True}, ["Doctorate", "Bachelor's", "Prefer not to say"]) == "Prefer not to say")
+check("boilerplate: language skill in a language not on the record -> none",
+      _autofill_boilerplate("Please indicate your language skills in reading, written and spoken Japanese", {"type": "select", "required": True}, ["None", "Basic", "Fluent"]) == "None")
+check("boilerplate: language skill in English is not answered by the none rule",
+      _autofill_boilerplate("Please indicate your language skills in reading, written and spoken English", {"type": "select", "required": True}, ["None", "Basic", "Fluent"]) is None)
+from resume_tailor import ats as _ats
+check("ats: TikTok, EY Yello, Goldman and Apple are account-gated", all(_ats.host_kind(u) in _ats.NEEDS_ACCOUNT for u in ("https://lifeattiktok.com/search/1", "https://eyglobal.yello.co/jobs/2", "https://higher.gs.com/roles/3", "https://jobs.apple.com/en-us/details/4")))
+_post = [{"qid": "p1", "key": planner.question_key("Is the position you are applying to within the state of Maryland?", "select"), "label": "Is the position you are applying to within the state of Maryland?",
+          "section": "", "widget": "select", "options": ["Yes", "No"], "required": True, "maxlength": None, "hint": "", "bank": ""}]
+_post_plan = planner.rails([FieldAnswer(id="p1", answer="No", basis=["posting"], skip=False, essay=False, reason="the posting is in Pittsburgh")], _post, _pl)
+check("rails: a question about the posting is answered from the posting", _post_plan[_post[0]["key"]].answer == "No")
 check("picker: 'Raleigh, NC' finds Raleigh", _AS._match_option("Raleigh, NC", _opts) == 2)
 _edu = _P(career={"personal_information": {"name": "A", "surname": "B"}},
           answers={"availability": {"earliest_start_date": "May 2027"},
