@@ -489,6 +489,15 @@ async def _create_account(session: ApplySession, profile: Profile) -> str:
         await session._pick_frame()
     except Exception:
         pass
+    # A captcha on the wall itself ("Confirm you are not a robot" on
+    # Grainger's SuccessFactors, hCaptcha over an iCIMS e-mail step): no
+    # account can be made here without a person, and the tool does not
+    # solve captchas.
+    try:
+        if await session.challenge_visible():
+            return "captcha"
+    except Exception:
+        pass
     # The create-account form, reached by its link when the sign-in form is
     # what shows; Workday shows both behind one "Create Account" toggle.
     fields = await session.describe_form()
@@ -1887,6 +1896,11 @@ async def _process_one(session: ApplySession, profile: Profile, entry: QueueEntr
         except Exception as e:
             how = ""
             print(f"  account step failed: {_brief(e)}", file=sys.stderr, flush=True)
+        if how == "captcha":
+            o.status = "blocked"
+            o.detail = ("a captcha guards this site's sign-in and registration, which the tool does not solve — "
+                        f"create the account or sign in once by hand and rerun: {_page_url(session) or apply_url}")
+            return o
         if how == "verify_email":
             # The account exists; the portal wants its e-mail verified first.
             # Named as an e-mail wall, so the loop leaves it alone until the

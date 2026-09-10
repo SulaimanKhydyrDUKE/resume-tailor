@@ -54,6 +54,10 @@ def _deep(js: str) -> str:
 
 
 _COUNT_JS = _deep("() => document.querySelectorAll('input:not([type=hidden]), select, textarea').length")
+# The same, counting only what a person can see: a branded shell's collapsed
+# search boxes are inputs, but not the form.
+_VISIBLE_COUNT_JS = _deep("() => [...document.querySelectorAll('input:not([type=hidden]), select, textarea')]"
+                          ".filter(e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; }).length")
 
 
 _FIELD_JS = r"""
@@ -953,7 +957,7 @@ class ApplySession:
         application (an e-mail box under "Enter Your Information", an Apply
         or Sign In control) beats a branded shell whose only inputs are its
         job-search boxes (iCIMS's framed portals)."""
-        count = _COUNT_JS
+        count = _VISIBLE_COUNT_JS
         looks = ("() => /\\b(e-?mail|password|apply|sign in|log ?in|application|résumé|resume|first name)\\b/i"
                  ".test((document.body && document.body.innerText || '').slice(0, 4000)) ? 1 : 0")
         self._frame = None
@@ -1180,6 +1184,31 @@ class ApplySession:
     async def buttons(self) -> list[dict]:
         await self.start()
         return await self._doc.evaluate(_SUBMIT_JS)
+
+    async def challenge_visible(self) -> bool:
+        """A captcha a person would have to solve is on show: hCaptcha's
+        puzzle over Oracle's create-profile step, its checkbox over an iCIMS
+        e-mail step ("Please try again"), reCAPTCHA's "I'm not a robot" —
+        found by the widget frames themselves, wherever they are nested, and
+        by what they say. An invisible one that loads its frames but shows
+        nothing does not count."""
+        await self.start()
+        try:
+            if await self._page.evaluate(_CHALLENGE_JS):
+                return True
+        except Exception:
+            pass
+        for fr in self._page.frames[1:]:
+            if not re.search(r"hcaptcha\.com/captcha|recaptcha/api2/(anchor|bframe)|arkoselabs|funcaptcha", fr.url or ""):
+                continue
+            try:
+                text = await fr.evaluate("() => (document.body && document.body.innerText || '').replace(/\\s+/g, ' ').trim()")
+                shown = await fr.evaluate("() => { const b = document.body; if (!b) return false; const r = b.getBoundingClientRect(); return r.width > 100 && r.height > 40; }")
+            except Exception:
+                continue
+            if shown and re.search(r"i am human|i'?m not a robot|try again|verify|select (all|each|the)", text, re.I):
+                return True
+        return False
 
     async def click_apply_control(self) -> bool:
         """Click the page's Apply control, then the interstitial behind it if
@@ -2551,12 +2580,6 @@ async def detect_blocker(session: "ApplySession", after_apply: bool = False) -> 
         controls = [b.get("text") or "" for b in await session.buttons()]
     except Exception:
         controls = None
-    try:
-        # A challenge widget on show — hCaptcha's puzzle over Oracle's
-        # create-profile step, a reCAPTCHA image grid — is a wall whatever
-        # the page's own text says.
-        if await session._page.evaluate(_CHALLENGE_JS):
-            return "bot_check"
-    except Exception:
-        pass
+    if await session.challenge_visible():
+        return "bot_check"
     return blocker_verdict(fields, text, url, after_apply, controls)
