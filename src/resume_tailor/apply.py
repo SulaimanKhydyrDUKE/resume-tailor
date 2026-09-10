@@ -2108,7 +2108,16 @@ class ApplySession:
                     return True
                 if loc is not None:
                     try:
-                        if await loc.evaluate("e => !!(e.files && e.files.length)"):
+                        # A plain, visible file input shows its file's name by
+                        # itself, so its file list is the proof. A hidden input
+                        # behind a widget (Greenhouse's Attach / Dropbox / Enter
+                        # manually) can hold a file the widget never took — "Cannot
+                        # read properties of undefined (reading 'uploadFile')" —
+                        # so for those only the name on the page counts.
+                        if await loc.evaluate(
+                                "e => !!(e.files && e.files.length) && (() => { const r = e.getBoundingClientRect(); "
+                                "const s = getComputedStyle(e); return r.width > 20 && r.height > 5 && s.opacity !== '0' "
+                                "&& s.visibility !== 'hidden' && s.display !== 'none'; })()"):
                             return True
                     except Exception:
                         pass
