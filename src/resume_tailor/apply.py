@@ -1217,6 +1217,20 @@ class ApplySession:
             if key not in distinct or (c.get("href") and not distinct[key].get("href")):
                 distinct[key] = c
         cands = list(distinct.values())
+        if not cands and exclude is None:
+            # iCIMS's older portals draw the whole posting — Apply control and
+            # all — inside an iframe (…/job?in_iframe=1) under a branded shell
+            # that has nothing but a search box. The frame is a full page of
+            # its own: open it as the page and look again.
+            for fr in self._page.frames[1:]:
+                try:
+                    inner = await fr.evaluate(_APPLY_JS)
+                except Exception:
+                    continue
+                if any(pattern.match(re.sub(r"\b(\w+)(\s+\1\b)+", r"\1", c.get("text") or "", flags=re.I)) for c in inner) \
+                        and fr.url.startswith("http") and urlsplit(fr.url).netloc == urlsplit(self._page.url).netloc:
+                    await self.goto(fr.url)
+                    return await self._click_control(pattern, exclude=set())
         if not cands:
             return None
         chosen = cands[0]

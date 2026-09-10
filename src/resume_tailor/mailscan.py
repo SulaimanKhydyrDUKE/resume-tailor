@@ -243,12 +243,46 @@ def _match_company(index: dict[str, dict], frm: str, reply_to: str, subject: str
 # ---------------------------------------------------------------------------
 # Which stage a message announces
 
+SUBJECT_APPLIED = re.compile(r"thank(s| you) for (applying|your (application|interest|submission))|application (received|confirmation|submitted)|"
+                             r"we('ve| have)? received your (application|resume)|your application (to|for|has been|was)|"
+                             r"successfully (submitted|applied)|we got your application|application (has been )?received", re.I)
+# Body wording that means the stage on its own — never a conditional ("if
+# selected for an interview") or a courtesy ("unfortunately we cannot reply
+# to everyone"), which every confirmation carries.
+BODY_RULES = (
+    ("rejected", re.compile(
+        r"(not|won'?t|will not) be (moving|proceeding|going) forward with your (application|candidacy)|"
+        r"(decided|chosen|elected) to (move forward|proceed|go forward) with other (candidates|applicants)|"
+        r"no longer (be )?(under )?consider(ed|ation)|regret to inform|unable to (offer|move forward)|"
+        r"(have|has) (been )?(decided|chosen) not to|not (been )?selected (for|to)|position has been filled|"
+        r"pursue other (candidates|applicants)|we will not be (moving|proceeding)|not be (advancing|progressing) your", re.I)),
+    ("offer", re.compile(r"(pleased|excited|delighted|happy) to (offer|extend)|offer letter|formal offer|extend(ing)? (you )?an offer", re.I)),
+    ("interview", re.compile(
+        r"schedule (a|an|your) (interview|call|conversation|chat|time to)|invite you to (interview|an interview|a (phone|video|virtual)|schedule)|"
+        r"would like to (interview|speak with|talk with|chat with) you|interview (has been|is) (scheduled|confirmed)|calendly\.com|"
+        r"book a time|(next|first) step (is|will be) (a|an) (call|interview|conversation|phone)|phone screen|recruiter screen|"
+        r"select a time|pick a time|availability for (a|an) (call|interview|conversation)", re.I)),
+    ("oa", re.compile(
+        r"invite(s|d)? you to (take|complete|start)|complete (the|your|an|this) (online )?(assessment|coding|test|challenge)|"
+        r"assessment (invitation|link)|hackerrank|codesignal|codility|coderbyte|litmus|take-?home|coding challenge|"
+        r"online assessment|technical assessment|aptitude test|assessment(s)? (has|have) been assigned", re.I)),
+)
+
+
 def _rule_stage(subject: str, body: str) -> str | None:
-    text = f"{subject}\n{body[:3000]}"
+    """The stage the wording settles, or None for the model. The subject
+    comes first: a confirmation is a confirmation whatever its body says
+    in passing about interviews and other candidates."""
     if CODE.search(subject):
         return "code"
     for stage, pat in RULES:
-        if pat.search(text):
+        if stage != "applied" and pat.search(subject):
+            return stage
+    if SUBJECT_APPLIED.search(subject):
+        return "applied"
+    head = body[:2500]
+    for stage, pat in BODY_RULES:
+        if pat.search(head):
             return stage
     return None
 

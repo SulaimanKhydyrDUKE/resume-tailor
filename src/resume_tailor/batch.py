@@ -370,6 +370,24 @@ async def _create_account(session: ApplySession, profile: Profile) -> str:
                     await session._page.wait_for_timeout(1500)
                     await session._pick_frame()
                     return True
+        # Not among the page's buttons and links as scanned: a plain span or
+        # text link ("Need an email account? Create account" on TikTok's
+        # sign-in). Find it by its words.
+        try:
+            rx = re.compile(pattern, re.I)
+            for finder in (lambda: session._page.get_by_role("link", name=rx), lambda: session._page.get_by_role("button", name=rx),
+                           lambda: session._page.get_by_text(rx)):
+                loc = finder().first
+                if await loc.count():
+                    txt = (await loc.inner_text())[:80]
+                    if re.search(r"google|linkedin|apple|microsoft|facebook", txt, re.I):
+                        continue
+                    await loc.click(timeout=4000)
+                    await session._page.wait_for_timeout(1500)
+                    await session._pick_frame()
+                    return True
+        except Exception:
+            pass
         return False
 
     def emails_of(fields: list[dict]) -> list[dict]:
@@ -392,6 +410,18 @@ async def _create_account(session: ApplySession, profile: Profile) -> str:
             except Exception:
                 if attempt == 2:
                     raise
+                # A cookie overlay (OneTrust on AMD's iCIMS) takes the click:
+                # clear it, or write into the box without the pointer.
+                try:
+                    await session._dismiss_cookie_banner()
+                except Exception:
+                    pass
+                try:
+                    loc = await session._locate(f["selector"], f)
+                    await loc.fill(value, timeout=3000, force=True)
+                    return
+                except Exception:
+                    pass
                 await session._page.wait_for_timeout(500)
                 same = [g for g in await session.describe_form()
                         if g.get("type") == f.get("type") and (g.get("label") or "") == (f.get("label") or "")]
@@ -402,18 +432,41 @@ async def _create_account(session: ApplySession, profile: Profile) -> str:
         fields = await session.describe_form()
         if not emails_of(fields) or not passwords_of(fields) or (verify and len(passwords_of(fields)) < 2):
             return False
-        await put(emails_of(fields)[0], email)
+        for f in emails_of(fields):  # every e-mail box — "Retype Email Address" too (SuccessFactors)
+            await put(f, email)
         n_pw = len(passwords_of(fields))
         for i in range(n_pw):
             fresh = passwords_of(await session.describe_form())
             if i < len(fresh):
                 await put(fresh[i], password)
+        # A registration form that also wants the name and the country
+        # beside the credentials (SuccessFactors).
+        person = profile.career.get("personal_information", {}) or {}
+        first, last = str(person.get("name") or "").strip(), str(person.get("surname") or "").strip()
+        for f in await session.describe_form():
+            lab = (f.get("label") or "") + " " + (f.get("name") or "")
+            if f.get("type") in ("text", "") and f.get("tag") != "select" and not f.get("value"):
+                if first and re.search(r"first name|given name", lab, re.I):
+                    await put(f, first)
+                elif last and re.search(r"last name|surname|family name", lab, re.I):
+                    await put(f, last)
+            elif f.get("tag") == "select" and re.search(r"country", lab, re.I) and not f.get("value"):
+                try:
+                    await session.fill(f["selector"], "United States", f)
+                except Exception:
+                    pass
         for f in await session.describe_form():
             if f.get("type") == "checkbox" and not f.get("checked"):
                 try:
                     await session.fill(f["selector"], "yes", f)
                 except Exception:
                     pass
+        # "Read and accept the data privacy statement": a control that opens
+        # the statement, with its own Accept at the end.
+        if await click_text(r"read and accept|accept (the )?(data )?privacy|privacy statement"):
+            await session._page.wait_for_timeout(1500)
+            await click_text(r"^\s*(accept|i accept|agree|i agree|acknowledge|i acknowledge|accept (and|&) continue|ok|okay)\s*$")
+            await session._page.wait_for_timeout(800)
         return True
 
     async def press(pattern: str) -> bool:
@@ -458,7 +511,7 @@ async def _create_account(session: ApplySession, profile: Profile) -> str:
         await click_text(r"create (an )?account|sign up|register|new user")
     created = False
     if await fill_credentials(verify=True):
-        await press(r"create (an )?account|sign up|register")
+        await press(r"create (an )?account|sign up|register|^\s*create\s*$")
         text = (await session.read_text())[:5000].lower()
         if re.search(r"already (exists|in use|registered|have an account)|account exists", text):
             created = False
