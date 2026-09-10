@@ -218,8 +218,8 @@ async def _tick_invalid_boxes(session: ApplySession) -> int:
     return ticked
 
 
-_CODE_WALL = re.compile(r"verification code|code (was |has been )?sent|enter the code|one-time (code|password)|confirm your identity|"
-                        r"verification (e-?mail|link)|verify your account|account-verification", re.I)
+_CODE_WALL = re.compile(r"verification code|security code|code (was |has been )?sent|enter the code|one-time (code|password)|confirm your identity|"
+                        r"verification (e-?mail|link)|verify your account|account-verification|\d-(character|digit) code|passcode", re.I)
 # A portal that will not sign a new account in until its e-mail is verified
 # (Medtronic's and Motorola's Workday tenants).
 _VERIFY_WALL = re.compile(r"verify your account|account (may )?need(s)? verification|resend (account )?verification|"
@@ -251,11 +251,36 @@ async def _enter_code(session: ApplySession, code: str) -> bool:
     boxes = await _code_fields(session)
     if not boxes:
         return False
+    page = session._page
+
+    async def held() -> str:
+        vals = []
+        for b in boxes:
+            try:
+                vals.append(await session._doc.locator(b["selector"]).first.evaluate("e => e.value || ''"))
+            except Exception:
+                vals.append("")
+        return "".join(vals)
+
     if len(boxes) >= len(code):
-        for box, digit in zip(boxes, code):
-            await session.fill(box["selector"], digit, box)
+        # Six boxes that pass focus along as each character lands (Greenhouse's
+        # security code): type the whole code into the first and let them
+        # advance; a box left empty is filled on its own afterwards.
+        try:
+            await session._doc.locator(boxes[0]["selector"]).first.click()
+            await page.keyboard.type(code, delay=60)
+            await page.wait_for_timeout(400)
+        except Exception:
+            pass
+        if len(await held()) < len(code):
+            for box, ch in zip(boxes, code):
+                try:
+                    await session.fill(box["selector"], ch, box)
+                except Exception:
+                    pass
     else:
         await session.fill(boxes[0]["selector"], code, boxes[0])
+    await page.wait_for_timeout(500)
     buttons = await session.buttons()
     verify = next((b for b in buttons if not b.get("disabled")
                    and re.search(r"\b(verify|confirm|continue|submit|next)\b", b.get("text", ""), re.I)), None)
@@ -263,7 +288,21 @@ async def _enter_code(session: ApplySession, code: str) -> bool:
         verify = await _ask_button(buttons, "next")
     if verify is None:
         return False
-    await session.advance(verify["selector"])
+    # The control here ends the application (Greenhouse) or opens the next
+    # step (Oracle): wait for either the form to go or a new step to draw.
+    before = await _step_signature(session)
+    try:
+        await session._doc.locator(verify["selector"]).first.click(timeout=8000)
+    except Exception:
+        await _click_hard(session, verify["selector"])
+    for _ in range(40):
+        await page.wait_for_timeout(1500)
+        try:
+            if await _step_signature(session) != before or not await _code_fields(session):
+                break
+        except Exception:
+            break
+    await session._pick_frame()
     return True
 
 

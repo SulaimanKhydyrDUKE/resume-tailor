@@ -22,7 +22,8 @@ from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 
 CODE_RE = re.compile(
-    r"(?:code|passcode|pass code|pin|otp|one-time password|verification)[^0-9]{0,60}?\b(\d{4,8})\b", re.I)
+    r"(?:code|passcode|pass code|pin|otp|one-time password|verification)[^0-9]{0,60}?\b(?=[A-Za-z0-9]*\d)([A-Za-z0-9]{4,10})\b", re.I)
+_YEAR = re.compile(r"^(?:19|20)\d\d$")
 LOOKS_LIKE_CODE_MAIL = re.compile(r"verif|confirm your identity|one-time|passcode|pass code|security code|access code|sign.?in link|magic link|continue your application|complete your application", re.I)
 LINK_RE = re.compile(r"https?://[^\s\"'<>)\]]{12,400}", re.I)
 _LINK_SKIP = re.compile(r"unsubscribe|privacy|terms|facebook|twitter|linkedin\.com/company|instagram|youtube|apple\.com|play\.google|\.png|\.jpg|\.gif|logo", re.I)
@@ -55,9 +56,14 @@ def extract_link(text: str, html: str = "") -> str | None:
 
 
 def extract_code(text: str) -> str | None:
-    """The code a message carries, or None."""
-    m = CODE_RE.search(text or "")
-    return m.group(1) if m else None
+    """The code a message carries, or None. Codes are digits (Oracle's six)
+    or letters and digits (Greenhouse's "3gDzjC7C"); a bare year in the
+    footer ("© 2026 Greenhouse") is never the code when anything else fits."""
+    found = [m.group(1) for m in CODE_RE.finditer(text or "")]
+    if not found:
+        return None
+    real = [c for c in found if not _YEAR.match(c)]
+    return (real or found)[0]
 
 
 def _profile_email() -> str:
