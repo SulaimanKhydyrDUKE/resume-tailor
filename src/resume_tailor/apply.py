@@ -948,20 +948,29 @@ class ApplySession:
         return self._frame or self._page
 
     async def _pick_frame(self) -> None:
+        """The document to work in: the page, or the frame that holds the
+        form. Most fields wins; on a tie the one that reads like an
+        application (an e-mail box under "Enter Your Information", an Apply
+        or Sign In control) beats a branded shell whose only inputs are its
+        job-search boxes (iCIMS's framed portals)."""
         count = _COUNT_JS
+        looks = ("() => /\\b(e-?mail|password|apply|sign in|log ?in|application|résumé|resume|first name)\\b/i"
+                 ".test((document.body && document.body.innerText || '').slice(0, 4000)) ? 1 : 0")
         self._frame = None
         try:
             main_n = await self._page.evaluate(count)
+            main_score = main_n * 10 + (await self._page.evaluate(looks) if main_n else 0)
         except Exception:
-            main_n = 0
-        best, best_n = None, main_n
+            main_n, main_score = 0, 0
+        best, best_score = None, main_score
         for fr in self._page.frames[1:]:
             try:
                 n = await fr.evaluate(count)
+                score = n * 10 + (await fr.evaluate(looks) if n else 0)
             except Exception:
                 continue
-            if n > best_n:
-                best, best_n = fr, n
+            if score > best_score:
+                best, best_score = fr, score
         self._frame = best
 
     async def start(self) -> None:
@@ -1217,19 +1226,21 @@ class ApplySession:
             if key not in distinct or (c.get("href") and not distinct[key].get("href")):
                 distinct[key] = c
         cands = list(distinct.values())
-        if not cands and exclude is None:
+        if not cands and exclude is None and self._frame is None:
             # iCIMS's older portals draw the whole posting — Apply control and
             # all — inside an iframe (…/job?in_iframe=1) under a branded shell
-            # that has nothing but a search box. The frame is a full page of
-            # its own: open it as the page and look again.
+            # that has nothing but a search box. Its address only redirects
+            # back into the shell, so the work is done inside the frame: it
+            # becomes the document, and the click lands there.
             for fr in self._page.frames[1:]:
+                if not fr.url.startswith("http"):
+                    continue
                 try:
                     inner = await fr.evaluate(_APPLY_JS)
                 except Exception:
                     continue
-                if any(pattern.match(re.sub(r"\b(\w+)(\s+\1\b)+", r"\1", c.get("text") or "", flags=re.I)) for c in inner) \
-                        and fr.url.startswith("http") and urlsplit(fr.url).netloc == urlsplit(self._page.url).netloc:
-                    await self.goto(fr.url)
+                if any(pattern.match(re.sub(r"\b(\w+)(\s+\1\b)+", r"\1", c.get("text") or "", flags=re.I)) for c in inner):
+                    self._frame = fr
                     return await self._click_control(pattern, exclude=set())
         if not cands:
             return None
@@ -1301,6 +1312,13 @@ class ApplySession:
         not the form arriving."""
         deadline = time.monotonic() + seconds
         while True:
+            # The form may draw in a frame that was empty a moment ago (an
+            # iCIMS portal's login page loads inside its iframe after the
+            # Apply click): look at every frame again on each poll.
+            try:
+                await self._pick_frame()
+            except Exception:
+                pass
             n = await self._fields_present()
             if n and (baseline is None or n != baseline):
                 return True
@@ -2328,7 +2346,7 @@ class ApplySession:
 # what it finds; it names it and moves on.
 _CHALLENGE_JS = r"""
 () => [...document.querySelectorAll('iframe[src*="hcaptcha.com"], iframe[src*="recaptcha"], iframe[src*="arkoselabs"], iframe[src*="funcaptcha"], iframe[title*="challenge" i], iframe[title*="captcha" i]')]
-  .some(f => { const r = f.getBoundingClientRect(); const s = getComputedStyle(f); return r.width > 200 && r.height > 200 && s.visibility !== 'hidden' && s.display !== 'none'; })
+  .some(f => { const r = f.getBoundingClientRect(); const s = getComputedStyle(f); return r.width > 200 && r.height > 60 && s.visibility !== 'hidden' && s.display !== 'none'; })
 """
 _BLOCK_PHRASES = (
     "verify you are human", "i'm not a robot", "unusual traffic",

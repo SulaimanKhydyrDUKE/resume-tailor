@@ -482,6 +482,13 @@ async def _create_account(session: ApplySession, profile: Profile) -> str:
         await session._wait_for_fields(20, baseline)
         return True
 
+    # A cookie overlay over the wall (OneTrust on AMD's iCIMS) would take
+    # every click below: clear it first.
+    try:
+        await session._dismiss_cookie_banner()
+        await session._pick_frame()
+    except Exception:
+        pass
     # The create-account form, reached by its link when the sign-in form is
     # what shows; Workday shows both behind one "Create Account" toggle.
     fields = await session.describe_form()
@@ -509,19 +516,33 @@ async def _create_account(session: ApplySession, profile: Profile) -> str:
                 return "email_step"
     if not any(f.get("type") == "password" and re.search(r"verify|confirm|re-?enter", f.get("label") or "", re.I) for f in fields):
         await click_text(r"create (an )?account|sign up|register|new user")
+    debug = bool(os.environ.get("RESUME_TAILOR_DEBUG"))
+
+    def note(msg: str) -> None:
+        if debug:
+            print(f"  account: {msg}", file=sys.stderr, flush=True)
+
     created = False
+    note(f"on {(_page_url(session) or '')[:80]}; fields={[(f.get('label') or '')[:18] + ':' + (f.get('type') or '') for f in fields][:8]}")
     if await fill_credentials(verify=True):
-        await press(r"create (an )?account|sign up|register|^\s*create\s*$")
+        note("registration form filled")
+        pressed = await press(r"create (an )?account|sign up|register|^\s*create\s*$")
+        note(f"create pressed={pressed}; now on {(_page_url(session) or '')[:80]}")
         text = (await session.read_text())[:5000].lower()
         if re.search(r"already (exists|in use|registered|have an account)|account exists", text):
             created = False
+            note("the site says the account already exists")
         else:
             created = await detect_blocker(session, after_apply=True) != "login_required"
+            note(f"created={created}; errors={[e[:60] for e in (await session.errors())[:3]]}")
+    else:
+        note("no registration form found (need e-mail + two password boxes)")
     if not created:
         # Sign in with the same credentials: the account was made on an earlier attempt.
         await click_text(r"sign in with email|use (my )?email|continue with email|sign in|log in|already have an account.*")
         if await fill_credentials(verify=False):
-            await press(r"sign in|log in")
+            pressed = await press(r"sign in|log in")
+            note(f"sign-in pressed={pressed}; now on {(_page_url(session) or '')[:80]}; text={(await session.read_text())[:120]!r}")
     # A tenant that will not sign the new account in until its e-mail is
     # verified (Medtronic, Motorola): with the inbox configured, the
     # verification link is followed and the sign-in tried once more;
