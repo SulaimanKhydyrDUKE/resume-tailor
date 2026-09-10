@@ -164,6 +164,20 @@ def build_index(out_dir: str | Path, profile_dir: Path = DEFAULT_PROFILE_DIR) ->
             "worker": rec.get("worker") or "",
         })
     apps.sort(key=lambda a: a["when"], reverse=True)
+    # What the inbox says came of each company, and the two flows drawn
+    # from it (see mailscan.flows). Read from results.json; never scanned here.
+    try:
+        from .mailscan import flows, load_results
+        from .queue import company_key
+        flow_data = flows(out_dir)
+        results = load_results(out_dir).get("companies") or {}
+        for a in apps:
+            co = results.get(company_key(a["company"]))
+            a["stage"] = (co or {}).get("stage") or ""
+            a["mail"] = sorted((co or {}).get("timeline") or [], key=lambda t: t.get("when") or "", reverse=True)[:12]
+            a["addresses"] = (co or {}).get("addresses") or []
+    except Exception as e:
+        flow_data, results = {"error": str(e)}, {}
     # What each live process is doing: current.json for a lone loop or a
     # retry pass, current-w<k>.json per worker. `now` is the freshest of them.
     workers_now: list[dict] = []
@@ -192,6 +206,7 @@ def build_index(out_dir: str | Path, profile_dir: Path = DEFAULT_PROFILE_DIR) ->
         "counts": dict(Counter(a["status"] for a in apps)),
         "applied_companies": state.get("applied_companies") or [],
         "applications": apps,
+        "flows": flow_data,
     }
 
 

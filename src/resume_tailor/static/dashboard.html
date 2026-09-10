@@ -87,6 +87,24 @@
   .workers-head { display: flex; justify-content: space-between; align-items: baseline; margin: 0 0 10px; }
   .workers-head h3 { margin: 0; font-size: 14px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
   .chip.link { border-style: dashed; }
+  .flows { display: grid; grid-template-columns: repeat(auto-fit, minmax(460px, 1fr)); gap: 14px; margin-bottom: 18px; }
+  .flow { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .flow h3 { margin: 0 0 4px; font-size: 14px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .flow .sub { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+  .flow svg { width: 100%; height: auto; display: block; overflow: visible; }
+  .flow .lbl { font-size: 12px; fill: var(--ink); }
+  .flow .lbl.muted { fill: var(--muted); }
+  .flow .lbl.n { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .flow path.band { opacity: .55; transition: opacity .15s; }
+  .flow path.band:hover { opacity: .9; }
+  .flow-toggle { display: flex; gap: 6px; margin: 0 0 10px; }
+  table.stages { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.stages td, table.stages th { text-align: left; padding: 6px 8px; border-top: 1px solid var(--line); }
+  table.stages th { color: var(--muted); font-weight: 600; border-top: none; }
+  .stage-pill { display: inline-block; border-radius: 6px; padding: 2px 8px; font-size: 12px; font-weight: 600; color: #fff; }
+  ul.mail { list-style: none; margin: 0; padding: 0; }
+  ul.mail li { display: grid; grid-template-columns: 90px 110px 1fr; gap: 10px; padding: 6px 0; border-top: 1px solid var(--line); font-size: 13px; }
+  ul.mail li .t { color: var(--muted); white-space: nowrap; }
 </style>
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
@@ -157,6 +175,147 @@ function Judges({ fit }) {
 
 function workerName(w) {
   return w === "fresh" ? "Fresh lane" : "Worker " + (Number(w) + 1);
+}
+
+// Colours: one per outcome and one per stage, kept apart from the accent.
+const STATUS_COLOR = {
+  applied: "#16a34a", by_hand: "#0ea5e9", awaiting_approval: "#f97316", needs_review: "#f59e0b",
+  needs_login: "#8b5cf6", blocked: "#ef4444", error: "#b91c1c", fit_rejected: "#94a3b8",
+  skipped: "#cbd5e1", tailored_only: "#a3a3a3", ready_not_submitted: "#38bdf8",
+};
+const STAGE_COLOR = { offer: "#16a34a", interview: "#2563eb", oa: "#7c3aed", rejected: "#ef4444", "no reply yet": "#9ca3af", applied: "#6b7280" };
+const STAGE_LABEL = { offer: "Offer", interview: "Interview", oa: "Online assessment", rejected: "Rejected", "no reply yet": "No reply yet", applied: "Confirmed only" };
+
+// A flow diagram: columns of stacked nodes, bands between them whose
+// thickness is the count. Drawn by hand — two or three columns is all it is.
+function Sankey({ columns, links, height = 300, leftPad = 8, rightPad = 210, gap = 10 }) {
+  const width = 640;
+  const colX = (i) => leftPad + i * ((width - leftPad - rightPad - 26) / Math.max(1, columns.length - 1));
+  const barW = 26;
+  // Node slots: each column stacks its nodes with a gap, scaled to the column's own total.
+  const slots = {};
+  columns.forEach((col, ci) => {
+    const total = col.reduce((a, n) => a + n.value, 0) || 1;
+    const usable = height - gap * Math.max(0, col.length - 1);
+    let y = 0;
+    col.forEach(n => {
+      const h = Math.max(n.value > 0 ? 2 : 0, usable * n.value / total);
+      slots[n.id] = { x: colX(ci), y, h, col: ci, node: n, outY: y, inY: y };
+      y += h + (n.value > 0 ? gap : 0);
+    });
+  });
+  const band = (a, b, v) => {
+    const s = slots[a], t = slots[b];
+    if (!s || !t || !v) return null;
+    const sTotal = s.node.value || 1, tTotal = t.node.value || 1;
+    const sh = s.h * v / sTotal, th = t.h * v / tTotal;
+    const x0 = s.x + barW, x1 = t.x, y0 = s.outY, y1 = t.inY;
+    s.outY += sh; t.inY += th;
+    const cx = (x0 + x1) / 2;
+    return `M${x0},${y0} C${cx},${y0} ${cx},${y1} ${x1},${y1} L${x1},${y1 + th} C${cx},${y1 + th} ${cx},${y0 + sh} ${x0},${y0 + sh} Z`;
+  };
+  const paths = links.map(l => ({ ...l, d: band(l.from, l.to, l.value) })).filter(p => p.d);
+  return (
+    <svg viewBox={`0 0 ${width} ${height + 24}`} role="img">
+      <g transform="translate(0,12)">
+        {paths.map((p, i) => (
+          <path key={i} className="band" d={p.d} fill={p.color}>
+            <title>{p.title || `${p.value}`}</title>
+          </path>
+        ))}
+        {Object.values(slots).map(s => (
+          <g key={s.node.id}>
+            <rect x={s.x} y={s.y} width={barW} height={Math.max(s.h, s.node.value > 0 ? 2 : 0)} fill={s.node.color} rx={3}>
+              <title>{s.node.label}: {s.node.value}</title>
+            </rect>
+            {s.col === columns.length - 1 && s.node.value > 0 ? (
+              <text className="lbl" x={s.x + barW + 8} y={s.y + Math.max(s.h, 2) / 2} dominantBaseline="middle">
+                <tspan className="lbl n">{s.node.value}</tspan> <tspan className="lbl muted">{s.node.label}</tspan>
+              </text>
+            ) : null}
+            {s.col === 0 ? (
+              <text className="lbl" x={s.x} y={-2} textAnchor="start">
+                <tspan className="lbl n">{s.node.value}</tspan> <tspan className="lbl muted">{s.node.label}</tspan>
+              </text>
+            ) : null}
+            {s.col > 0 && s.col < columns.length - 1 && s.h > 14 ? (
+              <text className="lbl" x={s.x + barW / 2} y={s.y - 3} textAnchor="middle" fontSize="11">{s.node.label}</text>
+            ) : null}
+          </g>
+        ))}
+      </g>
+    </svg>
+  );
+}
+
+function Flows({ flows }) {
+  const [view, setView] = useState("two");
+  if (!flows || flows.error) return <div className="empty">results tracker: {flows?.error || "no data yet"} — run `resume-tailor mail scan`</div>;
+  const st = flows.attempts.by_status || {};
+  const statusNodes = ORDER.filter(s => st[s]).map(s => ({ id: "s:" + s, label: STATUS[s][0], value: st[s], color: STATUS_COLOR[s] || "#9ca3af" }));
+  const attempts = [[{ id: "all", label: "attempts", value: flows.attempts.total, color: "#374151" }], statusNodes];
+  const attemptLinks = statusNodes.map(n => ({ from: "all", to: n.id, value: n.value, color: n.color, title: `${n.label}: ${n.value}` }));
+  const sg = flows.applied.by_stage || {};
+  const stageOrder = ["offer", "interview", "oa", "no reply yet", "rejected"];
+  const stageNodes = stageOrder.filter(s => sg[s]).map(s => ({ id: "g:" + s, label: STAGE_LABEL[s], value: sg[s], color: STAGE_COLOR[s] }));
+  const applied = [[{ id: "ap", label: "companies applied to", value: flows.applied.total, color: "#16a34a" }], stageNodes];
+  const appliedLinks = stageNodes.map(n => ({ from: "ap", to: n.id, value: n.value, color: n.color, title: `${n.label}: ${n.value}` }));
+  // The chained view: attempts fan out by outcome, and the applied band carries on into what the inbox says.
+  const chainCols = [attempts[0], statusNodes.map(n => ({ ...n, id: "c" + n.id })), stageNodes.map(n => ({ ...n, id: "c" + n.id }))];
+  const appliedCount = (st.applied || 0) + (st.by_hand || 0);
+  const chainLinks = [
+    ...statusNodes.map(n => ({ from: "all", to: "c" + n.id, value: n.value, color: n.color, title: `${n.label}: ${n.value}` })),
+    ...stageNodes.map(n => ({ from: "cs:applied", to: "c" + n.id, value: Math.round(n.value * (st.applied || 0) / Math.max(1, flows.applied.total)), color: n.color, title: `${n.label}: ${n.value} companies` })),
+  ];
+  return (
+    <div>
+      <div className="flow-toggle">
+        <span className={"chip " + (view === "two" ? "active" : "")} onClick={() => setView("two")}>Two flows</span>
+        <span className={"chip " + (view === "chain" ? "active" : "")} onClick={() => setView("chain")}>One chained flow</span>
+        <span className="watch" style={{ marginLeft: "auto" }}>{flows.scanned_at ? "inbox scanned " + new Date(flows.scanned_at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "inbox not scanned yet"}</span>
+      </div>
+      {view === "two" ? (
+        <div className="flows">
+          <div className="flow">
+            <h3>Every attempt, by outcome</h3>
+            <div className="sub">{flows.attempts.total} postings the loop worked on, and where each ended up</div>
+            <Sankey columns={attempts} links={attemptLinks} height={Math.max(220, statusNodes.length * 34)} />
+          </div>
+          <div className="flow">
+            <h3>Applied, by what the inbox says</h3>
+            <div className="sub">{flows.applied.total} companies with an application in; stages read from your e-mail</div>
+            <Sankey columns={applied} links={appliedLinks} height={Math.max(220, stageNodes.length * 44)} />
+          </div>
+        </div>
+      ) : (
+        <div className="flows" style={{ gridTemplateColumns: "1fr" }}>
+          <div className="flow">
+            <h3>From every attempt to every reply</h3>
+            <div className="sub">the applied band carries on into the inbox stages ({appliedCount} applied postings across {flows.applied.total} companies)</div>
+            <Sankey columns={chainCols} links={chainLinks} height={Math.max(260, statusNodes.length * 34)} rightPad={200} />
+          </div>
+        </div>
+      )}
+      {flows.companies?.filter(c => c.stage && c.stage !== "applied").length ? (
+        <div className="card" style={{ marginTop: 0 }}>
+          <h3>Where something happened</h3>
+          <table className="stages">
+            <thead><tr><th>Company</th><th>Stage</th><th>Last mail</th><th>Dates mentioned</th></tr></thead>
+            <tbody>
+              {flows.companies.filter(c => c.stage && c.stage !== "applied").map(c => (
+                <tr key={c.key}>
+                  <td>{c.company}</td>
+                  <td><span className="stage-pill" style={{ background: STAGE_COLOR[c.stage] || "#6b7280" }}>{STAGE_LABEL[c.stage] || c.stage}</span></td>
+                  <td>{c.last ? fmtWhen(c.last) : ""}</td>
+                  <td>{(c.dates || []).slice(0, 3).join("; ")}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 // One card per process the supervisor runs: what it is doing this minute,
@@ -350,6 +509,22 @@ function Detail({ app }) {
       </div>
 
       <div className="card">
+        <h3>What the inbox says {app.stage ? <span className="stage-pill" style={{ background: STAGE_COLOR[app.stage] || "#6b7280", textTransform: "none", letterSpacing: 0 }}>{STAGE_LABEL[app.stage] || app.stage}</span> : null}</h3>
+        {app.mail?.length ? (
+          <ul className="mail">
+            {app.mail.map(m => (
+              <li key={m.uid}>
+                <span className="t">{m.when ? fmtWhen(m.when) : ""}</span>
+                <span><span className="stage-pill" style={{ background: STAGE_COLOR[m.stage] || "#9ca3af" }}>{STAGE_LABEL[m.stage] || m.stage}</span></span>
+                <span>{m.subject}{m.note ? <span className="none"> · {m.note}</span> : null}{m.date ? <span className="none"> · {m.date}</span> : null}</span>
+              </li>
+            ))}
+          </ul>
+        ) : <span className="none">no mail from this company matched yet</span>}
+        {app.addresses?.length ? <div className="sub" style={{ marginTop: 8 }}>recruiting addresses seen: {app.addresses.map(a => a.address).join(", ")}</div> : null}
+      </div>
+
+      <div className="card">
         <h3>Judges</h3>
         <Judges fit={app.fit} />
       </div>
@@ -413,6 +588,7 @@ function App() {
         <main>
           {current ? <Detail app={current} /> : (
             <div>
+              <Flows flows={data?.flows} />
               <Workers data={data} onPick={setSel} />
               <div className="empty" style={{ padding: "30px 0 0" }}>
                 <p>Pick an application on the left for its answers, résumé and screenshots.</p>
