@@ -872,7 +872,7 @@ _COOKIE_JS = """
   // Cookie strips, and the product tours that sit over a page the same way
   // (TikTok's "AI assistant guide" mask covers its Apply button until
   // "Maybe Later" is pressed).
-  const ok = /^\\s*(accept( all)?( cookies)?|allow( all)?( cookies)?|i (accept|agree)|agree|got it|ok(ay)?|accept and (close|continue)|maybe later|not now|no,? thanks|close guide|skip( the)? tour|dismiss)\\s*$/i;
+  const ok = /^\\s*(accept( all)?( cookies)?|allow( all)?( cookies)?|i (accept|agree|consent)( to (all )?cookies)?|consent( to cookies)?|agree|got it|ok(ay)?|accept and (close|continue)|maybe later|not now|no,? thanks|close guide|skip( the)? tour|dismiss)\\s*$/i;
   for (const b of document.querySelectorAll('button, a, [role=button], input[type=button]')) {
     if (!vis(b)) continue;
     const t = ((typeof b.innerText === 'string' ? b.innerText : '') || (typeof b.value === 'string' ? b.value : '')).trim();
@@ -1261,16 +1261,19 @@ class ApplySession:
             # that has nothing but a search box. Its address only redirects
             # back into the shell, so the work is done inside the frame: it
             # becomes the document, and the click lands there.
-            for fr in self._page.frames[1:]:
-                if not fr.url.startswith("http"):
-                    continue
-                try:
-                    inner = await fr.evaluate(_APPLY_JS)
-                except Exception:
-                    continue
-                if any(pattern.match(re.sub(r"\b(\w+)(\s+\1\b)+", r"\1", c.get("text") or "", flags=re.I)) for c in inner):
-                    self._frame = fr
-                    return await self._click_control(pattern, exclude=set())
+            for _ in range(4):  # the frame draws a moment after the shell
+                for fr in self._page.frames[1:]:
+                    if not fr.url.startswith("http"):
+                        continue
+                    try:
+                        inner = await fr.evaluate(_APPLY_JS)
+                    except Exception:
+                        continue
+                    if any(pattern.match(re.sub(r"\b(\w+)(\s+\1\b)+", r"\1", c.get("text") or "", flags=re.I)) for c in inner):
+                        self._frame = fr
+                        await self._dismiss_cookie_banner()
+                        return await self._click_control(pattern, exclude=set())
+                await self._page.wait_for_timeout(1500)
         if not cands:
             return None
         chosen = cands[0]
