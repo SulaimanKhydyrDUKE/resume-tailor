@@ -362,7 +362,10 @@ async def _create_account(session: ApplySession, profile: Profile) -> str:
 
     async def click_text(pattern: str) -> bool:
         for c in await controls():
-            if re.search(r"^(?:" + pattern + r")$", (c.get("text") or "").strip(), re.I) or re.search(pattern, (c.get("text") or "").strip(), re.I):
+            text = (c.get("text") or "").strip()
+            if re.search(r"google|linkedin|apple|microsoft|facebook|\bsso\b|okta|single sign", text, re.I):
+                continue  # another provider's sign-in, never the applicant's e-mail route
+            if re.search(r"^(?:" + pattern + r")$", text, re.I) or re.search(pattern, text, re.I):
                 if await _click_hard(session, c["selector"]):
                     await session._page.wait_for_timeout(1500)
                     await session._pick_frame()
@@ -434,6 +437,23 @@ async def _create_account(session: ApplySession, profile: Profile) -> str:
         # form — Medline's Workday: the e-mail route leads to the account form.
         if await click_text(r"sign in with e-?mail|continue with e-?mail|use (my )?e-?mail( address)?|apply with e-?mail"):
             fields = await session.describe_form()
+    if not any(f.get("type") == "password" for f in fields) and emails_of(fields):
+        # "Enter your e-mail to begin" (iCIMS's campus sites, Oracle, TikTok):
+        # no password anywhere — the site mails a code or a link next. Give
+        # it the e-mail, tick its consent box, press on; the caller reads the
+        # inbox for what comes.
+        await put(emails_of(fields)[0], email)
+        for f in await session.describe_form():
+            if f.get("type") == "checkbox" and not f.get("checked"):
+                try:
+                    await session.fill(f["selector"], "yes", f)
+                except Exception:
+                    pass
+        if await press(r"next|continue|send (verification )?code|get code|sign in|log ?in|submit|begin|start"):
+            await session._page.wait_for_timeout(2000)
+            still = [f for f in await session.describe_form() if f.get("type") in ("email",) and not f.get("value")]
+            if not still or await _code_fields(session) or await _link_wall(session):
+                return "email_step"
     if not any(f.get("type") == "password" and re.search(r"verify|confirm|re-?enter", f.get("label") or "", re.I) for f in fields):
         await click_text(r"create (an )?account|sign up|register|new user")
     created = False

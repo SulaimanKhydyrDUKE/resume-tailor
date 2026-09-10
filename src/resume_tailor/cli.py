@@ -648,7 +648,8 @@ async def _submit(args: argparse.Namespace) -> int:
     state = RunState.load(out / "batch-state.json")
     from .profile import apply_once_at_company
     apply_once = apply_once_at_company(profile.answers)
-    session = ApplySession(headless=True, profile_dir=DEFAULT_PROFILE_DIR.parent / "approve-profiles" / _safe(entry.id)[:16])
+    session = ApplySession(headless=not bool(getattr(args, "show", False)),
+                           profile_dir=DEFAULT_PROFILE_DIR.parent / "approve-profiles" / _safe(entry.id)[:16])
     print(f"submitting {entry.company_hint} — {entry.title}", file=sys.stderr, flush=True)
     try:
         o = await _process_one(session, profile, entry, out, shots, apply_once, state, dry_run=False,
@@ -806,6 +807,7 @@ def main() -> int:
     psb.add_argument("posting", help="an id from the dashboard, or a company name")
     psb.add_argument("--out", default="output")
     psb.add_argument("--profile", default=None)
+    psb.add_argument("--show", action="store_true", help="a visible Chrome window: some boards' bot checks stall in a headless one")
     psb.set_defaults(func=lambda a: asyncio.run(_submit(a)))
     prv = sub.add_parser("review", help="open one posting's form in a visible Chrome window, filled in, for you to check and submit")
     prv.add_argument("posting", help="a posting id from the dashboard, or a company name")

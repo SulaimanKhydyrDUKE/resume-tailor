@@ -865,7 +865,10 @@ _APPLY_STEP2_TEXT = re.compile(
 _COOKIE_JS = """
 () => {
   const vis = e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
-  const ok = /^\\s*(accept( all)?( cookies)?|allow( all)?( cookies)?|i (accept|agree)|agree|got it|ok(ay)?|accept and (close|continue))\\s*$/i;
+  // Cookie strips, and the product tours that sit over a page the same way
+  // (TikTok's "AI assistant guide" mask covers its Apply button until
+  // "Maybe Later" is pressed).
+  const ok = /^\\s*(accept( all)?( cookies)?|allow( all)?( cookies)?|i (accept|agree)|agree|got it|ok(ay)?|accept and (close|continue)|maybe later|not now|no,? thanks|close guide|skip( the)? tour|dismiss)\\s*$/i;
   for (const b of document.querySelectorAll('button, a, [role=button], input[type=button]')) {
     if (!vis(b)) continue;
     const t = ((typeof b.innerText === 'string' ? b.innerText : '') || (typeof b.value === 'string' ? b.value : '')).trim();
@@ -878,7 +881,7 @@ _COOKIE_JS = """
       // dialog is allowed that much, anything else is a page, not a banner.
       const dialog = node.matches('[role=dialog], [aria-modal="true"], [class*="dialog" i], [class*="modal" i], [class*="consent" i], [class*="privacy" i], [class*="cookie" i]');
       if (txt.length > (dialog ? 12000 : 2500)) break;
-      if (/cookie|consent|privacy|gdpr|agreement/i.test(txt)) { b.click(); return t; }
+      if (/cookie|consent|privacy|gdpr|agreement|guide|assistant|tour|walkthrough/i.test(txt)) { b.click(); return t; }
       node = node.parentElement; depth++;
     }
   }
