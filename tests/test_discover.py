@@ -30,7 +30,7 @@ def L(**kw):
     return base
 
 
-P = Prefs()
+P = Prefs(max_posting_age_days=0)  # fixtures use tiny epochs as ordering stubs, not dates
 
 # --- is_us ------------------------------------------------------------------
 check("state suffix -> US", is_us(["Huntsville, AL"]) is True)
@@ -64,7 +64,7 @@ check("no season at all kept", evaluate(L(title="Software Engineer Co-op"), P) =
 check("Fall 2026 + Summer 2027 accepted", evaluate(L(terms=["Fall 2026", "Summer 2027"]), P) == "")
 check("AI/ML category read by default (its title gate decides)", not evaluate(L(category="AI/ML/Data"), P).startswith("category"))
 check("AI/ML category rejected when the profile narrows categories to software",
-      evaluate(L(category="AI/ML/Data"), Prefs(categories=["software"])).startswith("category"))
+      evaluate(L(category="AI/ML/Data"), Prefs(max_posting_age_days=0, categories=["software"])).startswith("category"))
 check("'Software Engineering' category accepted", evaluate(L(category="Software Engineering"), P) == "")
 check("hardware title rejected", evaluate(L(title="Hardware Engineer Intern"), P).startswith("title"))
 check("product specialist rejected", evaluate(L(title="Product Specialist Intern"), P).startswith("title"))
@@ -73,9 +73,9 @@ check("'Systems Engineer Intern - Summer Games' accepted", evaluate(L(title="Sys
 check("London-only rejected", evaluate(L(locations=["London, UK"]), P) == "outside US")
 check("PhD-only rejected", evaluate(L(degrees=["PhD"]), P) == "PhD-only")
 check("PhD + Bachelor's accepted", evaluate(L(degrees=["PhD", "Bachelor's"]), P) == "")
-check("company blacklist honoured", evaluate(L(company_name="Wayfair"), Prefs(company_blacklist=["wayfair"])) == "company blacklist")
-check("title blacklist honoured", evaluate(L(title="Software Engineer Intern - Clearance"), Prefs(title_blacklist=["clearance"])) == "title blacklist")
-check("require_us=False keeps London", evaluate(L(locations=["London, UK"]), Prefs(require_us=False)) == "")
+check("company blacklist honoured", evaluate(L(company_name="Wayfair"), Prefs(max_posting_age_days=0, company_blacklist=["wayfair"])) == "company blacklist")
+check("title blacklist honoured", evaluate(L(title="Software Engineer Intern - Clearance"), Prefs(max_posting_age_days=0, title_blacklist=["clearance"])) == "title blacklist")
+check("require_us=False keeps London", evaluate(L(locations=["London, UK"]), Prefs(max_posting_age_days=0, require_us=False)) == "")
 
 # --- ats --------------------------------------------------------------------
 check("lever posting -> /apply", ats.apply_url_for("https://jobs.lever.co/palantir/abc") == "https://jobs.lever.co/palantir/abc/apply")
@@ -152,7 +152,7 @@ with tempfile.TemporaryDirectory() as d:
 # --- one posting per company, chosen by position preference ------------------
 from resume_tailor.discover import one_per_company, position_score
 
-PREF = Prefs(positions=["Software Engineer Intern", "Backend Engineer Intern", "Platform Engineer Intern",
+PREF = Prefs(max_posting_age_days=0, positions=["Software Engineer Intern", "Backend Engineer Intern", "Platform Engineer Intern",
                         "Full-stack Engineer Intern", "Frontend Engineer Intern"])
 check("position_score: backend beats frontend by list order",
       position_score("Backend Software Engineer Intern", PREF.positions) < position_score("Frontend Software Engineer Intern", PREF.positions))
@@ -173,15 +173,15 @@ verkada = [
     L(id="v-back", company_name="Verkada", title="Backend Software Engineer Intern", date_posted=300),
     L(id="other", company_name="Other Co", title="Software Engineer Intern"),
 ]
-kept = one_per_company(verkada, Prefs(positions=["Backend Engineer Intern", "Software Engineer Intern"]))
+kept = one_per_company(verkada, Prefs(max_posting_age_days=0, positions=["Backend Engineer Intern", "Software Engineer Intern"]))
 check("one per company: Verkada collapses to its backend posting",
       sorted(l["id"] for l in kept) == ["other", "v-back"], [l["id"] for l in kept])
-generic_first = Prefs(positions=["Software Engineer Intern", "Backend Engineer Intern", "Full-stack Engineer Intern"])
+generic_first = Prefs(max_posting_age_days=0, positions=["Software Engineer Intern", "Backend Engineer Intern", "Full-stack Engineer Intern"])
 kept2 = one_per_company(verkada, generic_first)
 check("one per company with the user's actual order (generic first) still picks Backend, not Mobile",
       sorted(l["id"] for l in kept2) == ["other", "v-back"], [l["id"] for l in kept2])
 with tempfile.TemporaryDirectory() as d:
-    sel, ex = select(verkada, Prefs(positions=["Backend Engineer Intern"]), RunState.load(Path(d) / "s.json"))
+    sel, ex = select(verkada, Prefs(max_posting_age_days=0, positions=["Backend Engineer Intern"]), RunState.load(Path(d) / "s.json"))
     check("select applies the company collapse and reports it",
           [e.id for e in sel] == ["v-back", "other"] or [e.id for e in sel] == ["other", "v-back"], [e.id for e in sel])
 
@@ -209,12 +209,27 @@ with tempfile.TemporaryDirectory() as d:
                       L(id="a2", company_name="Amex Co", url="https://jobs.lever.co/amex/1?utm_source=y"),
                       L(id="a3", company_name="Amex Co", url="https://jobs.lever.co/amex/2"),
                       L(id="b1", company_name="Other Co", url="https://jobs.lever.co/other/1")]
-    _cool_prefs = Prefs(positions=["Software Engineer Intern"], apply_once_at_company=False, company_cooldown_days=7)
+    _cool_prefs = Prefs(max_posting_age_days=0, positions=["Software Engineer Intern"], apply_once_at_company=False, company_cooldown_days=7)
     _cool_sel, _cool_why = select(_cool_listings, _cool_prefs, _cool)
     _cool_ids = {e.id for e in _cool_sel}
     check("dedupe: the same link under another tracking tag is not a new posting", "a2" not in _cool_ids and _cool_why.get("same link already attempted", 0) >= 1)
     check("cooldown: a company applied to this week rests", "a3" not in _cool_ids and _cool_why.get("applied at this company within 7 days", 0) >= 1)
     check("cooldown: other companies are unaffected", "b1" in _cool_ids)
+    import time as _tm
+    _age_listings = [L(id="o1", company_name="Old Co", url="https://jobs.lever.co/old/1", date_posted=int(_tm.time()) - 40 * 86400),
+                     L(id="n1", company_name="New Co", url="https://jobs.lever.co/new/1", date_posted=int(_tm.time()) - 3 * 86400),
+                     L(id="u1", company_name="Undated Co", url="https://jobs.lever.co/undated/1", date_posted=0),
+                     L(id="r1", company_name="Retry Co", url="https://jobs.lever.co/retry/1", date_posted=int(_tm.time()) - 40 * 86400)]
+    _age_state = RunState(path=Path(tempfile.mkdtemp()) / "s.json",
+                          done={"r1": {"status": "needs_review", "company": "Retry Co", "attempts": 1, "detail": "could not answer"}})
+    _age_sel, _age_why = select(_age_listings, Prefs(positions=["Software Engineer Intern"], max_posting_age_days=21), _age_state)
+    _age_ids = {e.id for e in _age_sel}
+    check("age cap: a posting from 40 days ago is left out", "o1" not in _age_ids and _age_why.get("older than 21 days") == 1)
+    check("age cap: a posting from this week is dealt", "n1" in _age_ids)
+    check("age cap: an undated posting passes", "u1" in _age_ids)
+    check("age cap: a retry already in flight is not held back", "r1" in _age_ids)
+    _nocap_sel, _ = select(_age_listings, Prefs(positions=["Software Engineer Intern"], max_posting_age_days=0), None)
+    check("age cap: 0 turns the cap off", "o1" in {e.id for e in _nocap_sel})
 
 
 # --- the AI/ML/Data category: engineering titles in, quant and research out ---
@@ -223,12 +238,12 @@ def _l(title, category):
     return {"id": "x", "url": "https://boards.greenhouse.io/x/jobs/1", "company_name": "X", "title": title,
             "locations": ["Durham, NC"], "date_posted": 1700000000, "terms": ["Summer 2027"], "category": category,
             "active": True, "is_visible": True, "degrees": []}
-check("ai category: a machine learning engineer intern is worth reading", _eval(_l("Machine Learning Engineer Intern", "AI/ML/Data"), _Prefs()) == "")
-check("ai category: a data science intern is worth reading", _eval(_l("Data Science Intern - Summer 2027", "AI/ML/Data"), _Prefs()) == "")
-check("ai category: a quant title stays out", _eval(_l("Quantitative Researcher Intern", "AI/ML/Data"), _Prefs()).startswith("title"))
-check("ai category: a marketing analytics title stays out", _eval(_l("Marketing Data Intern", "AI/ML/Data"), _Prefs()).startswith("title"))
-check("ai category: hardware is still not read", _eval(_l("Hardware Engineer Intern", "Hardware Engineering"), _Prefs()).startswith("category"))
-check("ai category: a profile can narrow the categories", _eval(_l("Machine Learning Engineer Intern", "AI/ML/Data"), _Prefs(categories=["software"])).startswith("category"))
+check("ai category: a machine learning engineer intern is worth reading", _eval(_l("Machine Learning Engineer Intern", "AI/ML/Data"), _Prefs(max_posting_age_days=0, )) == "")
+check("ai category: a data science intern is worth reading", _eval(_l("Data Science Intern - Summer 2027", "AI/ML/Data"), _Prefs(max_posting_age_days=0, )) == "")
+check("ai category: a quant title stays out", _eval(_l("Quantitative Researcher Intern", "AI/ML/Data"), _Prefs(max_posting_age_days=0, )).startswith("title"))
+check("ai category: a marketing analytics title stays out", _eval(_l("Marketing Data Intern", "AI/ML/Data"), _Prefs(max_posting_age_days=0, )).startswith("title"))
+check("ai category: hardware is still not read", _eval(_l("Hardware Engineer Intern", "Hardware Engineering"), _Prefs(max_posting_age_days=0, )).startswith("category"))
+check("ai category: a profile can narrow the categories", _eval(_l("Machine Learning Engineer Intern", "AI/ML/Data"), _Prefs(max_posting_age_days=0, categories=["software"])).startswith("category"))
 
 # --- sharding: every company on one worker; every listing on some worker ---
 from resume_tailor.discover import shard_of, select as _select, Prefs as _Prefs
@@ -238,11 +253,11 @@ _pool = [{"id": f"s{i}", "url": f"https://boards.greenhouse.io/x/jobs/{i}", "com
          for i, c in enumerate(["Acme", "Acme Inc.", "The Acme Company", "Beta Corp", "Gamma", "Delta Labs", "Epsilon", "Zeta", "Eta", "Theta"])]
 check("shard: a company's spellings land on one worker",
       len({shard_of(l, 4) for l in _pool if "acme" in l["company_name"].lower()}) == 1)
-_by_shard = {k: {e.id for e in _select(_pool, _Prefs(apply_once_at_company=False), None, shard=(k, 4))[0]} for k in range(4)}
+_by_shard = {k: {e.id for e in _select(_pool, _Prefs(max_posting_age_days=0, apply_once_at_company=False), None, shard=(k, 4))[0]} for k in range(4)}
 check("shard: the four workers' slices are disjoint", all(not (_by_shard[a] & _by_shard[b]) for a in range(4) for b in range(4) if a < b))
 check("shard: the four workers' slices cover the pool", set().union(*_by_shard.values()) == {l["id"] for l in _pool})
-check("shard: an unsharded select is the whole pool", len(_select(_pool, _Prefs(apply_once_at_company=False), None)[0]) == len(_pool))
-_excl = _select(_pool, _Prefs(apply_once_at_company=False), None, shard=(0, 4))[1]
+check("shard: an unsharded select is the whole pool", len(_select(_pool, _Prefs(max_posting_age_days=0, apply_once_at_company=False), None)[0]) == len(_pool))
+_excl = _select(_pool, _Prefs(max_posting_age_days=0, apply_once_at_company=False), None, shard=(0, 4))[1]
 check("shard: the rest are counted as other workers' companies", _excl.get("other workers' companies", 0) == len(_pool) - len(_by_shard[0]))
 
 # --- the Software category vouches for plain titles; fit orders the pool; login walls stop retrying ---
@@ -254,7 +269,7 @@ check("gate: a Software-category operations title still stays out", evaluate(L(t
 _fit = [L(id="ds", company_name="DataCo", title="Data Science Intern", category="AI/ML/Data", date_posted=900),
         L(id="ba", company_name="BizCo", title="Business Analyst Intern", category="Analyst", date_posted=800),
         L(id="swe", company_name="SoftCo", title="Software Engineer Intern", date_posted=100)]
-_order = [e.id for e in select(_fit, Prefs(apply_once_at_company=False), None)[0]]
+_order = [e.id for e in select(_fit, Prefs(max_posting_age_days=0, apply_once_at_company=False), None)[0]]
 check("order: software roles lead, analyst next, AI/ML/Data last, however new", _order == ["swe", "ba", "ds"], str(_order))
 check("gate: the AI/ML/Data category vouches for its own titles", evaluate(L(title="Research Scientist Intern", category="AI/ML/Data"), P) == "")
 check("gate: a quant title in the AI/ML/Data category still stays out",
@@ -262,9 +277,9 @@ check("gate: a quant title in the AI/ML/Data category still stays out",
 check("gate: the Product category admits product management interns", evaluate(L(title="Product Management Intern", category="Product"), P) == "")
 check("gate: the Product category admits product manager interns", evaluate(L(title="Product Manager Intern - Summer 2027", category="Product"), P) == "")
 check("gate: a product specialist stays out", evaluate(L(title="Product Specialist Intern", category="Product"), P) == "title: not an engineering role")
-check("gate: a profile can leave Product out", evaluate(L(title="Product Manager Intern", category="Product"), Prefs(categories=["software"])) == "category: Product")
+check("gate: a profile can leave Product out", evaluate(L(title="Product Manager Intern", category="Product"), Prefs(max_posting_age_days=0, categories=["software"])) == "category: Product")
 _pm = [L(id="pm", company_name="PmCo", title="Product Manager Intern", category="Product", date_posted=950)] + _fit
-check("order: product comes after AI/ML/Data", [e.id for e in select(_pm, Prefs(apply_once_at_company=False), None)[0]] == ["swe", "ba", "ds", "pm"])
+check("order: product comes after AI/ML/Data", [e.id for e in select(_pm, Prefs(max_posting_age_days=0, apply_once_at_company=False), None)[0]] == ["swe", "ba", "ds", "pm"])
 import os as _os
 _os.environ["RESUME_TAILOR_APPLY_ONCE_AT_COMPANY"] = "0"
 try:
@@ -280,23 +295,23 @@ _held = RunState(path=Path(tempfile.mkdtemp()) / "state.json")
 _held.record("h1", {"status": "fit_rejected", "company": "Shure"}); _held.record("h2", {"status": "fit_rejected", "company": "Shure"})
 _third = [L(id="h3", company_name="Shure", title="Cloud Software Engineer Intern")]
 check("held twice: blocks the company only under the one-per-company rule",
-      [e.id for e in select(_third, Prefs(apply_once_at_company=True), _held)[0]] == []
-      and [e.id for e in select(_third, Prefs(apply_once_at_company=False), _held)[0]] == ["h3"])
+      [e.id for e in select(_third, Prefs(max_posting_age_days=0, apply_once_at_company=True), _held)[0]] == []
+      and [e.id for e in select(_third, Prefs(max_posting_age_days=0, apply_once_at_company=False), _held)[0]] == ["h3"])
 _days = [L(id="old-swe", date_posted=100),
          L(id="new-pm", company_name="PmCo", title="Product Manager Intern", category="Product", date_posted=100 + 3 * 86400)]
-check("order: a newer day goes first whatever the fit", [e.id for e in select(_days, Prefs(apply_once_at_company=False), None)[0]] == ["new-pm", "old-swe"])
+check("order: a newer day goes first whatever the fit", [e.id for e in select(_days, Prefs(max_posting_age_days=0, apply_once_at_company=False), None)[0]] == ["new-pm", "old-swe"])
 _same = RunState(path=Path(tempfile.mkdtemp()) / "state.json")
 _same.record("a1", {"status": "applied", "company": "Acme"})
 _twice = [L(id="a1", url="https://job-boards.greenhouse.io/acme/jobs/9"), L(id="a2", url="https://job-boards.greenhouse.io/acme/jobs/9")]
-_ids, _why = select(_twice, Prefs(apply_once_at_company=False), _same)
+_ids, _why = select(_twice, Prefs(max_posting_age_days=0, apply_once_at_company=False), _same)
 check("same link: a second id for an attempted link is not attempted again", [e.id for e in _ids] == [] and _why.get("same link already attempted") == 1)
 _dup = RunState(path=Path(tempfile.mkdtemp()) / "state.json")
 _dup.record("sn1", {"status": "applied", "company": "Sierra Nevada", "role": "Software Engineer Intern"})
 _pair = [L(id="sn1", company_name="Sierra Nevada", url="https://sn.wd1.myworkdayjobs.com/a"),
          L(id="sn2", company_name="Sierra Nevada", url="https://sn.wd1.myworkdayjobs.com/b")]
 check("same title: a second posting with the same title is attempted when the per-company rule is off",
-      [e.id for e in select(_pair, Prefs(apply_once_at_company=False), _dup)[0]] == ["sn2"]
-      and [e.id for e in select(_pair, Prefs(apply_once_at_company=True), _dup)[0]] == [])
+      [e.id for e in select(_pair, Prefs(max_posting_age_days=0, apply_once_at_company=False), _dup)[0]] == ["sn2"]
+      and [e.id for e in select(_pair, Prefs(max_posting_age_days=0, apply_once_at_company=True), _dup)[0]] == [])
 _wall = RunState(path=Path(tempfile.mkdtemp()) / "state.json")
 for _ in range(_LCAP + 1):
     _wall.record("wall", {"status": "needs_login", "detail": "this site wants an account or a sign-in"})

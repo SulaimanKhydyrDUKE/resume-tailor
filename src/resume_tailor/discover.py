@@ -143,6 +143,10 @@ class Prefs:
     apply_once_at_company: bool = True
     # With apply-once off: days a company rests after an application there.
     company_cooldown_days: int = 7
+    # A posting older than this (by its listed date) is not attempted: the
+    # audit found applications in a posting's fourth week or later produced
+    # rejections and silence, never an assessment. 0 = no cap.
+    max_posting_age_days: int = 21
     positions: list[str] = field(default_factory=list)
     jobright_account: bool = False  # the tool's browser is signed in to jobright.ai, so its links resolve
     # Listing categories worth reading (substrings of the source's category):
@@ -168,6 +172,7 @@ class Prefs:
             exclude_phd_only=bool(s.get("exclude_phd_only", True)),
             apply_once_at_company=_apply_once(s_all),
             company_cooldown_days=int(s.get("company_cooldown_days", 7) or 0),
+            max_posting_age_days=int(s.get("max_posting_age_days", 21) or 0),
             jobright_account=bool(s.get("jobright_account", False)),
         )
 
@@ -617,8 +622,15 @@ def select(listings: list[dict], prefs: Prefs, state: RunState | None = None,
                 judged_roles.add(role_key_of(rec.get("company") or company, rec["role"]))
             if rec.get("status") == "fit_rejected" and company:
                 holds_at[company_key(company)] = holds_at.get(company_key(company), 0) + 1
+    max_age = int(getattr(prefs, "max_posting_age_days", 21) or 0)
+    stale_before = int(time.time()) - max_age * 86400 if max_age else 0
     for l in listings:
         reason = evaluate(l, prefs)
+        attempted_before = state is not None and (l.get("id") or l.get("url")) in state.done
+        if not reason and stale_before and not attempted_before and 0 < int(l.get("date_posted") or 0) < stale_before:
+            # Never attempted and past the cap: a retry of something already
+            # in flight is not held back by the date it went up.
+            reason = f"older than {max_age} days"
         if not reason and state is not None:
             role_key = role_key_of(l.get("company_name") or "", l.get("title") or "")
             if state.already_attempted(l.get("id") or l.get("url", ""), RETRYABLE):

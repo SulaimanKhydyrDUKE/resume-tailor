@@ -924,6 +924,29 @@ check("network: a blank page takes the wait-and-retry path",
       bool(_NETWORK_ERROR.search("could not load the application form: the page came up blank or as a browser error")))
 check("network: a real missing form does not", not _NETWORK_ERROR.search("no application form was found on this page"))
 
+# --- résumé lint and the current employer ------------------------------------
+from types import SimpleNamespace as _NS
+from resume_tailor import gates as _gates
+from resume_tailor.batch import _current_employer, _CURRENT_EMPLOYER
+_lint_html = "<ul><li>Built a <b>note</b> platform: rich-text notes, LaTeX editing, and university community features.</li>" \
+             "<li>, won the ACM HotMobile Best Demo Award</li><li>Go</li></ul>"
+_lint_pdf = "Built a note platform: rich-text notes, LaTeX editing, and university comm\nwon the ACM HotMobile Best Demo Award"
+_lv = _gates.check_bullets_survive(_lint_html, _lint_pdf)
+check("lint: a bullet cut off in the PDF is flagged as clipped", any(v.kind == "clipped" for v in _lv))
+check("lint: a bullet starting with a comma is flagged", any(v.kind == "leading-punctuation" for v in _lv))
+check("lint: a two-letter item is ignored", not any(v.claim == "Go" for v in _lv))
+_ok = _gates.check_bullets_survive("<li>Designed full-stack features across Next.js, PostgreSQL/Prisma &amp; the Gemini API.</li>",
+                                   "Designed full-stack features across Next.js,\nPostgreSQL/Prisma & the Gemini API.")
+check("lint: a bullet that survives line breaks and entities passes", _ok == [])
+_prof = _NS(career={"experience_details": [
+    {"position": "Software Engineer Intern", "company": "Qapps", "employment_period": "05/2026 - 06/2026"},
+    {"position": "Undergraduate Teaching Assistant — CS 210", "company": "Duke University, Department of Computer Science", "employment_period": "08/2025 - Present"}]})
+check("current employer: the ongoing role's organisation, not the department", _current_employer(_prof) == "Duke University")
+check("current employer: none when no role is ongoing", _current_employer(_NS(career={"experience_details": [{"company": "X", "employment_period": "2024 - 2025"}]})) is None)
+check("current employer: Lever's 'Current company' matches", bool(_CURRENT_EMPLOYER.search("Current company ✱")))
+check("current employer: 'Company name' under a work entry does not", not _CURRENT_EMPLOYER.search("Company name*"))
+
+
 width = max(len(n) for n, _, _ in RESULTS)
 failed = 0
 for name, ok, detail in RESULTS:

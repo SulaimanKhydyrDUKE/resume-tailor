@@ -11,6 +11,7 @@ role where you led nobody.
 """
 from __future__ import annotations
 
+import html as _html
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -175,6 +176,31 @@ def check_rendered(text: str, must_contain: dict[str, str]) -> list[Violation]:
         out.append(Violation("thin-text", "", f"text layer is only {len(text.strip())} chars — the render may have failed"))
     if any(unicodedata.category(c) == "Co" for c in text):
         out.append(Violation("private-use", "", "private-use characters present in the text layer"))
+    return out
+
+
+def _letters(s: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
+
+def check_bullets_survive(html: str, text: str) -> list[Violation]:
+    """Every list item the HTML carries must come out of the PDF whole. A
+    bullet the page cut off ("…LaTeX editing, and university comm" stood on
+    311 résumés) reads as a typo to a human and a broken sentence to a
+    parser; one that starts with punctuation (", won the ACM…") is the
+    composer's join gone wrong. Compared on letters and digits only, so
+    dashes, quotes and line breaks the extractor rewrites do not count."""
+    flat = _letters(text)
+    out: list[Violation] = []
+    for m in re.finditer(r"<li[^>]*>(.*?)</li>", html, re.S):
+        item = _html.unescape(re.sub(r"<[^>]+>", " ", m.group(1)))
+        item = re.sub(r"\s+", " ", item).strip()
+        if len(item) < 12:
+            continue
+        if item[0] in ",;:.":
+            out.append(Violation("leading-punctuation", item, "a bullet starts with punctuation"))
+        if _letters(item) not in flat:
+            out.append(Violation("clipped", item, "this bullet did not come out of the PDF whole"))
     return out
 
 

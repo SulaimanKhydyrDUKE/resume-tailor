@@ -1104,6 +1104,22 @@ def _snapshot(fields: list[dict], unresolved: list[str], sources: dict[tuple, st
     return out
 
 
+_CURRENT_EMPLOYER = re.compile(r"\b(current|present) (company|employer|organi[sz]ation)\b", re.I)
+
+
+def _current_employer(profile: Profile) -> str | None:
+    """The employer of the record's ongoing role (a period ending in
+    "Present"), organisation only: Lever's résumé parser filled "Current
+    company" with "CS 210 Computer Systems" on nine applications, reading a
+    course name off the Education block."""
+    for exp in profile.career.get("experience_details", []) or []:
+        if re.search(r"present|current|ongoing|now", str(exp.get("employment_period") or ""), re.I):
+            company = str(exp.get("company") or "").strip()
+            if company:
+                return company.split(",")[0].strip() or company
+    return None
+
+
 async def _decide(question: str, field: dict, options: list[str], profile: Profile, posting_text: str,
                   decided: dict[tuple, str | None], sources: dict[tuple, str], plan: dict | None,
                   widget: str) -> str | None:
@@ -1138,6 +1154,12 @@ async def _decide(question: str, field: dict, options: list[str], profile: Profi
         sources[(section, question)] = "answer bank: work_authorization.requires_us_sponsorship"
         decided[key] = picked
         return picked
+    if _CURRENT_EMPLOYER.search(question) and not options and not field.get("combobox"):
+        emp = _current_employer(profile)
+        if emp:
+            sources[(section, question)] = "record: the ongoing role's employer"
+            decided[key] = emp
+            return emp
     if _NO_BANK.search(question):
         # "I currently work here" under a work-experience entry is a fact
         # about that role, decided with the entry by the plan — never the
@@ -1529,7 +1551,8 @@ async def _fill_pass(session: ApplySession, profile: Profile, fields: list[dict]
         # hard fact the bank holds — sponsorship, authorization, clearance —
         # a draft that contradicts the bank is corrected, never kept.
         if (f.get("checked") if f.get("type") in ("checkbox", "radio") else f.get("value")):
-            if f.get("type") in ("checkbox", "radio") or not _HARD_FACT_Q.search(f.get("label") or ""):
+            label_now = f.get("label") or ""
+            if f.get("type") in ("checkbox", "radio") or not (_HARD_FACT_Q.search(label_now) or _CURRENT_EMPLOYER.search(label_now)):
                 continue
             held = str(f.get("value") or "")
             opts_now = f.get("options") or []
@@ -1538,8 +1561,15 @@ async def _fill_pass(session: ApplySession, profile: Profile, fields: list[dict]
                     opts_now = await session.combobox_options(f["selector"], f)
                 except Exception:
                     opts_now = []
-            answer = sponsorship_answer(profile, f["label"], opts_now)
-            why = "answer bank: work_authorization.requires_us_sponsorship" if answer is not None else ""
+            answer, why = None, ""
+            if _CURRENT_EMPLOYER.search(label_now) and not opts_now:
+                # The site's résumé parser pre-fills this from the PDF and
+                # has read a course name as the employer.
+                answer = _current_employer(profile)
+                why = "record: the ongoing role's employer" if answer is not None else ""
+            if answer is None:
+                answer = sponsorship_answer(profile, f["label"], opts_now)
+                why = "answer bank: work_authorization.requires_us_sponsorship" if answer is not None else ""
             if answer is None:
                 answer, why = _bank(profile, f["label"], f, opts_now, strong=True)
                 why = f"answer bank: {why}" if answer is not None else ""
@@ -1877,6 +1907,13 @@ async def _process_one(session: ApplySession, profile: Profile, entry: QueueEntr
         score, result, verdicts, fit_ok = best
         o.pdf, o.coverage = str(result.pdf_path), result.coverage
         pdf_path = result.pdf_path
+        # The résumé lint: a PDF whose text layer lost a bullet, the GPA, the
+        # city or the graduation year is held for a look, never sent.
+        lint = [v for v in (result.render_violations or [])
+                if v.startswith(("[clipped]", "[leading-punctuation]", "[missing-in-pdf]"))]
+        if lint:
+            o.status, o.detail = "needs_review", "résumé lint: " + "; ".join(v[:160] for v in lint[:3])
+            return o
         o.fit = judge.summarize(verdicts, min_score) + (f" (revised ×{o.revisions})" if o.revisions else "")
         if not fit_ok and judge_gate:
             if judge.disqualified(verdicts) or not apply_below_bar:

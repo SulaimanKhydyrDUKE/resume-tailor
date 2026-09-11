@@ -275,6 +275,24 @@ Set evidence_id to "{plan.evidence_id}".{_revision_block(revision, "Where this r
     return draft
 
 
+_SOFT_SKILL = re.compile(
+    r"\b(leadership|communication|teamwork|team ?work|collaboration|collaborative|problem[- ]solving|"
+    r"time management|work ethic|adaptab\w*|interpersonal|critical thinking|presentation skills|"
+    r"attention to detail|self[- ]starter|fast learner|mentoring|claude code|chatgpt|copilot|cursor)\b", re.I)
+
+
+def _must_survive(profile: Profile, email: str) -> dict[str, str]:
+    """What a parser must find in the PDF's text layer. The audit found the
+    GPA on none of 424 résumés and the city on none of the newer ones; a
+    résumé missing any of these is held (batch), not sent."""
+    pi = profile.career.get("personal_information", {}) or {}
+    edu = (profile.career.get("education_details") or [{}])[0] or {}
+    gpa = re.search(r"\d\.\d+", str(edu.get("gpa") or ""))
+    year = re.search(r"20\d\d", str(edu.get("year_of_completion") or ""))
+    return {"email": email, "name": profile.full_name, "city": str(pi.get("city") or ""),
+            "gpa": gpa.group(0) if gpa else "", "graduation year": year.group(0) if year else ""}
+
+
 async def draft_skills(profile: Profile, job: JobSpec, sel: Selection) -> SkillsDraft:
     kw = sorted({k for r in job.requirements for k in r.keywords})
     draft = await _parse(
@@ -287,7 +305,10 @@ Include a term only if an evidence id in the index states it, citing skill*, \
 exp*.s* or proj* ids. Coursework and degrees (edu* ids) are already rendered in \
 the Education section — never list a course or a degree as a skill. Group into \
 two to four labelled lines (e.g. Languages, Infrastructure), most relevant to \
-this posting first. Every term needs a source_fact_ids entry.""",
+this posting first. At most eight terms per line and about twenty in all: a \
+skills block that lists everything reads as keyword stuffing. Tools, languages, \
+frameworks and named methods only — never a trait (leadership, communication, \
+collaboration, problem solving) and never an AI assistant used as a tool.""",
         SkillsDraft, effort="medium",
     )
     # Belt and braces for the rule above: a group sourced only from education
@@ -296,6 +317,13 @@ this posting first. Every term needs a source_fact_ids entry.""",
         g for g in draft.groups
         if not g.source_fact_ids or not all(i.startswith("edu") for i in g.source_fact_ids)
     ]
+    # And for the caps: the audit found blocks of 25 keywords with "team
+    # leadership" and "Claude Code" among them.
+    budget = 20
+    for g in draft.groups:
+        g.terms = [t for t in g.terms if t and not _SOFT_SKILL.search(t)][:8]
+        g.terms, budget = g.terms[:max(0, budget)], budget - len(g.terms)
+    draft.groups = [g for g in draft.groups if g.terms]
     return draft
 
 
@@ -527,7 +555,8 @@ async def _tailor_on_base(profile: Profile, job: JobSpec, out_dir: str | Path, l
     pdf_text = extract_pdf_text(pdf_path)
     pi = profile.career.get("personal_information", {}) or {}
     email = str((base.get("header") or {}).get("email") or pi.get("email", ""))
-    render_violations = gates.check_rendered(pdf_text, {"email": email, "name": profile.full_name})
+    render_violations = (gates.check_rendered(pdf_text, _must_survive(profile, email))
+                         + gates.check_bullets_survive(html, pdf_text))
     warnings: list[str] = []
     if dropped:
         warnings.append(f"{len(dropped)} rewording(s) failed verification and stand in the résumé's own words.")
@@ -613,7 +642,8 @@ async def tailor(profile: Profile, job_description: str, style: str = "clean",
     pdf_text = extract_pdf_text(pdf_path)
 
     pi = profile.career.get("personal_information", {}) or {}
-    render_violations = gates.check_rendered(pdf_text, {"email": pi.get("email", ""), "name": profile.full_name})
+    render_violations = (gates.check_rendered(pdf_text, _must_survive(profile, pi.get("email", "")))
+                         + gates.check_bullets_survive(html, pdf_text))
 
     warnings: list[str] = []
     if dropped:
