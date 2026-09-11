@@ -433,6 +433,53 @@ _STOPWORDS = {
 }
 
 
+SPONSOR_Q = re.compile(r"sponsor|employment eligibility|immigration|visa status|work authori[sz]ation status", re.I)
+_NEG = re.compile(r"\b(no|not|without|never|don'?t|do not|will not|won'?t|none)\b", re.I)
+
+
+def sponsorship_answer(profile: "Profile", label: str, options: list[str]) -> str | None:
+    """The one option a sponsorship question may take, from the bank alone:
+    `work_authorization.requires_us_sponsorship` decides, and an option's
+    own words are read for whether it means needing sponsorship. "Yes, will
+    require firm sponsorship" is never the answer to "legally allowed to
+    work: Yes" — the model once read it that way. None when the question is
+    not about sponsorship, or no option clearly matches the bank."""
+    opts = [str(o) for o in (options or []) if str(o).strip()]
+    if not opts or not (SPONSOR_Q.search(label or "") or any(re.search(r"sponsor", o, re.I) for o in opts)):
+        return None
+    flat = profile.flat_answers()
+    needs = str(flat.get("work_authorization.requires_us_sponsorship") or "").strip().lower()
+    if needs not in ("yes", "no"):
+        return None
+    status = str(flat.get("work_authorization.citizenship_status") or "").lower()
+    if needs == "no":
+        # The status option that names the candidate's own standing first.
+        if re.search(r"permanent resident|green card", status):
+            for o in opts:
+                if re.search(r"permanent resident|green card", o, re.I):
+                    return o
+        if re.search(r"\bcitizen\b", status) and "not" not in status:
+            for o in opts:
+                if re.search(r"\bu\.?s\.? citizen", o, re.I) and not _NEG.search(o):
+                    return o
+        for o in opts:
+            t = o.lower()
+            if re.search(r"sponsor", t) and _NEG.search(t):
+                return o  # "No, I will not require sponsorship", "Authorized without sponsorship"
+        for o in opts:
+            if re.fullmatch(r"\s*no\s*[.!]?\s*", o, re.I):
+                return o
+        return None
+    for o in opts:
+        t = o.lower()
+        if re.search(r"sponsor", t) and not _NEG.search(t):
+            return o
+    for o in opts:
+        if re.fullmatch(r"\s*yes\s*[.!]?\s*", o, re.I):
+            return o
+    return None
+
+
 def apply_once_at_company(answers: dict) -> bool:
     """The one-application-per-company rule: `search.apply_once_at_company`
     in answers.yaml (on unless set), overridden by the environment variable

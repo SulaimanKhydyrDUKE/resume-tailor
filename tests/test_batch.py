@@ -614,6 +614,25 @@ _post = [{"qid": "p1", "key": planner.question_key("Is the position you are appl
           "section": "", "widget": "select", "options": ["Yes", "No"], "required": True, "maxlength": None, "hint": "", "bank": ""}]
 _post_plan = planner.rails([FieldAnswer(id="p1", answer="No", basis=["posting"], skip=False, essay=False, reason="the posting is in Pittsburgh")], _post, _pl)
 check("rails: a question about the posting is answered from the posting", _post_plan[_post[0]["key"]].answer == "No")
+from resume_tailor.profile import sponsorship_answer
+_spon = _P(career={"personal_information": {"name": "A", "surname": "B"}},
+           answers={"work_authorization": {"requires_us_sponsorship": "No", "us_work_authorization": "Yes", "citizenship_status": "U.S. lawful permanent resident (green card holder)"}}, root=Path("/tmp"))
+check("sponsorship: a status picker takes the candidate's own standing",
+      sponsorship_answer(_spon, "Employment eligibility status*", ["U.S. Citizen", "Permanent Resident", "Yes, will require firm sponsorship", "No, will not require firm sponsorship"]) == "Permanent Resident")
+check("sponsorship: a yes/no sponsorship question is No",
+      sponsorship_answer(_spon, "Will you now or in the future require immigration sponsorship by our company?", ["Yes", "No"]) == "No")
+check("sponsorship: the option worded 'without sponsorship' is chosen",
+      sponsorship_answer(_spon, "Work authorization", ["Will require sponsorship now or in the future", "Authorized to work without sponsorship"]) == "Authorized to work without sponsorship")
+check("sponsorship: 'will require' is never chosen for a permanent resident",
+      sponsorship_answer(_spon, "Employment eligibility status", ["Yes, will require firm sponsorship", "Maybe"]) is None)
+check("sponsorship: an unrelated question is left alone", sponsorship_answer(_spon, "Are you at least 18?", ["Yes", "No"]) is None)
+_sq = [{"qid": "s1", "key": planner.question_key("Employment eligibility status", "select"), "label": "Employment eligibility status", "section": "", "widget": "select",
+        "options": ["U.S. Citizen", "Permanent Resident", "Yes, will require firm sponsorship"], "required": True, "maxlength": None, "hint": "", "bank": ""}]
+_sq_plan = planner.rails([FieldAnswer(id="s1", answer="Yes, will require firm sponsorship", basis=["work_authorization.us_work_authorization"], skip=False, essay=False, reason="legally allowed")], _sq, _spon)
+check("rails: the model's 'will require sponsorship' is replaced by the bank's answer", _sq_plan[_sq[0]["key"]].answer == "Permanent Resident")
+from resume_tailor.compose import education as _edu_html
+check("compose: a GPA on the record is rendered", "GPA 3.42/4.0" in _edu_html({"education_details": [{"education_level": "B.S.", "field_of_study": "CS", "institution": "Duke", "year_of_completion": "2028", "gpa": "3.42/4.0"}]}))
+check("compose: no GPA field, no GPA line", "GPA" not in _edu_html({"education_details": [{"education_level": "B.S.", "institution": "Duke"}]}))
 check("picker: 'Raleigh, NC' finds Raleigh", _AS._match_option("Raleigh, NC", _opts) == 2)
 _edu = _P(career={"personal_information": {"name": "A", "surname": "B"}},
           answers={"availability": {"earliest_start_date": "May 2027"},

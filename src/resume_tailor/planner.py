@@ -24,7 +24,7 @@ from dataclasses import dataclass
 
 from .apply import _pick_option, closest_option
 from .models import FieldAnswer, FormPlan
-from .profile import Profile
+from .profile import SPONSOR_Q, Profile, sponsorship_answer
 
 # Questions about another person or organisation. The candidate's own name,
 # phone and address are never the answer to these, however well the words match.
@@ -356,6 +356,17 @@ def rails(answers: list[FieldAnswer], questions: list[dict], profile: Profile) -
             company = _title_to_company(profile, answer)
             if company:
                 answer = company
+        if q["options"] and SPONSOR_Q.search(q["label"]):
+            # A sponsorship question takes the bank's answer, whatever the
+            # model chose: "Yes, will require firm sponsorship" for a
+            # permanent resident is the one answer that must never go out.
+            fixed = sponsorship_answer(profile, q["label"], q["options"])
+            if fixed is not None:
+                decisions[key] = Decision(fixed, reason="the bank's sponsorship answer, in the form's own words")
+                continue
+            if re.search(r"sponsor", answer, re.I) and not re.search(r"\b(no|not|without)\b", answer, re.I):
+                decisions[key] = Decision(None, reason="would claim to need sponsorship; the bank says otherwise")
+                continue
         if q["options"]:
             wanted = [p.strip() for p in answer.split("|")] if q["widget"] == "checkboxes" else [answer]
             chosen: list[str] = []

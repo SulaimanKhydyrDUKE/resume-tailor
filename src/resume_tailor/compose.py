@@ -136,6 +136,8 @@ def education(career: dict) -> str:
         grade = ed.get("final_evaluation_grade")
         if grade:
             meta += f" &middot; {esc(str(grade))}"
+        if ed.get("gpa"):
+            meta += f" &middot; GPA {esc(str(ed['gpa']))}"
         course = ed.get("coursework") or []
         coursework = (
             f'\n    <p class="entry-meta"><strong>Coursework:</strong> '
@@ -262,6 +264,9 @@ def document_from_base(career: dict, base: dict, exp_drafts: list[RoleDraft]) ->
     edu = base.get("education") or {}
     degree = str(edu.get("degree") or ", ".join(x for x in (ed.get("education_level"), ed.get("field_of_study")) if x))
     grad = str(edu.get("graduation") or ed.get("year_of_completion") or "")
+    gpa = str(edu.get("gpa") or ed.get("gpa") or "").strip()
+    if gpa:
+        grad = f"{grad} · GPA {gpa}" if grad else f"GPA {gpa}"
     lines = []
     if edu.get("coursework"):
         lines.append(f"<li><strong>Coursework:</strong> {esc(str(edu['coursework']))}</li>")

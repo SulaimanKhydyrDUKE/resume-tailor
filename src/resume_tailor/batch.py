@@ -26,7 +26,7 @@ from . import ats, freetext, judge, mailbox, planner, qa
 from .apply import (ApplySession, _SIGNIN_TEXT, _is_empty, _looks_like_application, _pick_option, _value_parts, _YES_WORDS,
                     closest_option, detect_blocker)
 from .planner import Decision
-from .profile import Profile
+from .profile import Profile, sponsorship_answer
 from .render import extract_pdf_text
 from .queue import QueueEntry, RunState, company_key, load_queue
 from .tailor import tailor
@@ -1117,6 +1117,14 @@ async def _decide(question: str, field: dict, options: list[str], profile: Profi
         # the wrong thing there.
         decided[key] = None
         return None
+    picked = sponsorship_answer(profile, question, options)
+    if picked is not None:
+        # Sponsorship is the bank's to answer, in the option's own words:
+        # the model once read "legally allowed to work: Yes" as "Yes, will
+        # require firm sponsorship".
+        sources[(section, question)] = "answer bank: work_authorization.requires_us_sponsorship"
+        decided[key] = picked
+        return picked
     if _NO_BANK.search(question):
         # "I currently work here" under a work-experience entry is a fact
         # about that role, decided with the entry by the plan — never the
@@ -1517,8 +1525,11 @@ async def _fill_pass(session: ApplySession, profile: Profile, fields: list[dict]
                     opts_now = await session.combobox_options(f["selector"], f)
                 except Exception:
                     opts_now = []
-            answer, why = _bank(profile, f["label"], f, opts_now, strong=True)
-            why = f"answer bank: {why}" if answer is not None else ""
+            answer = sponsorship_answer(profile, f["label"], opts_now)
+            why = "answer bank: work_authorization.requires_us_sponsorship" if answer is not None else ""
+            if answer is None:
+                answer, why = _bank(profile, f["label"], f, opts_now, strong=True)
+                why = f"answer bank: {why}" if answer is not None else ""
             if answer is None and plan is not None:
                 # The bank cannot always match a long question ("Will you now
                 # or in the future require visa sponsorship for employment?");
