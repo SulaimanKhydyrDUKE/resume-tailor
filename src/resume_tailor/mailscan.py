@@ -398,7 +398,30 @@ def scan(out_dir: str | Path, since: str = "03-Sep-2026", mailbox: str = "[Gmail
             mailbox = "INBOX"
         if results.get("mailbox") != mailbox:
             results["last_uid"], results["mailbox"] = 0, mailbox
-        typ, data = box.uid("search", None, f"(SINCE {since})")
+        def _reconnect() -> None:
+            nonlocal box
+            try:
+                box.logout()
+            except Exception:
+                pass
+            box = imaplib.IMAP4_SSL(env["host"])
+            box.login(env["user"], env["password"])
+            box.select(f'"{mailbox}"', readonly=True)
+
+        def _uid(*args):
+            """box.uid(...) that survives Gmail dropping a long session
+            ("socket error: EOF"): reconnect and repeat, up to three tries."""
+            for attempt in range(3):
+                try:
+                    return box.uid(*args)
+                except (imaplib.IMAP4.abort, OSError) as e:
+                    if attempt == 2:
+                        raise
+                    print(f"  mailbox connection dropped ({str(e)[:60]}); reconnecting", file=sys.stderr, flush=True)
+                    time.sleep(2 * (attempt + 1))
+                    _reconnect()
+
+        typ, data = _uid("search", None, f"(SINCE {since})")
         uids = [int(u) for u in (data[0].split() if data and data[0] else [])]
         uids = [u for u in uids if u > int(results.get("last_uid") or 0)]
         if limit:
@@ -406,36 +429,22 @@ def scan(out_dir: str | Path, since: str = "03-Sep-2026", mailbox: str = "[Gmail
         summary["new"] = len(uids)
         if not uids:
             return summary
-        # Headers for everything new in one round trip; bodies only for what matched.
-        rng = ",".join(str(u) for u in uids)
-        typ, data = box.uid("fetch", rng, "(UID BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE REPLY-TO)])")
+        # Headers in batches of 200 (one fetch for thousands of messages is
+        # what Gmail drops); bodies only for what matched.
         headers: dict[int, email.message.Message] = {}
-        for item in data:
-            if not isinstance(item, tuple):
-                continue
-            m = re.search(rb"UID (\d+)", item[0])
-            if m:
-                headers[int(m.group(1))] = email.message_from_bytes(item[1])
+        for i in range(0, len(uids), 200):
+            rng = ",".join(str(u) for u in uids[i:i + 200])
+            typ, data = _uid("fetch", rng, "(UID BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE REPLY-TO)])")
+            for item in data or []:
+                if not isinstance(item, tuple):
+                    continue
+                m = re.search(rb"UID (\d+)", item[0])
+                if m:
+                    headers[int(m.group(1))] = email.message_from_bytes(item[1])
         def body_of(uid: int) -> str:
-            """One message's text. Gmail drops a long IMAP session with
-            "socket error: EOF"; reconnect once and read on."""
-            nonlocal box
-            for attempt in range(2):
-                try:
-                    typ, bd = box.uid("fetch", str(uid), "(BODY.PEEK[])")
-                    return _body_text(email.message_from_bytes(bd[0][1])) if bd and isinstance(bd[0], tuple) else ""
-                except (imaplib.IMAP4.abort, OSError) as e:
-                    if attempt:
-                        raise
-                    print(f"  mailbox connection dropped ({str(e)[:60]}); reconnecting", file=sys.stderr, flush=True)
-                    try:
-                        box.logout()
-                    except Exception:
-                        pass
-                    box = imaplib.IMAP4_SSL(env["host"])
-                    box.login(env["user"], env["password"])
-                    box.select(f'"{mailbox}"', readonly=True)
-            return ""
+            """One message's text (reconnecting if Gmail drops the session)."""
+            typ, bd = _uid("fetch", str(uid), "(BODY.PEEK[])")
+            return _body_text(email.message_from_bytes(bd[0][1])) if bd and isinstance(bd[0], tuple) else ""
 
         processed = 0
         for uid in uids:
@@ -569,6 +578,10 @@ def run_cli(args) -> int:
                 s = scan(out, since=args.since, use_model=not args.no_model)
                 print(f"[{time.strftime('%H:%M')}] mail: {s['new']} new, {s['matched']} matched, stages {s['stages']}", file=sys.stderr, flush=True)
             except Exception as e:
+                # Progress is saved every 25 messages; pick the scan back up
+                # in a minute rather than after the whole interval.
                 print(f"[{time.strftime('%H:%M')}] mail scan failed: {str(e)[:120]}", file=sys.stderr, flush=True)
+                time.sleep(60)
+                continue
             time.sleep(max(60, int(args.interval * 60)))
     return 1
