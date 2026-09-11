@@ -548,6 +548,21 @@ async def _create_account(session: ApplySession, profile: Profile) -> str:
 
     created = False
     note(f"on {(_page_url(session) or '')[:80]}; fields={[(f.get('label') or '')[:18] + ':' + (f.get('type') or '') for f in fields][:8]}")
+    if emails_of(fields) and len(passwords_of(fields)) == 1:
+        # The wall is a sign-in form (SuccessFactors): an account made on an
+        # earlier pass signs in here; registering first bounced to "already
+        # exists" and then a "Sign In" nav link led off to a privacy page.
+        if await fill_credentials(verify=False):
+            pressed = await press(r"sign in|log in|^\s*(submit|continue)\s*$")
+            note(f"sign-in first pressed={pressed}; now on {(_page_url(session) or '')[:80]}")
+            await session._page.wait_for_timeout(2500)
+            if await detect_blocker(session, after_apply=True) != "login_required":
+                try:
+                    await session.save_logins()
+                except Exception:
+                    pass
+                return "signed_in"
+            fields = await session.describe_form()
     if await fill_credentials(verify=True):
         note("registration form filled")
         pressed = await press(r"create (an )?account|sign up|register|^\s*create\s*$")
