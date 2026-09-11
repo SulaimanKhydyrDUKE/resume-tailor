@@ -50,7 +50,49 @@ Sulaiman
 """
 
 NOREPLY = re.compile(r"no-?reply|do-?not-?reply|donotreply|notification|mailer-daemon|postmaster|bounce|automated|noreply|"
-                     r"unsubscribe|privacy|legal|press|media|sales|billing|abuse|security@|webmaster|info@|support@|help@", re.I)
+                     r"unsubscribe|privacy|legal|press|media|sales|billing|abuse|security@|webmaster|info@|support@|help@|"
+                     # Mailboxes that exist for one mechanical purpose: an assessment platform, an accommodation
+                     # request line, a scheduler, a code sender — a "quick hello" there reaches no one.
+                     r"assessment|accommodat|survey|feedback|verif|otp|passcode|calendar|schedul|interview@|hackerrank|"
+                     r"codesignal|coderbyte|litmus|criteria|events?@|invite|marketing|newsletter|alerts?@|jobalert|onboarding", re.I)
+# Words that make a sender's display name a mailbox label rather than a person
+# ("Roblox Assessment", "GuideWell Talent Acquisition", "Netic Hiring Team").
+TEAM_WORDS = re.compile(r"\b(team|assessments?|support|notifications?|hr|talent|recruit(ing|ment|er)s?|careers?|hiring|acquisition|"
+                        r"university|campus|people|jobs?|noreply|no-reply|system|portal|candidates?|applications?|program|"
+                        r"internships?|engineering|group|inc|llc|corp|company)\b", re.I)
+
+
+# The applicant-tracking system's own senders and HR service desks: an
+# account-verification sender, an HR support line, a servicing mailbox.
+SYSTEM_BOX = re.compile(r"^(my)?workday|workday@|^rs\.workday|oracle|icims|greenhouse|lever\.co|ashby|smartrecruiters|taleo|"
+                        r"successfactors|brassring|hr[._-]?support|hrsupport|servicing|operations|seeyourself|^contact@|^hello@|"
+                        r"wotc|^hr@|^jobs-|candidate[._-]?(care|experience|support)", re.I)
+# Mail whose sender is a mechanism, whatever the address looks like.
+MECHANICAL_SUBJECT = re.compile(r"verif|survey|assessment|password|your (candidate )?account|security code|one-time|wotc|"
+                                r"complete your profile|sign in|log in", re.I)
+
+
+def _writable(addr: str) -> bool:
+    """An address a person or a recruiting team reads."""
+    return bool(addr) and not NOREPLY.search(addr) and not SYSTEM_BOX.search(addr)
+
+
+def _unligate(text: str) -> str:
+    """Typographic ligatures in an older PDF's text layer ("Oﬃce") back to letters."""
+    for lig, plain in (("\ufb00", "ff"), ("\ufb01", "fi"), ("\ufb02", "fl"), ("\ufb03", "ffi"), ("\ufb04", "ffl")):
+        text = text.replace(lig, plain)
+    return text
+
+
+def _person(name: str, company: str = "") -> bool:
+    """A named human: two or three capitalised words, none of them a team or
+    company word, and not the company's own name."""
+    words = (name or "").replace(",", " ").split()
+    if not 2 <= len(words) <= 3 or TEAM_WORDS.search(name) or RECRUITING.search(name):
+        return False
+    if company and company.split()[0].lower() in name.lower():
+        return False
+    return all(re.fullmatch(r"[A-Z][a-zA-Z'’.-]+", w) for w in words)
 RECRUITING = re.compile(r"recruit|campus|universit|talent|career|intern|hiring|early|college|student|people|acquisition|"
                         r"emerging|graduate|jobs@|apply|application", re.I)
 EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
@@ -128,9 +170,10 @@ def from_inbox(results: dict, key: str) -> list[dict]:
     out = []
     for a in co.get("addresses") or []:
         addr = _clean(a.get("address") or "")
-        if not addr or NOREPLY.search(addr):
+        if not _writable(addr) or MECHANICAL_SUBJECT.search(a.get("subject") or ""):
             continue
-        rank = 0 if (a.get("name") and a.get("source") == "reply-to") else 1 if a.get("name") else 2 if RECRUITING.search(addr) else 3
+        person = _person(a.get("name") or "", co.get("company") or "")
+        rank = 0 if (person and a.get("source") == "reply-to") else 1 if person else 2 if RECRUITING.search(addr) else 3
         out.append({"address": addr, "name": a.get("name") or "", "source": "inbox: " + (a.get("subject") or a.get("source") or ""), "rank": rank})
     return sorted(out, key=lambda x: x["rank"])
 
@@ -232,7 +275,9 @@ def find_addresses(cand: dict, results: dict, log: dict, use_web: bool = True) -
     out = []
     for f in found:
         a = f["address"]
-        if a in seen or a in bounced or a == own:
+        if a in seen or a in bounced or a == own or not _writable(a):
+            continue  # the cache may hold what an earlier, looser filter let through
+        if MECHANICAL_SUBJECT.search(str(f.get("source") or "")):
             continue
         # The company's own domain, or a recruiting-looking address anywhere else.
         seen.add(a)
@@ -270,7 +315,7 @@ def project_sentence(company: str, role: str, resume_text: str) -> str:
                                        messages=[{"role": "user", "content": prompt}])
     sent = (r.choices[0].message.content or "").strip().strip('"').split("\n")[0].strip()
     # A fact guard: every capitalised word in the sentence must appear in the résumé.
-    low = resume_text.lower()
+    low = _unligate(resume_text).lower()
     for w in re.findall(r"\b[A-Z][A-Za-z0-9+#.-]{2,}\b", sent):
         if w.lower() not in low and w not in ("Most", "Lately", "This", "On", "I", "Duke"):
             raise ValueError(f"the sentence names {w!r}, which the résumé does not")
@@ -281,7 +326,7 @@ def project_sentence(company: str, role: str, resume_text: str) -> str:
 
 def compose(cand: dict, to: dict, profile_linkedin: str, resume_text: str) -> tuple[str, str]:
     name = (to.get("name") or "").strip()
-    first = name.split()[0] if name and not RECRUITING.search(name) and len(name.split()) <= 4 else ""
+    first = name.split()[0] if _person(name, cand.get("company") or "") else ""
     greeting = first if first else f"{cand['company']} recruiting team"
     project = project_sentence(cand["company"], cand["role"], resume_text)
     role = re.sub(r"\s*[-–(]\s*(summer|fall|spring)\s*20\d\d\)?\s*$", "", cand["role"], flags=re.I).strip() or "internship"
