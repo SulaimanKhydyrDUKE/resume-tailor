@@ -931,7 +931,7 @@ check("network: a real missing form does not", not _NETWORK_ERROR.search("no app
 # --- résumé lint and the current employer ------------------------------------
 from types import SimpleNamespace as _NS
 from resume_tailor import gates as _gates
-from resume_tailor.batch import _current_employer, _CURRENT_EMPLOYER
+from resume_tailor.batch import _current_employer, _CURRENT_EMPLOYER, _graduation_year, _GRAD_YEAR_Q
 _lint_html = "<ul><li>Built a <b>note</b> platform: rich-text notes, LaTeX editing, and university community features.</li>" \
              "<li>, won the ACM HotMobile Best Demo Award</li><li>Go</li></ul>"
 _lint_pdf = "Built a note platform: rich-text notes, LaTeX editing, and university comm\nwon the ACM HotMobile Best Demo Award"
@@ -946,6 +946,10 @@ _prof = _NS(career={"experience_details": [
     {"position": "Software Engineer Intern", "company": "Qapps", "employment_period": "05/2026 - 06/2026"},
     {"position": "Undergraduate Teaching Assistant — CS 210", "company": "Duke University, Department of Computer Science", "employment_period": "08/2025 - Present"}]})
 check("current employer: the ongoing role's organisation, not the department", _current_employer(_prof) == "Duke University")
+check("graduation year: Polaris's long label matches", bool(_GRAD_YEAR_Q.search("Please enter your expected or actual graduation YEAR for your current degree. (if applicable)")))
+check("graduation year: 'Graduation Date' matches", bool(_GRAD_YEAR_Q.search("Graduation Date*")))
+check("graduation year: a GPA label does not", not _GRAD_YEAR_Q.search("Cumulative GPA*"))
+check("graduation year: read from the record's year of completion", _graduation_year(_NS(career={"education_details": [{"year_of_completion": "2028 (expected)"}]})) == "2028")
 check("current employer: none when no role is ongoing", _current_employer(_NS(career={"experience_details": [{"company": "X", "employment_period": "2024 - 2025"}]})) is None)
 check("current employer: Lever's 'Current company' matches", bool(_CURRENT_EMPLOYER.search("Current company ✱")))
 check("current employer: 'Company name' under a work entry does not", not _CURRENT_EMPLOYER.search("Company name*"))

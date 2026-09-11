@@ -405,6 +405,11 @@ def run(out_dir: str | Path, dry_run: bool = True, max_send: int = DAILY_CAP, fo
         if stage == "rejected":
             log["skipped"][key] = "rejected already"
             continue
+        if stage in ("oa", "interview", "offer"):
+            # They have already written back with an assessment or an
+            # interview: a "quick hello" now would read as if that was missed.
+            log["skipped"][key] = f"already in process ({stage})"
+            continue
         if not cand["pdf"] or not Path(cand["pdf"]).is_file():
             log["skipped"][key] = "no résumé file on disk"
             continue

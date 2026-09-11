@@ -1129,6 +1129,19 @@ def _snapshot(fields: list[dict], unresolved: list[str], sources: dict[tuple, st
 _CURRENT_EMPLOYER = re.compile(r"\b(current|present)( or most recent)? (company|employer|organi[sz]ation)\b|\bmost recent employer\b", re.I)
 
 
+_GRAD_YEAR_Q = re.compile(r"graduat\w* (year|date)|year of (expected )?(graduation|completion)|expected (to )?graduat|"
+                          r"(expected|anticipated|actual)( or actual)? graduation|graduation year", re.I)
+
+
+def _graduation_year(profile: Profile) -> str | None:
+    """The four-digit year the record's first education entry completes."""
+    for ed in profile.career.get("education_details", []) or []:
+        m = re.search(r"20\d\d", str(ed.get("year_of_completion") or ed.get("graduation_date") or ""))
+        if m:
+            return m.group(0)
+    return None
+
+
 def _current_employer(profile: Profile) -> str | None:
     """The employer of the record's ongoing role (a period ending in
     "Present"), organisation only: Lever's résumé parser filled "Current
@@ -1176,12 +1189,20 @@ async def _decide(question: str, field: dict, options: list[str], profile: Profi
         sources[(section, question)] = "answer bank: work_authorization.requires_us_sponsorship"
         decided[key] = picked
         return picked
-    if _CURRENT_EMPLOYER.search(question) and not options and not field.get("combobox"):
+    if _CURRENT_EMPLOYER.search(question) and not options:
+        # A text box or an employer search picker: "Duke University" is
+        # searched and chosen like any other picker value.
         emp = _current_employer(profile)
         if emp:
             sources[(section, question)] = "record: the ongoing role's employer"
             decided[key] = emp
             return emp
+    if _GRAD_YEAR_Q.search(question) and not options and not field.get("combobox") and field.get("type") in ("text", "number", ""):
+        year = _graduation_year(profile)
+        if year:
+            sources[(section, question)] = "record: education year of completion"
+            decided[key] = year
+            return year
     if _NO_BANK.search(question):
         # "I currently work here" under a work-experience entry is a fact
         # about that role, decided with the entry by the plan — never the
@@ -1704,9 +1725,17 @@ async def run_batch(
     report_path = out_dir / "batch-report.csv"
     counts: dict[str, int] = {}
 
+    from .queue import company_key as _ckey
+    sent_this_pass: set[str] = set()
     try:
         for entry in entries:
             if state.already_attempted(entry.id, retry_statuses):
+                continue
+            if _ckey(entry.company_hint) in sent_this_pass:
+                # The pass was dealt three Lyft postings at once and the
+                # company cooldown is read at selection time: one application
+                # per company per pass, the rest wait for a later pass.
+                print(f"  [{entry.company_hint}] skipped this pass: already applied there minutes ago", file=sys.stderr, flush=True)
                 continue
             _now("starting", entry)
             try:
@@ -1732,6 +1761,10 @@ async def run_batch(
                         outcome = Outcome(entry_id=entry.id, status="error", company=entry.company_hint, role=entry.title,
                                           detail=f"the attempt broke off: {_brief(e)}")
             _now("idle")
+            if outcome.status in ("applied", AWAITING):
+                for name in (outcome.company, entry.company_hint):
+                    if _ckey(name or ""):
+                        sent_this_pass.add(_ckey(name or ""))
             outcome.when = datetime.now().astimezone().isoformat(timespec="seconds")
             outcome.worker = _worker()
             counts[outcome.status] = counts.get(outcome.status, 0) + 1
