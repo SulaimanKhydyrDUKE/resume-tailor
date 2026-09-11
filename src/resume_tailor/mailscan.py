@@ -280,6 +280,15 @@ BODY_RULES = (
 )
 
 
+# A subject that announces news about an application rather than confirming
+# it: read on (body rules, then the model). Phrases, not words — "National
+# Information Solutions Cooperative" and "keep track of its status" are
+# confirmations.
+STATUS_SUBJECT = re.compile(
+    r"(update|news|decision|information) (on|about|regarding) your (application|candidacy)|application (status )?update|"
+    r"status of your application|your application status|regarding your application|decision (on|about) your", re.I)
+
+
 def _rule_stage(subject: str, body: str) -> str | None:
     """The stage the wording settles, or None for the model. The subject
     comes first: a confirmation is a confirmation whatever its body says
@@ -291,7 +300,7 @@ def _rule_stage(subject: str, body: str) -> str | None:
             if stage == "interview" and re.search(r"feedback|tips|prep|how to|guide|what to expect", subject, re.I):
                 break  # "Interview Feedback for Application Review": the body or the model decides
             return stage
-    if SUBJECT_APPLIED.search(subject) and not re.search(r"update|important|information|regarding|decision|status|next steps?", subject, re.I):
+    if SUBJECT_APPLIED.search(subject) and not STATUS_SUBJECT.search(subject):
         return "applied"  # "Update on your application to X" is read on, not taken as a confirmation
     # A confirmation's courtesy sentences ("if you are not selected, keep an
     # eye on our jobs page", "if we choose not to move forward…") carry the
@@ -311,8 +320,8 @@ def _model_stage(company: str, frm: str, subject: str, body: str) -> dict:
     """gpt-4o reads one message about a known company and names its stage.
     Only messages the rules could not place get here."""
     try:
-        from openai import OpenAI
-        client = OpenAI()
+        from openai import OpenAI, RateLimitError
+        client = OpenAI(timeout=60, max_retries=0)
         prompt = (
             "You sort e-mails received by a college student who applied to internships. "
             f"This message is about the company: {company}.\n\n"
@@ -323,9 +332,22 @@ def _model_stage(company: str, frm: str, subject: str, body: str) -> dict:
             "\"date\": an ISO date or datetime the message gives for a deadline, assessment or interview, else null; "
             "\"note\": at most 12 words saying what the message asks or says}."
         )
-        r = client.chat.completions.create(model=os.environ.get("RESUME_TAILOR_MAIL_MODEL", "gpt-4o"),
-                                           messages=[{"role": "user", "content": prompt}],
-                                           response_format={"type": "json_object"}, temperature=0)
+        r = None
+        for attempt in range(4):
+            try:
+                r = client.chat.completions.create(model=os.environ.get("RESUME_TAILOR_MAIL_MODEL", "gpt-4o"),
+                                                   messages=[{"role": "user", "content": prompt}],
+                                                   response_format={"type": "json_object"}, temperature=0)
+                break
+            except RateLimitError as e:
+                # The organisation's gpt-4o allowance is 3 requests a minute:
+                # wait what the server asks (or 21 s) and try again, so a
+                # slow scan still sorts every message rather than none.
+                if attempt == 3:
+                    raise
+                m = re.search(r"try again in (\d+(?:\.\d+)?)\s*(ms|s)", str(e))
+                wait = (float(m.group(1)) / (1000 if m.group(2) == "ms" else 1)) if m else 21.0
+                time.sleep(min(90.0, wait + 1.0))
         out = json.loads(r.choices[0].message.content or "{}")
         stage = str(out.get("stage") or "other").lower()
         return {"stage": stage if stage in STAGES or stage == "other" else "other",

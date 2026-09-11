@@ -29,6 +29,14 @@ check("a rejection subject still is", _rule_stage("Update on your application", 
 check("'Important information about your application' is not a confirmation by subject",
       _rule_stage("Important information about your application to The Trade Desk", "We have made the decision to close this role and will not be moving forward.") == "rejected")
 check("'Your application to X' still is one", _rule_stage("Your application to Netflix", "Thanks! We got it.") == "applied")
+check("a company named 'Information Solutions' is still a confirmation",
+      _rule_stage("Thank you for applying to National Information Solutions Cooperative", "We got it.") == "applied")
+check("'keep track of its status' is still a confirmation",
+      _rule_stage("Thank you for your application: keep track of its status", "Thanks for applying.") == "applied")
+check("'Application Has Been Received | Next Steps' is still a confirmation",
+      _rule_stage("Your Application Has Been Received | Next Steps", "We will review it.") == "applied")
+check("'Information about your application to X' is not settled by subject",
+      _rule_stage("Information about your application to Appian", "We appreciate your interest.") is None)
 check("a closed role in the subject is a rejection", _rule_stage("We have closed the position", "") == "rejected")
 check("a draft never sets the company stage",
       _company_stage([{"stage": "draft", "when": "2026-09-09"}, {"stage": "applied", "when": "2026-09-03"}]) == "applied")
