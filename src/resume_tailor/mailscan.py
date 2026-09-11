@@ -410,10 +410,39 @@ def scan(out_dir: str | Path, since: str = "03-Sep-2026", mailbox: str = "[Gmail
             m = re.search(rb"UID (\d+)", item[0])
             if m:
                 headers[int(m.group(1))] = email.message_from_bytes(item[1])
+        def body_of(uid: int) -> str:
+            """One message's text. Gmail drops a long IMAP session with
+            "socket error: EOF"; reconnect once and read on."""
+            nonlocal box
+            for attempt in range(2):
+                try:
+                    typ, bd = box.uid("fetch", str(uid), "(BODY.PEEK[])")
+                    return _body_text(email.message_from_bytes(bd[0][1])) if bd and isinstance(bd[0], tuple) else ""
+                except (imaplib.IMAP4.abort, OSError) as e:
+                    if attempt:
+                        raise
+                    print(f"  mailbox connection dropped ({str(e)[:60]}); reconnecting", file=sys.stderr, flush=True)
+                    try:
+                        box.logout()
+                    except Exception:
+                        pass
+                    box = imaplib.IMAP4_SSL(env["host"])
+                    box.login(env["user"], env["password"])
+                    box.select(f'"{mailbox}"', readonly=True)
+            return ""
+
+        processed = 0
         for uid in uids:
             h = headers.get(uid)
             if h is None:
                 continue
+            processed += 1
+            if processed % 25 == 0:
+                # Progress survives a crash: what is matched so far is on
+                # disk, and the next run starts after the last message read.
+                results["last_uid"] = max(int(results.get("last_uid") or 0), uid)
+                results["scanned_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+                save_results(out_dir, results)
             frm, subject, reply_to = _hdr(h, "From"), _hdr(h, "Subject"), _hdr(h, "Reply-To")
             try:
                 when = parsedate_to_datetime(h.get("Date")).astimezone(timezone.utc).isoformat(timespec="minutes")
@@ -421,8 +450,7 @@ def scan(out_dir: str | Path, since: str = "03-Sep-2026", mailbox: str = "[Gmail
                 when = ""
             sender_domain = _domain(parseaddr(frm)[1])
             if BOUNCE.search(subject) or "mailer-daemon" in frm.lower():
-                typ, bd = box.uid("fetch", str(uid), "(BODY.PEEK[])")
-                body = _body_text(email.message_from_bytes(bd[0][1])) if bd and isinstance(bd[0], tuple) else ""
+                body = body_of(uid)
                 for m in re.finditer(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", body[:4000]):
                     addr = m.group(0).lower()
                     if addr != own.lower() and "mailer-daemon" not in addr and addr not in results["bounced"]:
@@ -434,14 +462,12 @@ def scan(out_dir: str | Path, since: str = "03-Sep-2026", mailbox: str = "[Gmail
             key = _match_company(index, frm, reply_to, subject, "")
             body = ""
             if key is None and APPLICATION_WORDS.search(subject):
-                typ, bd = box.uid("fetch", str(uid), "(BODY.PEEK[])")
-                body = _body_text(email.message_from_bytes(bd[0][1])) if bd and isinstance(bd[0], tuple) else ""
+                body = body_of(uid)
                 key = _match_company(index, frm, reply_to, subject, body)
             if key is None:
                 continue
             if not body:
-                typ, bd = box.uid("fetch", str(uid), "(BODY.PEEK[])")
-                body = _body_text(email.message_from_bytes(bd[0][1])) if bd and isinstance(bd[0], tuple) else ""
+                body = body_of(uid)
             stage = _rule_stage(subject, body)
             entry = {"uid": uid, "when": when, "from": frm[:80], "subject": subject[:140], "stage": stage or "other", "by": "rule"}
             if stage == "code":
