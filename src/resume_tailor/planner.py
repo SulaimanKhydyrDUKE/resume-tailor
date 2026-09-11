@@ -150,7 +150,12 @@ _SILENCE = re.compile(
     r"currently (work|employed)|ever (worked|been employed|applied|interviewed)|applied (to|for)|"
     r"participated in|competed in|competition|olympiad|member of|published|patent|how much experience|"
     r"years of experience|if applicable|list any|other (colleges|universities|schools|names)|attended|"
-    r"\((graduate|doctorate|master'?s|phd|masters)\)|graduate gpa|doctora(te|l) gpa|master'?s gpa",
+    r"\((graduate|doctorate|master'?s|phd|masters)\)|graduate gpa|doctora(te|l) gpa|master'?s gpa|"
+    # Professional licences and their exams a résumé would list if held
+    # (FINRA, SIE, Series 7, a real-estate or broker licence) — never a
+    # driver's licence, which no record lists and the tool must not guess.
+    r"\bfinra\b|securities industry essentials|\bsie\b|\bseries \d+|licensing exam|"
+    r"(real estate|broker(age)?|securities|insurance|professional|cpa) licen[cs]e",
     re.I,
 )
 _NO_LIKE = re.compile(r"^\s*(no|none|n/?a|not applicable|never|no,? i (have|do) not|0 years?|no experience|less than)\b"

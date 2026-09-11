@@ -1104,7 +1104,7 @@ def _snapshot(fields: list[dict], unresolved: list[str], sources: dict[tuple, st
     return out
 
 
-_CURRENT_EMPLOYER = re.compile(r"\b(current|present) (company|employer|organi[sz]ation)\b", re.I)
+_CURRENT_EMPLOYER = re.compile(r"\b(current|present)( or most recent)? (company|employer|organi[sz]ation)\b|\bmost recent employer\b", re.I)
 
 
 def _current_employer(profile: Profile) -> str | None:
@@ -1979,8 +1979,12 @@ async def _process_one(session: ApplySession, profile: Profile, entry: QueueEntr
     if blocker == "login_required":
         where = _page_url(session) or entry.apply_url
         o.status = "needs_login"
-        o.detail = ("this site wants an account or a sign-in before its form — the tool does not create accounts; "
-                    f"open it in Chrome to finish by hand, or log in once and rerun: {where}")
+        if _accounts_allowed(profile, where):
+            o.detail = ("this site wants an account or a sign-in before its form — the account step ran but the wall stayed "
+                        f"(see the log's 'account:' notes); open it in Chrome to finish by hand, or log in once and rerun: {where}")
+        else:
+            o.detail = ("this site wants an account or a sign-in before its form — its host is not in search.create_accounts_on; "
+                        f"open it in Chrome to finish by hand, or log in once and rerun: {where}")
         return o
     if blocker == "bot_check":
         o.status, o.detail = "blocked", "a bot/verification check was on the page — not attempted"
@@ -2170,7 +2174,7 @@ async def _process_one(session: ApplySession, profile: Profile, entry: QueueEntr
         shot = await session.screenshot(shots_dir / f"{_safe(entry.id)}-needs-review.png")
         if any(_SIGNIN_TEXT.search(b.get("text") or "") for b in buttons):
             o.status = "needs_login"
-            o.detail = ("this site wants an account or a sign-in before its form — the tool does not create accounts; "
+            o.detail = ("this site wants an account or a sign-in before its form (a sign-in button on an empty page); "
                         f"open it in Chrome to finish by hand, or log in once and rerun: {_page_url(session) or apply_url}")
         else:
             o.status, o.detail = "needs_review", "the form disappeared before submit — the page shows no fields"
