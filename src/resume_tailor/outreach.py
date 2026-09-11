@@ -170,10 +170,10 @@ def from_web(company: str, url: str) -> list[dict]:
     university recruiting that are printed on a page it can cite. A guess
     from a naming pattern is reported as such and never used."""
     try:
-        from openai import OpenAI
+        from openai import OpenAI, RateLimitError
         from .llm import _load_env_file
         _load_env_file()
-        client = OpenAI()
+        client = OpenAI(timeout=120, max_retries=0)
         domain = urlsplit(url).netloc if url else ""
         prompt = (
             f"Find e-mail addresses for university, campus, early-career or intern recruiting at the company \"{company}\""
@@ -184,8 +184,20 @@ def from_web(company: str, url: str) -> list[dict]:
             "Mark an address \"published\" only if you saw it written on a page; an address inferred from a naming pattern is "
             "\"guessed\". If you find nothing, return {\"addresses\": []}."
         )
-        r = client.responses.create(model=os.environ.get("RESUME_TAILOR_SEARCH_MODEL", "gpt-4o"),
-                                    tools=[{"type": "web_search_preview"}], input=prompt)
+        r = None
+        for attempt in range(4):
+            try:
+                r = client.responses.create(model=os.environ.get("RESUME_TAILOR_SEARCH_MODEL", "gpt-4o"),
+                                            tools=[{"type": "web_search_preview"}], input=prompt)
+                break
+            except RateLimitError as e:
+                # gpt-4o is allowed 3 requests a minute on this account: wait
+                # what the server asks (or 21 s) rather than give the company up.
+                if attempt == 3:
+                    raise
+                m = re.search(r"try again in (\d+(?:\.\d+)?)\s*(ms|s)", str(e))
+                wait = (float(m.group(1)) / (1000 if m.group(2) == "ms" else 1)) if m else 21.0
+                time.sleep(min(90.0, wait + 1.0))
         text = r.output_text or ""
         m = re.search(r"\{.*\}", text, re.S)
         data = json.loads(m.group(0)) if m else {}
