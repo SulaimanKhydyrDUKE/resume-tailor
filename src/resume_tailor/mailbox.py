@@ -120,7 +120,7 @@ def _search_once(since: float, hints: list[str], require: list[str] | None = Non
     user = os.environ.get("RESUME_TAILOR_IMAP_USER") or _profile_email()
     password = os.environ["RESUME_TAILOR_IMAP_PASSWORD"].replace(" ", "")
     floor = datetime.fromtimestamp(since, tz=timezone.utc) - timedelta(seconds=90)
-    box = imaplib.IMAP4_SSL(host)
+    box = imaplib.IMAP4_SSL(host, timeout=90)
     try:
         box.login(user, password)
         box.select("INBOX", readonly=True)

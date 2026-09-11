@@ -26,6 +26,10 @@ check("an assessment invitation still is", _rule_stage("IMC Trading | Please Com
 check("'invite you to take the online assessment' in a body is an assessment",
       _rule_stage("Next steps", "We would like to invite you to take the online assessment within 5 days.") == "oa")
 check("a rejection subject still is", _rule_stage("Update on your application", "Unfortunately we will not be moving forward with your application.") == "rejected")
+check("'Important information about your application' is not a confirmation by subject",
+      _rule_stage("Important information about your application to The Trade Desk", "We have made the decision to close this role and will not be moving forward.") == "rejected")
+check("'Your application to X' still is one", _rule_stage("Your application to Netflix", "Thanks! We got it.") == "applied")
+check("a closed role in the subject is a rejection", _rule_stage("We have closed the position", "") == "rejected")
 check("a draft never sets the company stage",
       _company_stage([{"stage": "draft", "when": "2026-09-09"}, {"stage": "applied", "when": "2026-09-03"}]) == "applied")
 check("a draft alone leaves the company without a stage", _company_stage([{"stage": "draft", "when": "2026-09-09"}]) == "")

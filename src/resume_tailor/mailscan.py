@@ -73,7 +73,8 @@ RULES = (
         r"unfortunately|not (be )?(moving|move|proceed(ing)?) forward|(pursue|move forward|proceed) with other (candidates|applicants)|"
         r"no longer (be )?(under )?consider|decided not to|not (been )?selected|will not be (moving|proceeding)|regret to inform|"
         r"unable to offer|position has been filled|not the right fit|we have chosen|other candidates whose|"
-        r"not (to )?(advance|progress)|(closed|filled) the position|won'?t be (moving|proceeding)", re.I)),
+        r"not (to )?(advance|progress)|(closed|filled) the position|won'?t be (moving|proceeding)|"
+        r"(close|closed|closing|filled) (this|the) (role|position|req(uisition)?)|(role|position) (has been|is|was) (closed|filled)", re.I)),
     ("offer", re.compile(
         r"(pleased|excited|delighted|happy) to (offer|extend)|offer letter|formal offer|extend(ing)? (you )?an offer|"
         r"congratulations.{0,60}(offer|join)", re.I)),
@@ -263,7 +264,8 @@ BODY_RULES = (
         r"(decided|chosen|elected) to (move forward|proceed|go forward) with other (candidates|applicants)|"
         r"no longer (be )?(under )?consider(ed|ation)|regret to inform|unable to (offer|move forward)|"
         r"(have|has) (been )?(decided|chosen) not to|not (been )?selected (for|to)|position has been filled|"
-        r"pursue other (candidates|applicants)|we will not be (moving|proceeding)|not be (advancing|progressing) your", re.I)),
+        r"pursue other (candidates|applicants)|we will not be (moving|proceeding)|not be (advancing|progressing) your|"
+        r"(decision|decided) to (close|fill) (this|the) (role|position|req(uisition)?)|(role|position) (has been|is|was) (closed|filled)", re.I)),
     ("offer", re.compile(r"(pleased|excited|delighted|happy) to (offer|extend)|offer letter|formal offer|extend(ing)? (you )?an offer", re.I)),
     ("interview", re.compile(
         r"schedule (a|an|your) (interview|call|conversation|chat|time to)|invite you to (interview|an interview|a (phone|video|virtual)|schedule)|"
@@ -289,8 +291,8 @@ def _rule_stage(subject: str, body: str) -> str | None:
             if stage == "interview" and re.search(r"feedback|tips|prep|how to|guide|what to expect", subject, re.I):
                 break  # "Interview Feedback for Application Review": the body or the model decides
             return stage
-    if SUBJECT_APPLIED.search(subject):
-        return "applied"
+    if SUBJECT_APPLIED.search(subject) and not re.search(r"update|important|information|regarding|decision|status|next steps?", subject, re.I):
+        return "applied"  # "Update on your application to X" is read on, not taken as a confirmation
     # A confirmation's courtesy sentences ("if you are not selected, keep an
     # eye on our jobs page", "if we choose not to move forward…") carry the
     # words of a rejection; they are struck before the body rules read it.
@@ -400,7 +402,7 @@ def scan(out_dir: str | Path, since: str = "03-Sep-2026", mailbox: str = "[Gmail
     results = load_results(out_dir)
     index = company_index(out_dir)
     own = env["user"]
-    box = imaplib.IMAP4_SSL(env["host"])
+    box = imaplib.IMAP4_SSL(env["host"], timeout=90)
     summary = {"new": 0, "matched": 0, "by_model": 0, "stages": {}, "bounces": 0}
     try:
         box.login(env["user"], env["password"])
@@ -416,7 +418,7 @@ def scan(out_dir: str | Path, since: str = "03-Sep-2026", mailbox: str = "[Gmail
                 box.logout()
             except Exception:
                 pass
-            box = imaplib.IMAP4_SSL(env["host"])
+            box = imaplib.IMAP4_SSL(env["host"], timeout=90)
             box.login(env["user"], env["password"])
             box.select(f'"{mailbox}"', readonly=True)
 
