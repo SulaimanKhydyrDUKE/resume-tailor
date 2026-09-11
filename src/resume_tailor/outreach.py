@@ -64,7 +64,7 @@ TEAM_WORDS = re.compile(r"\b(team|assessments?|support|notifications?|hr|talent|
 
 # The applicant-tracking system's own senders and HR service desks: an
 # account-verification sender, an HR support line, a servicing mailbox.
-SYSTEM_BOX = re.compile(r"^(my)?workday|workday@|^rs\.workday|oracle|icims|greenhouse|lever\.co|ashby|smartrecruiters|taleo|"
+SYSTEM_BOX = re.compile(r"workday|oracle|icims|greenhouse|lever\.co|ashby|smartrecruiters|taleo|"
                         r"successfactors|brassring|hr[._-]?support|hrsupport|servicing|operations|seeyourself|^contact@|^hello@|"
                         r"wotc|^hr@|^jobs-|candidate[._-]?(care|experience|support)", re.I)
 # Mail whose sender is a mechanism, whatever the address looks like.
@@ -73,8 +73,14 @@ MECHANICAL_SUBJECT = re.compile(r"verif|survey|assessment|password|your (candida
 
 
 def _writable(addr: str) -> bool:
-    """An address a person or a recruiting team reads."""
-    return bool(addr) and not NOREPLY.search(addr) and not SYSTEM_BOX.search(addr)
+    """An address a person or a recruiting team reads — and a real one: a
+    page's JSON once yielded "u003e@anduril.com" (an escaped ">")."""
+    local = (addr or "").split("@")[0]
+    if not addr or NOREPLY.search(addr) or SYSTEM_BOX.search(addr):
+        return False
+    if re.fullmatch(r"u00[0-9a-f]{2}[0-9a-f]*|[0-9a-f]{8,}|x[0-9a-f]{2}", local, re.I) or len(local) < 2:
+        return False
+    return True
 
 
 def _unligate(text: str) -> str:
