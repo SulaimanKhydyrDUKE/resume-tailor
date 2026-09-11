@@ -280,7 +280,13 @@ def _rule_stage(subject: str, body: str) -> str | None:
             return stage
     if SUBJECT_APPLIED.search(subject):
         return "applied"
-    head = body[:2500]
+    # A confirmation's courtesy sentences ("if you are not selected, keep an
+    # eye on our jobs page", "if we choose not to move forward…") carry the
+    # words of a rejection; they are struck before the body rules read it.
+    head = re.sub(r"[^.!?\n]*\b(if (you are|you're|you were|we choose|we decide|your (skills|qualifications|profile|background)|"
+                  r"selected|there is a match|we (find|see) a (fit|match)|a (fit|match) is)|keep an eye|should you (not )?be selected|"
+                  r"unless (you are|selected)|not everyone|unable to (respond|reply) to (everyone|each|all))\b[^.!?\n]*[.!?]?",
+                  " ", body[:2500], flags=re.I)
     for stage, pat in BODY_RULES:
         if pat.search(head):
             return stage

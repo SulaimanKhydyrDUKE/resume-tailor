@@ -32,6 +32,10 @@ async def answer_question(question: str, posting_text: str, profile: Profile,
                           max_chars: int | None = None, words: int | None = None) -> str | None:
     from .tailor import _career_system, _cited_text, _parse
 
+    if re.search(r"(no|not|without|don'?t|do not|please (do )?not) (use |using )?(ai|chatgpt|llm|an ai)|written by you|in your own words", question, re.I):
+        # The prompt asks for the person's own words. Nothing this writes
+        # is that; the question goes to the user instead.
+        return None
     index = profile.evidence_index()
     record_text = " ".join(index.values())
     allow = gates.build_entity_allowlist(record_text + " " + posting_text)
@@ -59,6 +63,14 @@ it rests on. Never invent experience, employers, technologies or numbers.
 - The ids go in facts_used only; never write them into the answer itself.
 - Interest and motivation may be stated directly and specifically. Refer to the \
 company and the role as the posting names them.
+- Name at least one concrete thing from the posting itself — a product, a system, \
+a team, a technology it lists, a problem it describes — and one concrete result \
+from the record with its number. An answer that could be sent to any company \
+unchanged is wrong.
+- Do not open with "I am" or "I'm" followed by excited, drawn, passionate, eager, \
+thrilled or driven. Do not use the words innovative, robust, scalable, cutting-edge, \
+real-world, fast-paced, aligns, passion, thrive or leverage. Write the way a \
+student writes to one engineer, not the way a cover-letter template reads.
 - No flattery padding, no "I am confident that", no restating the question.""",
             FreeTextAnswer, effort="medium",
         )
@@ -74,5 +86,8 @@ company and the role as the posting names them.
         cited = _cited_text(index, ids) + " " + posting_text
         if gates.check_numerals(text, cited, []) or gates.check_entities(text, allow):
             continue
+        if re.match(r"\s*I(’|')?(m| am)\s+(really |very |truly |genuinely |so )?(excited|drawn|passionate|eager|thrilled|driven)\b", text, re.I) \
+                or re.search(r"\b(innovative|cutting-edge|fast-paced|aligns? (perfectly )?with|leverage|thrive in)\b", text, re.I):
+            continue  # the template voice; try again
         return text
     return None

@@ -26,7 +26,7 @@ from . import ats, freetext, judge, mailbox, planner, qa
 from .apply import (ApplySession, _SIGNIN_TEXT, _is_empty, _looks_like_application, _pick_option, _value_parts, _YES_WORDS,
                     closest_option, detect_blocker)
 from .planner import Decision
-from .profile import Profile, sponsorship_answer
+from .profile import Profile, gpa_answer, sponsorship_answer
 from .render import extract_pdf_text
 from .queue import QueueEntry, RunState, company_key, load_queue
 from .tailor import tailor
@@ -845,6 +845,10 @@ def _bank(profile: Profile, question: str, field: dict | None = None, options: l
         return None, None
     if planner.THIRD_PARTY.search(question) and key.startswith(planner.SELF_KEYS):
         return None, None
+    if key == "about.recent_reading" and not re.search(r"\b(read|reading|book|paper|article|podcast|blog)\b", question, re.I):
+        # "What is the most impressive thing you've built with AI?" is not a
+        # reading question, whatever words it shares with the key.
+        return None, None
     if field is not None and not _fits(answer, field, options or []):
         return None, None
     return answer, key
@@ -1118,6 +1122,15 @@ async def _decide(question: str, field: dict, options: list[str], profile: Profi
         decided[key] = None
         return None
     picked = sponsorship_answer(profile, question, options)
+    if picked is None and not _SELF_ID.search(question):
+        g = gpa_answer(profile, question, options)
+        if g is not None:
+            # The GPA is the bank's number, exactly, or the band it falls in:
+            # "3.5" on a text field for a 3.42 is a misstatement a transcript
+            # check exposes.
+            sources[(section, question)] = "answer bank: education.gpa"
+            decided[key] = g
+            return g
     if picked is not None:
         # Sponsorship is the bank's to answer, in the option's own words:
         # the model once read "legally allowed to work: Yes" as "Yes, will

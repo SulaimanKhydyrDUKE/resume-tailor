@@ -23,6 +23,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -140,6 +141,8 @@ class Prefs:
     require_us: bool = True
     exclude_phd_only: bool = True
     apply_once_at_company: bool = True
+    # With apply-once off: days a company rests after an application there.
+    company_cooldown_days: int = 7
     positions: list[str] = field(default_factory=list)
     jobright_account: bool = False  # the tool's browser is signed in to jobright.ai, so its links resolve
     # Listing categories worth reading (substrings of the source's category):
@@ -164,6 +167,7 @@ class Prefs:
             require_us=bool(s.get("require_us", True)),
             exclude_phd_only=bool(s.get("exclude_phd_only", True)),
             apply_once_at_company=_apply_once(s_all),
+            company_cooldown_days=int(s.get("company_cooldown_days", 7) or 0),
             jobright_account=bool(s.get("jobright_account", False)),
         )
 
@@ -574,10 +578,29 @@ def select(listings: list[dict], prefs: Prefs, state: RunState | None = None,
     # The same link can be listed twice with two ids (one row per location):
     # one attempt covers both, whatever the per-company rule says.
     attempted_urls: set[str] = set()
+    # A company applied to in the last few days: another application there
+    # this week is the "eight applications in a day" a recruiter sees on one
+    # merged profile (American Express got eleven to one link). Distinct
+    # postings at one company are spaced by `search.company_cooldown_days`.
+    cooldown_days = int(getattr(prefs, "company_cooldown_days", 7) or 0)
+    recently_applied: dict[str, str] = {}
+
+    def url_key(u: str) -> str:
+        return (u or "").split("?")[0].split("#")[0].rstrip("/").lower()
+
     if state is not None:
         by_listing_id = {l.get("id") or l.get("url"): l for l in listings}
-        attempted_urls = {(by_listing_id.get(rid) or {}).get("url") or "" for rid, rec in state.done.items()
+        # Keyed without the query string: the lists tag one link with
+        # different utm_source values, and "same link" must still be seen.
+        attempted_urls = {url_key((by_listing_id.get(rid) or {}).get("url") or "") for rid, rec in state.done.items()
                           if rec.get("status") not in RETRYABLE} - {""}
+        if cooldown_days:
+            cutoff = (datetime.now().astimezone() - timedelta(days=cooldown_days)).isoformat()
+            for rid, rec in state.done.items():
+                if rec.get("status") in ("applied", "awaiting_approval", "by_hand") and (rec.get("when") or "") >= cutoff:
+                    ck = company_key(rec.get("company") or (by_listing_id.get(rid) or {}).get("company_name") or "")
+                    if ck:
+                        recently_applied[ck] = max(recently_applied.get(ck, ""), rec.get("when") or "")
         for rec_id, rec in state.done.items():
             if rec.get("status") in RETRYABLE:
                 continue
@@ -600,10 +623,12 @@ def select(listings: list[dict], prefs: Prefs, state: RunState | None = None,
             role_key = role_key_of(l.get("company_name") or "", l.get("title") or "")
             if state.already_attempted(l.get("id") or l.get("url", ""), RETRYABLE):
                 reason = "already attempted"
-            elif l.get("url") in attempted_urls and (l.get("id") or l.get("url")) not in state.done:
+            elif url_key(l.get("url") or "") in attempted_urls and (l.get("id") or l.get("url")) not in state.done:
                 reason = "same link already attempted"
             elif prefs.apply_once_at_company and state.has_applied(l.get("company_name") or ""):
                 reason = "already applied at company"
+            elif not prefs.apply_once_at_company and cooldown_days and company_key(l.get("company_name") or "") in recently_applied:
+                reason = f"applied at this company within {cooldown_days} days"
             elif prefs.apply_once_at_company and role_key in judged_roles:
                 reason = "same role already judged"
             elif prefs.apply_once_at_company and holds_at.get(role_key[0], 0) >= 2:

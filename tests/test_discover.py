@@ -201,6 +201,20 @@ with tempfile.TemporaryDirectory() as d:
     check("retry cap: two attempts still retried", "w2" in _worn_ids)
     check("retry cap: errors keep retrying", "w3" in _worn_ids)
     check("retry cap: a hand re-queue is exempt", "w4" in _worn_ids)
+    import datetime as _dtm
+    _recent = (_dtm.datetime.now().astimezone() - _dtm.timedelta(days=2)).isoformat()
+    _cool = RunState(path=Path(tempfile.mkdtemp()) / "s.json",
+                     done={"a1": {"status": "applied", "company": "Amex Co", "when": _recent, "attempts": 1}})
+    _cool_listings = [L(id="a1", company_name="Amex Co", url="https://jobs.lever.co/amex/1?utm_source=x"),
+                      L(id="a2", company_name="Amex Co", url="https://jobs.lever.co/amex/1?utm_source=y"),
+                      L(id="a3", company_name="Amex Co", url="https://jobs.lever.co/amex/2"),
+                      L(id="b1", company_name="Other Co", url="https://jobs.lever.co/other/1")]
+    _cool_prefs = Prefs(positions=["Software Engineer Intern"], apply_once_at_company=False, company_cooldown_days=7)
+    _cool_sel, _cool_why = select(_cool_listings, _cool_prefs, _cool)
+    _cool_ids = {e.id for e in _cool_sel}
+    check("dedupe: the same link under another tracking tag is not a new posting", "a2" not in _cool_ids and _cool_why.get("same link already attempted", 0) >= 1)
+    check("cooldown: a company applied to this week rests", "a3" not in _cool_ids and _cool_why.get("applied at this company within 7 days", 0) >= 1)
+    check("cooldown: other companies are unaffected", "b1" in _cool_ids)
 
 
 # --- the AI/ML/Data category: engineering titles in, quant and research out ---

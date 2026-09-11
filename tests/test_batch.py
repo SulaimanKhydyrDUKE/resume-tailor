@@ -633,6 +633,26 @@ check("rails: the model's 'will require sponsorship' is replaced by the bank's a
 from resume_tailor.compose import education as _edu_html
 check("compose: a GPA on the record is rendered", "GPA 3.42/4.0" in _edu_html({"education_details": [{"education_level": "B.S.", "field_of_study": "CS", "institution": "Duke", "year_of_completion": "2028", "gpa": "3.42/4.0"}]}))
 check("compose: no GPA field, no GPA line", "GPA" not in _edu_html({"education_details": [{"education_level": "B.S.", "institution": "Duke"}]}))
+from resume_tailor.profile import gpa_answer
+_gp = _P(career={"personal_information": {"name": "A", "surname": "B"}}, answers={"education": {"gpa": "3.42"}}, root=Path("/tmp"))
+check("gpa: a text field gets the exact number", gpa_answer(_gp, "What is your GPA?", []) == "3.42")
+check("gpa: the band that holds 3.42", gpa_answer(_gp, "What is your overall college/university GPA?", ["3.0 - 3.49", "3.5 - 3.9", "4.0"]) == "3.0 - 3.49")
+check("gpa: 'or higher' bands take the highest floor under it", gpa_answer(_gp, "GPA", ["3.0 or higher", "3.5 or higher", "3.8 or higher"]) == "3.0 or higher")
+check("gpa: 'out of 4.0' points never overstate", gpa_answer(_gp, "Overall GPA", ["3.2 out of 4.0", "3.4 out of 4.0", "3.5 out of 4.0"]) == "3.4 out of 4.0")
+check("gpa: an unrelated question is untouched", gpa_answer(_gp, "Years of experience", ["0-1", "2+"]) is None)
+_gq = [{"qid": "g1", "key": planner.question_key("What is your GPA?", "text"), "label": "What is your GPA?", "section": "", "widget": "text", "options": [], "required": True, "maxlength": None, "hint": "", "bank": ""}]
+_gq_plan = planner.rails([FieldAnswer(id="g1", answer="3.5", basis=["education.gpa"], skip=False, essay=False, reason="rounded")], _gq, _gp)
+check("rails: a rounded GPA is replaced by the record's", _gq_plan[_gq[0]["key"]].answer == "3.42")
+_tv = _P(career={"personal_information": {"name": "A", "surname": "B"}},
+         answers={"work_authorization": {"requires_us_sponsorship": "No", "citizenship_status": "U.S. lawful permanent resident (green card holder)"}}, root=Path("/tmp"))
+check("sponsorship: a visa-holder's option is never chosen for a permanent resident",
+      sponsorship_answer(_tv, "Will you require our Company to provide immigration sponsorship?", ["Yes", "No – I hold a temporary visa status that provides work authorization and will not need the Company to sponsor", "No – I am a U.S. citizen or permanent resident"]) == "No – I am a U.S. citizen or permanent resident")
+from resume_tailor.apply import _submit_verdict, _date_text as _dt
+check("submit: Oracle's saved-draft page is not a submission",
+      _submit_verdict({"form_present": False, "text": "Thank you. We saved a draft of your job application. We invite you to complete and submit it.", "errors": []}, True)[0] is False)
+check("date: a Workday month box gets the month", _dt("May 2028", "MM", "text") == "05")
+check("date: a Workday day box never gets a stray 2", _dt("May 2028", "DD", "text") == "01")
+check("date: a Workday year box gets the year", _dt("May 2028", "YYYY", "text") == "2028")
 check("picker: 'Raleigh, NC' finds Raleigh", _AS._match_option("Raleigh, NC", _opts) == 2)
 _edu = _P(career={"personal_information": {"name": "A", "surname": "B"}},
           answers={"availability": {"earliest_start_date": "May 2027"},

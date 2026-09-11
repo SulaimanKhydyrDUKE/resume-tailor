@@ -24,7 +24,7 @@ from dataclasses import dataclass
 
 from .apply import _pick_option, closest_option
 from .models import FieldAnswer, FormPlan
-from .profile import SPONSOR_Q, Profile, sponsorship_answer
+from .profile import GPA_Q, SPONSOR_Q, Profile, gpa_answer, sponsorship_answer
 
 # Questions about another person or organisation. The candidate's own name,
 # phone and address are never the answer to these, however well the words match.
@@ -356,6 +356,16 @@ def rails(answers: list[FieldAnswer], questions: list[dict], profile: Profile) -
             company = _title_to_company(profile, answer)
             if company:
                 answer = company
+        if GPA_Q.search(q["label"]) and not re.search(r"scale|out of what|maximum", q["label"], re.I):
+            fixed = gpa_answer(profile, q["label"], q["options"])
+            if fixed is not None:
+                decisions[key] = Decision(fixed, reason="the bank's GPA, exactly")
+                continue
+            if not q["options"] and re.search(r"\d\.\d", answer) and answer.strip() != fixed:
+                bank_gpa = str(profile.flat_answers().get("education.gpa") or "")
+                if bank_gpa and answer.strip() != bank_gpa:
+                    decisions[key] = Decision(None, reason=f"a GPA other than the record's {bank_gpa}")
+                    continue
         if q["options"] and SPONSOR_Q.search(q["label"]):
             # A sponsorship question takes the bank's answer, whatever the
             # model chose: "Yes, will require firm sponsorship" for a

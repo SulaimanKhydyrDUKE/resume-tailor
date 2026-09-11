@@ -513,6 +513,14 @@ def _submit_verdict(state: dict, url_changed: bool) -> tuple[bool, str] | None:
         return False, f"the site refused the submission: …{snippet}…"
     if _SUCCESS_TEXT.search(text):
         return True, "confirmation shown"
+    # Oracle's portals answer a Submit with "We saved a draft of your job
+    # application… complete and submit": the form is gone and nothing was
+    # sent. That was counted as applied eleven times at one company.
+    draft = re.search(r"saved (a )?draft|draft of your (job )?application|complete (and submit )?your (job )?application|"
+                      r"continue (to apply|your application)|application (is )?incomplete|finish your application", text, re.I)
+    if draft:
+        snippet = " ".join(text[max(0, draft.start() - 60): draft.end() + 100].split())
+        return False, f"the site kept a draft instead of submitting: …{snippet}…"
     if not state.get("form_present"):
         return True, "form gone after submit" + (", new page" if url_changed else "")
     if state.get("busy"):
@@ -638,7 +646,14 @@ def _date_text(value: str, fmt_hint: str, typ: str) -> str:
         return f"{y:04d}-{mo:02d}-{d:02d}"
     if typ == "month":
         return f"{y:04d}-{mo:02d}"
-    h = (fmt_hint or "").lower()
+    h = (fmt_hint or "").lower().strip()
+    # One box of a split date (Workday's Month / Day / Year): its own part.
+    if h in ("mm", "(mm)", "month", "month (mm)"):
+        return f"{mo:02d}"
+    if h in ("dd", "(dd)", "day", "day (dd)"):
+        return f"{d:02d}"
+    if h in ("yyyy", "(yyyy)", "year", "year (yyyy)"):
+        return f"{y:04d}"
     if "mm/dd/yyyy" in h:
         return f"{mo:02d}/{d:02d}/{y}"
     if "dd/mm/yyyy" in h:

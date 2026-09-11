@@ -237,6 +237,11 @@ def _base_header(career: dict, base: dict | None = None) -> str:
     over = (base or {}).get("header") or {}
     name = " ".join(x for x in (pi.get("name"), pi.get("surname")) if x)
     bits: list[str] = []
+    # Where the candidate is: recruiters filter on it, and a header without
+    # a city reads as "somewhere else".
+    city = str(over.get("location") or pi.get("city") or "")
+    if city:
+        bits.append(esc(city))
     phone = str(over.get("phone") or f"{pi.get('phone_prefix', '')} {pi.get('phone', '')}".strip())
     if phone:
         bits.append(esc(phone))
@@ -248,7 +253,12 @@ def _base_header(career: dict, base: dict | None = None) -> str:
         if url:
             bits.append(f'<a class="u" href="{esc(url)}">{esc(_plain_link(url))}</a>')
     line = '<span class="sep">|</span>'.join(f"<p>{b}</p>" for b in bits)
-    return f'<header>\n  <h1>{esc(name)}</h1>\n  <div class="contact-info">{line}</div>\n</header>'
+    # Work authorization, stated: a résumé that names Kyrgyzstan, Kazakhstan
+    # and an exchange-year award on every page reads as "needs sponsorship"
+    # to a screener unless it says otherwise.
+    auth = str(over.get("work_authorization") or pi.get("work_authorization") or "").strip()
+    auth_line = f'\n  <div class="contact-info"><p>{esc(auth)}</p></div>' if auth else ""
+    return f'<header>\n  <h1>{esc(name)}</h1>\n  <div class="contact-info">{line}</div>{auth_line}\n</header>'
 
 
 def document_from_base(career: dict, base: dict, exp_drafts: list[RoleDraft]) -> str:

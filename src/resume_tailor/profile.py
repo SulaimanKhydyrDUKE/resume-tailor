@@ -452,6 +452,11 @@ def sponsorship_answer(profile: "Profile", label: str, options: list[str]) -> st
     if needs not in ("yes", "no"):
         return None
     status = str(flat.get("work_authorization.citizenship_status") or "").lower()
+    if re.search(r"permanent resident|green card|\bcitizen\b", status):
+        # A visa-holder's option ("No – I hold a temporary visa status that
+        # provides work authorization…", Merck) is not this candidate's,
+        # however it starts.
+        opts = [o for o in opts if not re.search(r"temporary|visa (status|holder)|\b(F-?1|OPT|CPT|H-?1B|TN|J-?1)\b", o, re.I)]
     if needs == "no":
         # The status option that names the candidate's own standing first.
         if re.search(r"permanent resident|green card", status):
@@ -478,6 +483,46 @@ def sponsorship_answer(profile: "Profile", label: str, options: list[str]) -> st
         if re.fullmatch(r"\s*yes\s*[.!]?\s*", o, re.I):
             return o
     return None
+
+
+GPA_Q = re.compile(r"\bgpa\b|grade point", re.I)
+
+
+def gpa_answer(profile: "Profile", label: str, options: list[str]) -> str | None:
+    """A GPA question takes the bank's number exactly — never rounded up
+    ("3.5" went out on three text fields for a 3.42) — and, on a list of
+    bands, the band the number falls in. None when the bank has no GPA,
+    the question is not about GPA, or no band holds it."""
+    if not GPA_Q.search(label or ""):
+        return None
+    flat = profile.flat_answers()
+    raw = str(flat.get("education.gpa") or flat.get("education.cumulative_gpa") or "").strip()
+    m = re.search(r"\d\.\d+", raw)
+    if not m:
+        return None
+    gpa = float(m.group(0))
+    opts = [str(o) for o in (options or []) if str(o).strip()]
+    if not opts:
+        return m.group(0)
+    best, best_gap = None, None
+    for o in opts:
+        nums = [float(n) for n in re.findall(r"\d\.\d+|\b[0-4]\b(?=\s*(?:-|–|to|out))", o)]
+        nums = [n for n in nums if 0 <= n <= 5]
+        if re.search(r"out of|/\s*4", o, re.I):
+            nums = nums[:1]  # "3.4 out of 4.0": one point, the 4.0 is the scale
+        if len(nums) >= 2 and min(nums[:2]) - 0.001 <= gpa <= max(nums[:2]) + 0.001:
+            return o
+        if len(nums) == 1 and re.search(r"\b(or (higher|above|better)|and (up|above)|\+|greater|at least|above)\b", o, re.I):
+            if gpa >= nums[0] and (best_gap is None or gpa - nums[0] < best_gap):
+                best, best_gap = o, gpa - nums[0]
+        elif len(nums) == 1 and re.search(r"\b(or (lower|below|less)|below|under|less than)\b", o, re.I):
+            if gpa <= nums[0] and (best_gap is None or nums[0] - gpa < best_gap):
+                best, best_gap = o, nums[0] - gpa
+        elif len(nums) == 1 and re.search(r"out of|/\s*4", o, re.I):
+            # "3.4 out of 4.0": the nearest point that does not overstate.
+            if nums[0] <= gpa + 0.001 and (best_gap is None or gpa - nums[0] < best_gap):
+                best, best_gap = o, gpa - nums[0]
+    return best
 
 
 def apply_once_at_company(answers: dict) -> bool:
