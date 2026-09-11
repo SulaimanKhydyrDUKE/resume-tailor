@@ -548,14 +548,31 @@ async def _create_account(session: ApplySession, profile: Profile) -> str:
 
     created = False
     note(f"on {(_page_url(session) or '')[:80]}; fields={[(f.get('label') or '')[:18] + ':' + (f.get('type') or '') for f in fields][:8]}")
-    if emails_of(fields) and len(passwords_of(fields)) == 1:
+    real_pw = [f for f in fields if f.get("type") == "password"]  # not the show/hide "Password" button
+    if emails_of(fields) and len(real_pw) == 1:
         # The wall is a sign-in form (SuccessFactors): an account made on an
         # earlier pass signs in here; registering first bounced to "already
         # exists" and then a "Sign In" nav link led off to a privacy page.
         if await fill_credentials(verify=False):
             pressed = await press(r"sign in|log in|^\s*(submit|continue)\s*$")
+            if not pressed:
+                try:
+                    await session._doc.locator(real_pw[0]["selector"]).first.press("Enter")
+                    pressed = True
+                except Exception:
+                    pass
             note(f"sign-in first pressed={pressed}; now on {(_page_url(session) or '')[:80]}")
             await session._page.wait_for_timeout(2500)
+            after = (await session.read_text())[:3000]
+            if re.search(r"privacy statement|data privacy|terms of use", after, re.I):
+                # SuccessFactors puts its data-privacy statement between the
+                # sign-in and the form: accept it and go on.
+                if await click_text(r"^\s*(accept|i accept|agree|i agree|acknowledge|i acknowledge|accept (and|&) continue)\s*$"):
+                    await session._page.wait_for_timeout(2000)
+            if debug:
+                bl = await session.buttons()
+                note(f"after sign-in: fields={len(await session.describe_form())}; buttons={[(b.get('text') or '')[:18] for b in bl][:10]}; "
+                     f"text={' '.join((await session.read_text())[:220].split())!r}")
             if await detect_blocker(session, after_apply=True) != "login_required":
                 try:
                     await session.save_logins()
@@ -586,8 +603,26 @@ async def _create_account(session: ApplySession, profile: Profile) -> str:
     if not created:
         # Sign in with the same credentials: the account was made on an earlier attempt.
         await click_text(r"sign in with email|use (my )?email|continue with email|sign in|log in|already have an account.*")
+        await session._page.wait_for_timeout(1500)
+        if re.search(r"privacy statement|data privacy", (await session.read_text())[:4000], re.I):
+            # SuccessFactors shows its data-privacy statement on the way to
+            # the sign-in form (Westinghouse): accept it, then sign in.
+            if await click_text(r"^\s*(accept|i accept|agree|i agree|acknowledge|i acknowledge|accept (and|&) continue)\s*$"):
+                await session._page.wait_for_timeout(2000)
+            note(f"privacy statement on the way to sign-in; now fields={len(await session.describe_form())}")
         if await fill_credentials(verify=False):
-            pressed = await press(r"sign in|log in")
+            pressed = await press(r"sign in|log in|^\s*(submit|continue|next)\s*$")
+            if not pressed:
+                # No button by that name (SuccessFactors labels its submit
+                # oddly): Enter in the password box sends the form.
+                pw_box = next((f for f in await session.describe_form() if f.get("type") == "password"), None)
+                if pw_box:
+                    try:
+                        await session._doc.locator(pw_box["selector"]).first.press("Enter")
+                        pressed = True
+                        await session._page.wait_for_timeout(2500)
+                    except Exception:
+                        pass
             note(f"sign-in pressed={pressed}; now on {(_page_url(session) or '')[:80]}; text={(await session.read_text())[:120]!r}")
     # A tenant that will not sign the new account in until its e-mail is
     # verified (Medtronic, Motorola): with the inbox configured, the
