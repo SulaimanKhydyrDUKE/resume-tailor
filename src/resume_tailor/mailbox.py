@@ -55,15 +55,26 @@ def extract_link(text: str, html: str = "") -> str | None:
     return max(cands, key=len) if cands else None
 
 
+# "…into the security code field on your application: BAVzfURz" — the token
+# right after the colon that follows the word code, whatever it is made of.
+_LABELLED_CODE = re.compile(r"(?:code|passcode|pass code|pin|otp)[^:\n]{0,80}:\s*([A-Za-z0-9]{4,10})\b", re.I)
+
+
+def _code_like(token: str) -> bool:
+    """Digits, or letters with a capital somewhere after the first — never a
+    plain word ("code: Please…")."""
+    return bool(re.search(r"\d", token)) or (bool(re.search(r".[A-Z]", token)) and bool(re.search(r"[a-z]", token)))
+
+
 def extract_code(text: str) -> str | None:
-    """The code a message carries, or None. Codes are digits (Oracle's six)
-    or letters and digits (Greenhouse's "3gDzjC7C"); a bare year in the
-    footer ("© 2026 Greenhouse") is never the code when anything else fits."""
-    found = [m.group(1) for m in CODE_RE.finditer(text or "")]
-    if not found:
-        return None
+    """The code a message carries, or None. Codes are digits (Oracle's six),
+    letters and digits (Greenhouse's "3gDzjC7C") or letters alone
+    ("BAVzfURz"); a bare year ("© 2026 Greenhouse" in a footer) is never
+    the code — typed into Coinbase's boxes it wasted a submission."""
+    found = [m.group(1) for m in _LABELLED_CODE.finditer(text or "") if _code_like(m.group(1))]
+    found += [m.group(1) for m in CODE_RE.finditer(text or "")]
     real = [c for c in found if not _YEAR.match(c)]
-    return (real or found)[0]
+    return real[0] if real else None
 
 
 def _profile_email() -> str:

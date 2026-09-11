@@ -868,6 +868,10 @@ check("picker: a bare score picks the tightest scale", ApplySession._match_optio
 check("picker: an ambiguous word stays ambiguous", ApplySession._match_option("Durham", [{"t": "Durham, NC"}, {"t": "Durham, NH"}]) is None)
 check("mailbox: a one-time pass code is read", extract_code("Please confirm your identity using this one-time pass code: 756506") == "756506")
 check("mailbox: a requisition number is not a code", extract_code("Thanks for applying! Requisition 253299") is None)
+_GH = "Hi Sulaiman, Copy and paste this code into the security code field on your application: QwErTyUi After you enter the code, resubmit your application. © 2026 Greenhouse 18 West 18th Street"
+check("mailbox: Greenhouse's letters-only code is read, not the footer year", extract_code(_GH) == "QwErTyUi")
+check("mailbox: a plain word after 'code:' is not a code", extract_code("Use this code: Please enter it on the page. © 2026") is None)
+check("mailbox: an Oracle six-digit code after a colon", extract_code("Your verification code: 483920. It expires in 10 minutes.") == "483920")
 check("planner: a graduate GPA field answers by silence", bool(_SILENCE.search("GPA (Graduate)*")) and bool(_NO_LIKE.search("Other/Not Applicable")))
 
 # --- e-mail-code walls wait for the inbox, company-wide -------------------

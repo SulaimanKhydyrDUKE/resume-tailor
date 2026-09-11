@@ -64,6 +64,11 @@ BOUNCE = re.compile(r"delivery status notification|undeliverable|delivery (has )
 # Unmistakable wording, in the order they are tried: the terminal verdict
 # first so "unfortunately … after your interview" reads as a rejection.
 RULES = (
+    # Oracle HCM (and others) mail "we saved a draft — continue to apply"
+    # when Submit never went through: not an assessment, not a confirmation.
+    ("draft", re.compile(
+        r"saved a draft|continue to apply|complete (and submit )?your (job )?application|finish(ing)? your application|"
+        r"incomplete application|application (is )?incomplete|resume your application", re.I)),
     ("rejected", re.compile(
         r"unfortunately|not (be )?(moving|move|proceed(ing)?) forward|(pursue|move forward|proceed) with other (candidates|applicants)|"
         r"no longer (be )?(under )?consider|decided not to|not (been )?selected|will not be (moving|proceeding)|regret to inform|"
@@ -250,6 +255,9 @@ SUBJECT_APPLIED = re.compile(r"thank(s| you) for (applying|your (application|int
 # selected for an interview") or a courtesy ("unfortunately we cannot reply
 # to everyone"), which every confirmation carries.
 BODY_RULES = (
+    ("draft", re.compile(
+        r"saved a draft of your (job )?application|invite you to complete and submit your (job )?application|"
+        r"finish(ing)? your application|your application is incomplete", re.I)),
     ("rejected", re.compile(
         r"(not|won'?t|will not) be (moving|proceeding|going) forward with your (application|candidacy)|"
         r"(decided|chosen|elected) to (move forward|proceed|go forward) with other (candidates|applicants)|"
@@ -263,7 +271,8 @@ BODY_RULES = (
         r"book a time|(next|first) step (is|will be) (a|an) (call|interview|conversation|phone)|phone screen|recruiter screen|"
         r"select a time|pick a time|availability for (a|an) (call|interview|conversation)", re.I)),
     ("oa", re.compile(
-        r"invite(s|d)? you to (take|complete|start)|complete (the|your|an|this) (online )?(assessment|coding|test|challenge)|"
+        r"invite(s|d)? you to (take|complete|start) (the |your |an |this |our )?(online |technical |coding |virtual )?"
+        r"(assessment|test|challenge|exercise|hackerrank|codesignal|coderbyte)|complete (the|your|an|this) (online )?(assessment|coding|test|challenge)|"
         r"assessment (invitation|link)|hackerrank|codesignal|codility|coderbyte|litmus|take-?home|coding challenge|"
         r"online assessment|technical assessment|aptitude test|assessment(s)? (has|have) been assigned", re.I)),
 )
@@ -277,15 +286,18 @@ def _rule_stage(subject: str, body: str) -> str | None:
         return "code"
     for stage, pat in RULES:
         if stage != "applied" and pat.search(subject):
+            if stage == "interview" and re.search(r"feedback|tips|prep|how to|guide|what to expect", subject, re.I):
+                break  # "Interview Feedback for Application Review": the body or the model decides
             return stage
     if SUBJECT_APPLIED.search(subject):
         return "applied"
     # A confirmation's courtesy sentences ("if you are not selected, keep an
     # eye on our jobs page", "if we choose not to move forward…") carry the
     # words of a rejection; they are struck before the body rules read it.
-    head = re.sub(r"[^.!?\n]*\b(if (you are|you're|you were|we choose|we decide|your (skills|qualifications|profile|background)|"
+    head = re.sub(r"[^.!?\n]*\b(if (you are|you're|you were|we choose|we decide|your (skills|qualifications|profile|background|application|resume)|"
                   r"selected|there is a match|we (find|see) a (fit|match)|a (fit|match) is)|keep an eye|should you (not )?be selected|"
-                  r"unless (you are|selected)|not everyone|unable to (respond|reply) to (everyone|each|all))\b[^.!?\n]*[.!?]?",
+                  r"unless (you are|selected)|not everyone|unable to (respond|reply) to (everyone|each|all)|"
+                  r"you may be (asked|invited|contacted)|the (steps|process) (are|is)|as follows|usually (ranges|takes)|typically)\b[^.!?\n]*[.!?]?",
                   " ", body[:2500], flags=re.I)
     for stage, pat in BODY_RULES:
         if pat.search(head):
