@@ -513,6 +513,12 @@ def _submit_verdict(state: dict, url_changed: bool) -> tuple[bool, str] | None:
         return False, f"the site refused the submission: …{snippet}…"
     if _SUCCESS_TEXT.search(text):
         return True, "confirmation shown"
+    # Oracle's "Confirm Your Identity" after Submit: six code boxes and
+    # "type the code into the field to … complete your job application" —
+    # a code wall, not a draft, and the batch reads the code from the inbox.
+    if re.search(r"(verification|security) code|type the code|enter the code|code (was|has been) sent|confirm your identity", text, re.I) \
+            and re.search(r"\bverify\b|\bconfirm\b|\bsubmit\b", text, re.I):
+        return False, "the page asks for an e-mailed code before it takes the application"
     # Oracle's portals answer a Submit with "We saved a draft of your job
     # application… complete and submit": the form is gone and nothing was
     # sent. That was counted as applied eleven times at one company.

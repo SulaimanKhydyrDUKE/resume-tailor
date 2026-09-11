@@ -950,6 +950,11 @@ check("current employer: none when no role is ongoing", _current_employer(_NS(ca
 check("current employer: Lever's 'Current company' matches", bool(_CURRENT_EMPLOYER.search("Current company ✱")))
 check("current employer: 'Company name' under a work entry does not", not _CURRENT_EMPLOYER.search("Company name*"))
 check("current employer: 'current or most recent employer' matches", bool(_CURRENT_EMPLOYER.search("Please list your current or most recent employer")))
+from resume_tailor.apply import _submit_verdict as _sv
+_oracle_code = {"text": "Confirm Your Identity The verification code was sent to this email address. When you get the code, type the code into the field to confirm your identity and complete your job application. VERIFY", "form_present": True}
+check("verdict: Oracle's post-submit code wall is not a saved draft", _sv(_oracle_code, False) == (False, "the page asks for an e-mailed code before it takes the application"))
+_oracle_draft = {"text": "We saved a draft of your job application. We invite you to complete and submit your job application.", "form_present": False}
+check("verdict: Oracle's saved-draft page is still not a submission", _sv(_oracle_draft, True)[0] is False and "draft" in _sv(_oracle_draft, True)[1])
 from resume_tailor.planner import _SILENCE as _SIL
 check("silence: a broker licence the record does not list can be answered No", bool(_SIL.search("Do you intend to actively use a real estate or broker license that you possess?")))
 check("silence: a FINRA licensing exam question can be answered No", bool(_SIL.search("Have you ever taken a FINRA or any other self-regulatory organization licensing exam?")))

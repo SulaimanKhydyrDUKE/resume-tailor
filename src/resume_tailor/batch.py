@@ -239,8 +239,10 @@ async def _link_wall(session: ApplySession) -> bool:
 
 
 async def _code_fields(session: ApplySession) -> list[dict]:
+    """The boxes a code wall wants typed into: empty, or holding one stray
+    character (a repair round once put "1" in each of Oracle's six)."""
     return [f for f in await session.describe_form()
-            if f.get("type") in ("text", "number", "tel", "") and not f.get("value")
+            if f.get("type") in ("text", "number", "tel", "") and len(str(f.get("value") or "")) <= 1
             and _CODE_WALL.search(" ".join((f.get("label") or "", f.get("name") or "", f.get("hint") or "")))]
 
 
@@ -428,6 +430,24 @@ async def _create_account(session: ApplySession, profile: Profile) -> str:
                 if same:
                     f = same[0]
 
+    async def tick_boxes() -> None:
+        """Every consent box on the registration form. Workday draws its
+        privacy box as a styled control over a hidden input, and a plain
+        click can miss it (Caterpillar, Medline: "Please check the box to
+        continue"): what is still unchecked afterwards is forced."""
+        for f in await session.describe_form():
+            if f.get("type") == "checkbox" and not f.get("checked"):
+                try:
+                    await session.fill(f["selector"], "yes", f)
+                except Exception:
+                    pass
+        for f in await session.describe_form():
+            if f.get("type") == "checkbox" and not f.get("checked"):
+                try:
+                    await _click_hard(session, f["selector"])
+                except Exception:
+                    pass
+
     async def fill_credentials(verify: bool) -> bool:
         fields = await session.describe_form()
         if not emails_of(fields) or not passwords_of(fields) or (verify and len(passwords_of(fields)) < 2):
@@ -455,12 +475,7 @@ async def _create_account(session: ApplySession, profile: Profile) -> str:
                     await session.fill(f["selector"], "United States", f)
                 except Exception:
                     pass
-        for f in await session.describe_form():
-            if f.get("type") == "checkbox" and not f.get("checked"):
-                try:
-                    await session.fill(f["selector"], "yes", f)
-                except Exception:
-                    pass
+        await tick_boxes()
         # "Read and accept the data privacy statement": a control that opens
         # the statement, with its own Accept at the end.
         if await click_text(r"read and accept|accept (the )?(data )?privacy|privacy statement"):
@@ -537,6 +552,13 @@ async def _create_account(session: ApplySession, profile: Profile) -> str:
         note("registration form filled")
         pressed = await press(r"create (an )?account|sign up|register|^\s*create\s*$")
         note(f"create pressed={pressed}; now on {(_page_url(session) or '')[:80]}")
+        if any(re.search(r"check the box|must (accept|agree|acknowledge)|accept the (terms|privacy|policy)", e, re.I)
+               for e in await session.errors()):
+            # The consent box was not taken: force it and press once more.
+            note("consent box not taken; forcing it and pressing again")
+            await tick_boxes()
+            pressed = await press(r"create (an )?account|sign up|register|^\s*create\s*$")
+            note(f"create pressed again={pressed}; errors={[e[:60] for e in (await session.errors())[:3]]}")
         text = (await session.read_text())[:5000].lower()
         if re.search(r"already (exists|in use|registered|have an account)|account exists", text):
             created = False
@@ -2171,15 +2193,28 @@ async def _process_one(session: ApplySession, profile: Profile, entry: QueueEntr
     buttons = await session.buttons()
     review_page = await _is_review_page(session, profile, buttons)
     if not review_page and not await session._wait_for_fields(10):
-        shot = await session.screenshot(shots_dir / f"{_safe(entry.id)}-needs-review.png")
-        if any(_SIGNIN_TEXT.search(b.get("text") or "") for b in buttons):
-            o.status = "needs_login"
-            o.detail = ("this site wants an account or a sign-in before its form (a sign-in button on an empty page); "
-                        f"open it in Chrome to finish by hand, or log in once and rerun: {_page_url(session) or apply_url}")
-        else:
-            o.status, o.detail = "needs_review", "the form disappeared before submit — the page shows no fields"
-        o.screenshot = str(shot)
-        return o
+        signin = any(_SIGNIN_TEXT.search(b.get("text") or "") for b in buttons)
+        recovered = False
+        if signin and _accounts_allowed(profile, _page_url(session) or apply_url):
+            # An empty page with a Sign In control (RTX's globalhr tenant):
+            # the same account step as a login wall, then on with the form.
+            _now("creating the site account", entry, url=apply_url)
+            try:
+                how = await _create_account(session, profile)
+            except Exception as e:
+                how = ""
+                print(f"  account step failed: {_brief(e)}", file=sys.stderr, flush=True)
+            recovered = bool(how) and how not in ("captcha", "verify_email") and await session._wait_for_fields(10)
+        if not recovered:
+            shot = await session.screenshot(shots_dir / f"{_safe(entry.id)}-needs-review.png")
+            if signin:
+                o.status = "needs_login"
+                o.detail = ("this site wants an account or a sign-in before its form (a sign-in button on an empty page); "
+                            f"open it in Chrome to finish by hand, or log in once and rerun: {_page_url(session) or apply_url}")
+            else:
+                o.status, o.detail = "needs_review", "the form disappeared before submit — the page shows no fields"
+            o.screenshot = str(shot)
+            return o
     if not any(a.get("answer") for a in o.answers):
         o.status, o.detail = "needs_review", "nothing was filled on this page; not submitted"
         return o
