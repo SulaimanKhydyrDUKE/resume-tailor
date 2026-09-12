@@ -281,13 +281,14 @@ _SOFT_SKILL = re.compile(
     r"attention to detail|self[- ]starter|fast learner|mentoring|claude code|chatgpt|copilot|cursor)\b", re.I)
 
 
-def _must_survive(profile: Profile, email: str) -> dict[str, str]:
+def _must_survive(profile: Profile, email: str, gpa_text: str | None = None) -> dict[str, str]:
     """What a parser must find in the PDF's text layer. The audit found the
     GPA on none of 424 résumés and the city on none of the newer ones; a
-    résumé missing any of these is held (batch), not sent."""
+    résumé missing any of these is held (batch), not sent. `gpa_text` is
+    the skeleton's own GPA line when one is printed instead of the record's."""
     pi = profile.career.get("personal_information", {}) or {}
     edu = (profile.career.get("education_details") or [{}])[0] or {}
-    gpa = re.search(r"\d\.\d+", str(edu.get("gpa") or ""))
+    gpa = re.search(r"\d\.\d+", str(gpa_text if gpa_text is not None else edu.get("gpa") or ""))
     year = re.search(r"20\d\d", str(edu.get("year_of_completion") or ""))
     return {"email": email, "name": profile.full_name, "city": str(pi.get("city") or ""),
             "gpa": gpa.group(0) if gpa else "", "graduation year": year.group(0) if year else ""}
@@ -555,7 +556,7 @@ async def _tailor_on_base(profile: Profile, job: JobSpec, out_dir: str | Path, l
     pdf_text = extract_pdf_text(pdf_path)
     pi = profile.career.get("personal_information", {}) or {}
     email = str((base.get("header") or {}).get("email") or pi.get("email", ""))
-    render_violations = (gates.check_rendered(pdf_text, _must_survive(profile, email))
+    render_violations = (gates.check_rendered(pdf_text, _must_survive(profile, email, str((base.get("education") or {}).get("gpa") or "") or None))
                          + gates.check_bullets_survive(html, pdf_text))
     warnings: list[str] = []
     if dropped:

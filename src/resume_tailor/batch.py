@@ -117,7 +117,10 @@ class Outcome:
 #  4: the résumé is composed on the user's own skeleton (resume/base.yaml) in
 #     the LaTeX layout and uploaded as First_Last_resume.pdf (2026-09-07) — an
 #     earlier draft has the old shape and a company-named file.
-RESUME_VERSION = 4
+#  5: the education line reads "May 2028" (no "(expected)") and prints the
+#     Spring 2026 term GPA, 3.6 (the user, 2026-09-12); earlier PDFs say
+#     "Expected May 2028 · GPA 3.42/4.0".
+RESUME_VERSION = 5
 
 
 # Wording that says a control is not the one that sends the application,
