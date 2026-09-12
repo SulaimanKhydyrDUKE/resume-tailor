@@ -17,6 +17,7 @@ body {
   max-width: 100%;
   /* An "ffi" ligature extracts as "Of ice" from the PDF; the parser must see "Office". */
   font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "clig" 0, "dlig" 0, "hlig" 0; /* Chromium's print engine still formed "ffi" without this */
 }
 
 header { text-align: center; margin-bottom: 6px; }
