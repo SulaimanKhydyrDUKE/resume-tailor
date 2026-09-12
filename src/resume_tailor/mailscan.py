@@ -316,6 +316,19 @@ def _rule_stage(subject: str, body: str) -> str | None:
     return None
 
 
+# The organisation's gpt-4o allowance is 3 requests a minute on a sliding
+# window: calls are spaced out ahead of time (a wait after a 429 is not
+# enough once three have gone in a burst). Smaller models get 50 a minute.
+_last_model_call = 0.0
+
+
+def _model_gap(model: str) -> float:
+    env = os.environ.get("RESUME_TAILOR_MAIL_MODEL_GAP")
+    if env:
+        return float(env)
+    return 1.5 if re.search(r"mini|4\.1|nano", model) else 21.0
+
+
 def _model_stage(company: str, frm: str, subject: str, body: str) -> dict:
     """gpt-4o reads one message about a known company and names its stage.
     Only messages the rules could not place get here."""
@@ -332,22 +345,24 @@ def _model_stage(company: str, frm: str, subject: str, body: str) -> dict:
             "\"date\": an ISO date or datetime the message gives for a deadline, assessment or interview, else null; "
             "\"note\": at most 12 words saying what the message asks or says}."
         )
+        global _last_model_call
+        model = os.environ.get("RESUME_TAILOR_MAIL_MODEL", "gpt-4o")
         r = None
-        for attempt in range(4):
+        for attempt in range(6):
+            gap = _model_gap(model) - (time.time() - _last_model_call)
+            if gap > 0:
+                time.sleep(gap)
+            _last_model_call = time.time()
             try:
-                r = client.chat.completions.create(model=os.environ.get("RESUME_TAILOR_MAIL_MODEL", "gpt-4o"),
-                                                   messages=[{"role": "user", "content": prompt}],
+                r = client.chat.completions.create(model=model, messages=[{"role": "user", "content": prompt}],
                                                    response_format={"type": "json_object"}, temperature=0)
                 break
             except RateLimitError as e:
-                # The organisation's gpt-4o allowance is 3 requests a minute:
-                # wait what the server asks (or 21 s) and try again, so a
-                # slow scan still sorts every message rather than none.
-                if attempt == 3:
+                if attempt == 5:
                     raise
                 m = re.search(r"try again in (\d+(?:\.\d+)?)\s*(ms|s)", str(e))
                 wait = (float(m.group(1)) / (1000 if m.group(2) == "ms" else 1)) if m else 21.0
-                time.sleep(min(90.0, wait + 1.0))
+                time.sleep(min(90.0, max(wait + 1.0, 25.0)))
         out = json.loads(r.choices[0].message.content or "{}")
         stage = str(out.get("stage") or "other").lower()
         return {"stage": stage if stage in STAGES or stage == "other" else "other",
