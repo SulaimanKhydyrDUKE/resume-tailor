@@ -38,6 +38,9 @@ check("'Application Has Been Received | Next Steps' is still a confirmation",
 check("'Information about your application to X' is not settled by subject",
       _rule_stage("Information about your application to Appian", "We appreciate your interest.") is None)
 check("a closed role in the subject is a rejection", _rule_stage("We have closed the position", "") == "rejected")
+check("a clearance questionnaire is paperwork, not an interview",
+      _rule_stage("Please Review and Complete: What It Means To Hold A Government Sponsored Security Clearance", "Please complete the form to schedule a call.") == "other")
+check("'Request for Information' is paperwork", _rule_stage("BTI360 Internship: Request for Information", "") == "other")
 check("a draft never sets the company stage",
       _company_stage([{"stage": "draft", "when": "2026-09-09"}, {"stage": "applied", "when": "2026-09-03"}]) == "applied")
 check("a draft alone leaves the company without a stage", _company_stage([{"stage": "draft", "when": "2026-09-09"}]) == "")

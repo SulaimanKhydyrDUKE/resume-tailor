@@ -289,12 +289,21 @@ STATUS_SUBJECT = re.compile(
     r"status of your application|your application status|regarding your application|decision (on|about) your", re.I)
 
 
+# Paperwork between stages — a clearance questionnaire, a request for
+# information, an I-9 — is not a verdict; the model once read one as an
+# interview.
+FORM_REQUEST = re.compile(r"request for information|what it means to hold|security clearance|background check|\bi-?9\b|"
+                          r"onboarding (form|paperwork)|complete (the|this|your) (form|questionnaire)|please review and complete", re.I)
+
+
 def _rule_stage(subject: str, body: str) -> str | None:
     """The stage the wording settles, or None for the model. The subject
     comes first: a confirmation is a confirmation whatever its body says
     in passing about interviews and other candidates."""
     if CODE.search(subject):
         return "code"
+    if FORM_REQUEST.search(subject):
+        return "other"
     for stage, pat in RULES:
         if stage != "applied" and pat.search(subject):
             if stage == "interview" and re.search(r"feedback|tips|prep|how to|guide|what to expect", subject, re.I):
