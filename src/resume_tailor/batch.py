@@ -120,7 +120,8 @@ class Outcome:
 #  5: the education line reads "May 2028" (no "(expected)") and prints the
 #     Spring 2026 term GPA, 3.6 (the user, 2026-09-12); earlier PDFs say
 #     "Expected May 2028 · GPA 3.42/4.0".
-RESUME_VERSION = 5
+#  6: "GPA 3.6/4.0" with no qualifier (the user, later that day).
+RESUME_VERSION = 6
 
 
 # Wording that says a control is not the one that sends the application,
