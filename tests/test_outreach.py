@@ -145,6 +145,13 @@ found = []
 _harvest("<p>Questions about your application? jobs@countryfinancial.com</p>", "https://countryfinancial.wd5.myworkdayjobs.com/x", found)
 check("harvest: a jobs@ mailbox counts as recruiting by name", [f["address"] for f in found] == ["jobs@countryfinancial.com"], found)
 
+found = []
+_harvest("<p>Questions about applying? Write to uswaptdo@td.com</p>", "https://td.wd3.myworkdayjobs.com/x/job/y", found)
+check("harvest: on a posting page an opaque mailbox is dropped whatever the words around it", found == [], found)
+found = []
+_harvest("<p>Questions about applying? Write to hrhire@acme.com</p>", "https://www.acme.com/careers/hiring-process", found)
+check("harvest: on the company's own page the words around it still count", [f["address"] for f in found] == ["hrhire@acme.com"], found)
+
 # --- a named human vs a mailbox label ------------------------------------------
 check("_person: a named human", _person("Dominique Burns", "BTI360"))
 check("_person: a team label is not", not _person("Netic Hiring Team", "Netic"))

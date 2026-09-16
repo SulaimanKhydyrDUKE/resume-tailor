@@ -297,19 +297,25 @@ def _harvest(html: str, page: str, found: list[dict]) -> None:
     university page."""
     text = re.sub(r"<[^>]+>", " ", html)
     campus_page = bool(CAMPUS_LINK.search(urlsplit(page).path))
+    posting_page = bool(ATS_HOST.search(urlsplit(page).netloc))
     candidates_ = [m.group(0) for m in EMAIL.finditer(html)] + re.findall(r"mailto:([^\"'?#<>\s]+)", html, re.I)
     for raw in candidates_:
         addr = _clean(raw)
         if not EMAIL.fullmatch(addr) or not _writable(addr) or addr.endswith((".png", ".jpg", ".gif", ".svg")) or "example.com" in addr:
             continue
         at = text.find(addr)
-        around = text[max(0, at - 160): at + 80] if at >= 0 else ""
+        around = text[max(0, at - 600): at + 200] if at >= 0 else ""
         local = addr.split("@")[0]
-        # "If you need an accommodation to apply, e-mail …": that mailbox is
-        # for accommodation requests unless its own name says recruiting.
-        if re.search(r"accommodat|disabilit|accessib|assistance", around, re.I) and not RECRUITING.search(local + "@"):
+        named_recruiting = bool(RECRUITING.search(local + "@"))
+        # A posting page prints addresses for accommodation requests and
+        # technical help far more often than for recruiters: there, the
+        # mailbox's own name has to say recruiting. Elsewhere, "if you need
+        # an accommodation to apply, e-mail …" disqualifies an opaque name.
+        if posting_page and not named_recruiting:
             continue
-        if campus_page or RECRUITING.search(local + "@") or RECRUITING.search(around):
+        if re.search(r"accommodat|disabilit|accessib|assistance", around, re.I) and not named_recruiting:
+            continue
+        if campus_page or named_recruiting or RECRUITING.search(around):
             if not any(f["address"] == addr for f in found):
                 found.append({"address": addr, "name": "", "source": "page: " + page[:80], "rank": 2})
 
