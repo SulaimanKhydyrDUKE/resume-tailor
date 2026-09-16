@@ -121,7 +121,9 @@ class Outcome:
 #     Spring 2026 term GPA, 3.6 (the user, 2026-09-12); earlier PDFs say
 #     "Expected May 2028 · GPA 3.42/4.0".
 #  6: "GPA 3.6/4.0" with no qualifier (the user, later that day).
-RESUME_VERSION = 6
+#  7: no GPA on the résumé — the skeleton's and the record's gpa lines are
+#     commented out (the user, 2026-09-12 evening); a cached PDF still prints one.
+RESUME_VERSION = 7
 
 
 # Wording that says a control is not the one that sends the application,

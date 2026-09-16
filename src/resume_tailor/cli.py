@@ -790,12 +790,15 @@ def main() -> int:
     pm.set_defaults(func=lambda a: __import__("resume_tailor.mailscan", fromlist=["run_cli"]).run_cli(a))
 
     po = sub.add_parser("outreach", help="e-mail the recruiting team of each company applied to: a short note, the résumé attached")
-    po.add_argument("action", choices=["plan", "send", "log"], help="plan = show what would be sent, send = send it, log = what was sent")
+    po.add_argument("action", choices=["lookup", "plan", "send", "log"],
+                    help="lookup = fill the address cache for every company, plan = show what would be sent, send = send it, log = what was sent")
     po.add_argument("--out", default="output")
     po.add_argument("--max", type=int, default=15, help="at most this many e-mails this run (and 15 a day)")
     po.add_argument("--only", default=None, help="only companies whose name contains this")
     po.add_argument("--force", action="store_true", help="send outside weekday working hours / past the daily cap")
     po.add_argument("--no-web", action="store_true", help="do not web-search for addresses; inbox and pages only")
+    po.add_argument("--refresh", action="store_true", help="lookup: redo companies whose cache already holds an address")
+    po.add_argument("--workers", type=int, default=3, help="lookup: companies searched at once (default 3)")
     po.set_defaults(func=lambda a: __import__("resume_tailor.outreach", fromlist=["run_cli"]).run_cli(a))
 
     plg = sub.add_parser("login", help="open a site's sign-in wall in Chrome; after you log in, the tool fills and submits that posting")
