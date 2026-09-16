@@ -73,7 +73,9 @@ TEAM_WORDS = re.compile(r"\b(team|assessments?|support|notifications?|hr|talent|
 # account-verification sender, an HR support line, a servicing mailbox.
 SYSTEM_BOX = re.compile(r"workday|oracle|icims|greenhouse|lever\.co|ashby|smartrecruiters|taleo|"
                         r"successfactors|brassring|hr[._-]?support|hrsupport|servicing|operations|seeyourself|default|system|^contact@|^hello@|"
-                        r"wotc|^hr@|^jobs-|candidate[._-]?(care|experience|support)", re.I)
+                        r"wotc|^hr@|^jobs-|candidate[._-]?(care|experience|support)|help[._-]?desk|ask[._-]?hr|shared[._-]?services|"
+                        r"administrat|assistance|^ip[._-]?admin|^admin@|^it[._-]?(help|support|admin|service)|^ops@|^office@|^mail@|"
+                        r"^enquir|^inquir|^team@", re.I)
 # Mail whose sender is a mechanism, whatever the address looks like.
 MECHANICAL_SUBJECT = re.compile(r"verif|survey|assessment|password|your (candidate )?account|security code|one-time|wotc|"
                                 r"complete your (profile|application)|continue (to apply|your application)|almost there|confirm your identity|"
@@ -89,7 +91,7 @@ RELAY_HOST = re.compile(r"(^|\.)(mail|e-?mails?|marketing\d*|careeralerts?|jobal
                         r"pinpoint\.email$|default\.com$|greenhouse-mail\.io$|hire\.lever\.co$|icims\.com$|myworkday(jobs)?\.com$|"
                         r"smartrecruiters\.com$|applytojob\.com$|jobvite\.com$|ashbyhq\.com$|zendesk\.com$|freshdesk\.com$|"
                         r"helpscout\.net$|intercom-mail\.com$|hubspot|salesforce|mailchimp|sendgrid|amazonses|indeed\.com$|"
-                        r"ziprecruiter\.com$|linkedin\.com$", re.I)
+                        r"ziprecruiter\.com$|linkedin\.com$|pure\.cloud$|genesys|force\.com$|salesforce-sites", re.I)
 TOKEN_LOCAL = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$|-(?=[a-z]*\d)[a-z0-9]{8,}$|^(?=[a-z]*\d)[a-z0-9]{24,}$", re.I)
 # Mail that is plainly about an application, whoever sent it.
 APPLICATION_SUBJECT = re.compile(r"appl(y|ying|ied|ication)|candidate|position|\brole\b|intern|interview|recruit|hiring|"
@@ -103,7 +105,7 @@ def _writable(addr: str) -> bool:
     local, _, host = (addr or "").partition("@")
     if not addr or not host or NOREPLY.search(addr) or SYSTEM_BOX.search(addr):
         return False
-    if RELAY_HOST.search(host) or TOKEN_LOCAL.search(local):
+    if RELAY_HOST.search(host) or TOKEN_LOCAL.search(local) or not re.search(r"\.[a-z]{2,}$", host, re.I):
         return False
     if re.fullmatch(r"u00[0-9a-f]{2}[0-9a-f]*|[0-9a-f]{8,}|x[0-9a-f]{2}", local, re.I) or len(local) < 2:
         return False
@@ -367,11 +369,19 @@ def from_pages(url: str, company_url: str = "") -> list[dict]:
 # has not found a recruiting address.
 BROKER_HOST = re.compile(r"signalhire|rocketreach|zoominfo|contactout|apollo\.io|growjo|lusha|hunter\.io|kaspr|wiza|"
                          r"leadiq|seamless\.ai|snov\.io|anymail|aeroleads|clearbit|adapt\.io|salesql|getprospect|"
-                         r"emailfinder|findymail|datanyze|crunchbase|theorg\.com", re.I)
+                         r"emailfinder|findymail|datanyze|crunchbase|theorg\.com|allbiz|vcnewsdaily|manta\.com|buzzfile|dnb\.com|"
+                         r"bbb\.org|glassdoor|yellowpages|opencorporates|bloomberg|pitchbook|owler|cbinsights|dealroom", re.I)
 
 
 def _broker_page(url: str) -> bool:
     return bool(BROKER_HOST.search(urlsplit(url).netloc or ""))
+
+
+def _cited_broker(source: str) -> bool:
+    """Whether a cached address's source names a directory or people-search
+    page — one an earlier, looser lookup may have accepted."""
+    m = re.search(r"https?://\S+", source or "")
+    return bool(m) and _broker_page(m.group(0))
 
 
 def _printed_on(addr: str, url: str) -> bool | None:
@@ -485,7 +495,7 @@ def find_addresses(cand: dict, results: dict, log: dict, use_web: bool = True) -
         a = f["address"]
         if a in seen or a in bounced or a == own or not _writable(a):
             continue  # the cache may hold what an earlier, looser filter let through
-        if MECHANICAL_SUBJECT.search(str(f.get("source") or "")):
+        if MECHANICAL_SUBJECT.search(str(f.get("source") or "")) or _cited_broker(str(f.get("source") or "")):
             continue
         # The company's own domain, or a recruiting-looking address anywhere else.
         seen.add(a)

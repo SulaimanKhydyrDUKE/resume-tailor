@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from resume_tailor.outreach import (NOREPLY, _about_company, _broker_page, _campus_links, _harvest, _person, _role_label,
+from resume_tailor.outreach import (NOREPLY, _about_company, _broker_page, _campus_links, _cited_broker, _harvest, _person, _role_label,
                                     _sentence_problems, _unligate, _writable, load_log, save_log)
 
 RESULTS = []
@@ -119,6 +119,20 @@ for bad in ("targetworkdayprogram@target.com", "myworkday@thehartford.com", "rs.
 for good in ("targetcareers@target.com", "careers@talos.com", "universityrecruiting@x.com"):
     check(f"a recruiting address: {good}", _writable(good))
 check("ligatures are read as letters in the fact guard", "office" in _unligate("Duke O\ufb03ce of IT").lower())
+
+# --- what the second lookup pass let through, and must not again -------------
+for addr in ("bootstrap-icons@1.10.5", "js-cookie@3.0.5", "helpdesk@bah.com", "askhr@medtronic.com", "us-askhr@abb.com",
+             "applyassistance@danaher.com", "leaveadministration@cna.com", "ipadmin@gevernova.com", "hrsharedservices@brunswick.com",
+             "amgencareers@careers.pure.cloud", "team@basepowercompany.com", "admin@acme.com"):
+    check(f"not writable: {addr}", not _writable(addr))
+for addr in ("campusrecruiting@ntrs.com", "early.careers@aig.com", "earlycareers@talos.com", "internships@etched.com",
+             "recruiting@jumptrading.com", "corporatetalentacquisition@oshkoshcorp.com", "hrrecruitingassistant@directs.com"):
+    check(f"writable: {addr}", _writable(addr))
+check("a directory listing is not a publication", _broker_page("https://www.allbiz.com/business/clearwater-analytics-1"))
+check("a VC news site is not a publication", _broker_page("https://www.vcnewsdaily.com/One%20Finance/venture-funding.php"))
+check("a cached web source citing a directory is dropped", _cited_broker("web: https://www.allbiz.com/business/dee-zee-oem-plant-515-2"))
+check("a cached web source citing the company is kept", not _cited_broker("web: https://www.aig.com/campus"))
+check("an inbox source is kept", not _cited_broker("inbox: Thank you for applying"))
 
 # --- a named human vs a mailbox label ------------------------------------------
 check("_person: a named human", _person("Dominique Burns", "BTI360"))
