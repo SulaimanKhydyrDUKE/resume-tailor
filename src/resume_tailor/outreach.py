@@ -304,7 +304,12 @@ def _harvest(html: str, page: str, found: list[dict]) -> None:
             continue
         at = text.find(addr)
         around = text[max(0, at - 160): at + 80] if at >= 0 else ""
-        if campus_page or RECRUITING.search(addr.split("@")[0]) or RECRUITING.search(around):
+        local = addr.split("@")[0]
+        # "If you need an accommodation to apply, e-mail …": that mailbox is
+        # for accommodation requests unless its own name says recruiting.
+        if re.search(r"accommodat|disabilit|accessib|assistance", around, re.I) and not RECRUITING.search(local + "@"):
+            continue
+        if campus_page or RECRUITING.search(local + "@") or RECRUITING.search(around):
             if not any(f["address"] == addr for f in found):
                 found.append({"address": addr, "name": "", "source": "page: " + page[:80], "rank": 2})
 

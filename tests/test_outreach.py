@@ -134,6 +134,17 @@ check("a cached web source citing a directory is dropped", _cited_broker("web: h
 check("a cached web source citing the company is kept", not _cited_broker("web: https://www.aig.com/campus"))
 check("an inbox source is kept", not _cited_broker("inbox: Thank you for applying"))
 
+# --- an accommodation-request line on a posting ----------------------------------
+found = []
+_harvest("<p>If you need an accommodation to apply, e-mail uswaptdo@td.com.</p>", "https://td.wd3.myworkdayjobs.com/x/job/y", found)
+check("harvest: an accommodation mailbox with an opaque name is dropped", found == [], found)
+found = []
+_harvest("<p>For accommodation requests contact corporatetalentacquisition@oshkoshcorp.com.</p>", "https://oshkosh.wd5.myworkdayjobs.com/x", found)
+check("harvest: a talent-acquisition mailbox is kept even in that context", [f["address"] for f in found] == ["corporatetalentacquisition@oshkoshcorp.com"], found)
+found = []
+_harvest("<p>Questions about your application? jobs@countryfinancial.com</p>", "https://countryfinancial.wd5.myworkdayjobs.com/x", found)
+check("harvest: a jobs@ mailbox counts as recruiting by name", [f["address"] for f in found] == ["jobs@countryfinancial.com"], found)
+
 # --- a named human vs a mailbox label ------------------------------------------
 check("_person: a named human", _person("Dominique Burns", "BTI360"))
 check("_person: a team label is not", not _person("Netic Hiring Team", "Netic"))
