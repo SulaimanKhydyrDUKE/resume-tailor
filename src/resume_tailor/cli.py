@@ -799,6 +799,9 @@ def main() -> int:
     po.add_argument("--no-web", action="store_true", help="do not web-search for addresses; inbox and pages only")
     po.add_argument("--refresh", action="store_true", help="lookup: redo companies whose cache already holds an address")
     po.add_argument("--workers", type=int, default=3, help="lookup: companies searched at once (default 3)")
+    po.add_argument("--people", action="store_true",
+                    help="lookup: search again for a named recruiter at every company that only has a team mailbox; "
+                         "plan/send: write to named people only, skip companies with just a shared mailbox")
     po.set_defaults(func=lambda a: __import__("resume_tailor.outreach", fromlist=["run_cli"]).run_cli(a))
 
     plg = sub.add_parser("login", help="open a site's sign-in wall in Chrome; after you log in, the tool fills and submits that posting")

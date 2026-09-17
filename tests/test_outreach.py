@@ -7,9 +7,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import resume_tailor.outreach as outreach
-from resume_tailor.outreach import (NOREPLY, NetworkDown, _about_company, _broker_page, _campus_links, _cited_broker, _harvest,
-                                    _network_error, _person, _role_label, _sentence_problems, _through_outages, _unligate,
-                                    _writable, load_log, save_log)
+from resume_tailor.outreach import (NOREPLY, NetworkDown, _about_company, _broker_page, _campus_links, _cited_broker, _greeting,
+                                    _harvest, _name_near, _network_error, _person, _personal_local, _ranked, _role_label,
+                                    _sentence_problems, _through_outages, _unligate, _writable, find_addresses, load_log,
+                                    save_log, search)
 
 RESULTS = []
 
@@ -159,6 +160,89 @@ check("_person: a named human", _person("Dominique Burns", "BTI360"))
 check("_person: a team label is not", not _person("Netic Hiring Team", "Netic"))
 check("_person: the company's own name is not", not _person("Ambrook Recruiting", "Ambrook"))
 
+# --- a person before a mailbox: what counts as a person --------------------------
+for addr, name in (("dominique.burns@bti360.com", "Dominique Burns"), ("john_smith@acme.com", "John Smith"),
+                   ("maria-lopez@acme.com", "Maria Lopez")):
+    check(f"personal mailbox: {addr} -> {name}", _personal_local(addr) == name, _personal_local(addr))
+for addr in ("careers@acme.com", "hr.lplfinancial@lplfinancial.com", "talent.scout@stryker.com", "campus.recruiting@acme.com",
+             "us.interns@acme.com", "north.america@acme.com", "new.grad@acme.com", "early.careers@acme.com", "dboren@acme.com",
+             "software.engineering@acme.com", "college.relations@acme.com", "join.us@acme.com", "summer.analyst@acme.com",
+             "data.science@acme.com", "hello.world@acme.com", "info.us@acme.com", "bootstrap-icons@1.10.5", "js-cookie@3.0.5",
+             "first.last@no-reply.acme.com"):
+    check(f"not a personal mailbox: {addr}", _personal_local(addr) == "", _personal_local(addr))
+for label in ("Human Resources", "WEX Human Resources", "Dee Zee Careers", "Early Careers Team", "Student Programs",
+              "Corporate Staffing", "ERCOT Human Resources"):
+    check(f"a label is not a person: {label!r}", not _person(label, "ERCOT"))
+
+near = "Questions about the internship? Contact David Boren, University Recruiter, at dboren@acme.com or call the office."
+check("name beside its own mailbox is attached", _name_near("dboren@acme.com", near) == "David Boren", _name_near("dboren@acme.com", near))
+check("name beside a shared mailbox is not", _name_near("careers@acme.com", "Reach Jane Roe at careers@acme.com") == "")
+check("a label beside the mailbox is not a name", _name_near("dboren@acme.com", "Contact Human Resources at dboren@acme.com") == "")
+check("first name alone identifies the mailbox", _name_near("akshay@ambrook.com", "Write to Akshay Kumar, akshay@ambrook.com") == "Akshay Kumar")
+
+found = []
+_harvest("<h2>University Recruiting</h2><p>Contact Dominique Burns, University Recruiting Lead, at "
+         "<a href=\"mailto:dominique.burns@acme.com\">dominique.burns@acme.com</a> or the team at careers@acme.com.</p>",
+         "https://acme.com/careers/students", found)
+by = {f["address"]: f for f in found}
+check("harvest: the named recruiter ranks 1 with her name",
+      by.get("dominique.burns@acme.com", {}).get("rank") == 1 and by["dominique.burns@acme.com"]["name"] == "Dominique Burns", str(found))
+check("harvest: the shared mailbox on the same page stays rank 2", by.get("careers@acme.com", {}).get("rank") == 2, str(found))
+found = []
+_harvest("<p>Our team: Priya Natarajan, University Relations — <a href=\"mailto:pnatarajan@acme.com\">pnatarajan@acme.com</a></p>",
+         "https://acme.com/about/team", found)
+check("harvest: a name printed beside a flast mailbox on a plain page is kept, rank 1",
+      found and found[0]["rank"] == 1 and found[0]["name"] == "Priya Natarajan", str(found))
+
+check("ranked: a label-named entry an earlier pass called a person is a team mailbox",
+      _ranked({"address": "hresources@ercot.com", "name": "Human Resources", "rank": 1}, "ERCOT")["rank"] == 2)
+r = _ranked({"address": "dominique.burns@acme.com", "name": "", "source": "page: x", "rank": 2}, "Acme")
+check("ranked: a personal mailbox cached at rank 2 comes up to 1 with its name", r["rank"] == 1 and r["name"] == "Dominique Burns", str(r))
+check("ranked: a confirmation reply-to keeps rank 0",
+      _ranked({"address": "a.b@acme.com", "name": "Ann Bee", "rank": 0}, "Acme")["rank"] == 0)
+check("ranked: an address on a page that would not load is left alone",
+      _ranked({"address": "ann.bee@acme.com", "name": "", "source": "web, page unreachable: x", "rank": 3}, "Acme")["rank"] == 3)
+
+check("greeting: a named person by first name", _greeting({"address": "x@acme.com", "name": "Dominique Burns"}, "Acme") == "Dominique")
+check("greeting: a personal mailbox by its first name", _greeting({"address": "john.smith@acme.com", "name": ""}, "Acme") == "John")
+check("greeting: a shared mailbox as the team", _greeting({"address": "careers@acme.com", "name": "Talent Team"}, "Acme") == "Acme recruiting team")
+
+cand = {"key": "acme", "company": "Acme", "role": "SWE Intern", "id": "1", "url": "https://acme.com/jobs/1", "pdf": ""}
+log = {"sent": {}, "lookups": {"acme": {"at": __import__("time").time(), "addresses": [
+    {"address": "careers@acme.com", "name": "", "source": "page: x", "rank": 2},
+    {"address": "dominique.burns@acme.com", "name": "", "source": "page: y", "rank": 2}]}}, "skipped": {}}
+got = find_addresses(cand, {}, log, use_web=False)
+check("find_addresses: the personal mailbox in a stale cache goes first, as a person",
+      got and got[0]["address"] == "dominique.burns@acme.com" and got[0]["rank"] == 1 and got[0]["name"] == "Dominique Burns", str(got))
+
+# search(): the person-targeted web search runs only when no person was found
+calls = []
+outreach.from_inbox = lambda results, key: []
+outreach._company_site = lambda cand, results: ""
+outreach.from_pages = lambda url, site="": [{"address": "careers@acme.com", "name": "", "source": "page: x", "rank": 2}]
+outreach.from_web = lambda company, url, people=False: (calls.append(people) or
+                                                       [{"address": "ann.bee@acme.com", "name": "Ann Bee", "source": "web: z", "rank": 1}])
+got = search(cand, {}, use_web=True)
+check("search: a team mailbox alone triggers the person search, and the person goes ahead",
+      calls == [True] and [g["address"] for g in got] == ["careers@acme.com", "ann.bee@acme.com"], f"{calls} {got}")
+calls.clear()
+outreach.from_pages = lambda url, site="": [{"address": "ann.bee@acme.com", "name": "Ann Bee", "source": "page: x", "rank": 1}]
+got = search(cand, {}, use_web=True)
+check("search: a person already found means no web search at all", calls == [] and len(got) == 1, f"{calls} {got}")
+calls.clear()
+outreach.from_pages = lambda url, site="": []
+got = search(cand, {}, use_web=True)
+check("search: nothing found -> the general search, then no person search once it finds one", calls == [False], str(calls))
+calls.clear()
+outreach.from_web = lambda company, url, people=False: (calls.append(people) or [])
+got = search(cand, {}, use_web=True)
+check("search: nothing anywhere -> general then person search, both", calls == [False, True] and got == [], str(calls))
+calls.clear()
+outreach.from_pages = lambda url, site="": [{"address": "careers@acme.com", "name": "", "source": "page: x", "rank": 2}]
+got = search(cand, {}, use_web=False)
+check("search: with the web off, no search of either kind", calls == [] and len(got) == 1, str(calls))
+
+
 # --- connection failures: wait for the network, never blame the company --------
 import smtplib
 import socket
@@ -221,7 +305,7 @@ outreach.find_addresses = lambda cand, results, log, use_web=True: [{"address": 
 outreach._resume_text = lambda pdf: "Duke University, DukeGPT"
 
 
-def scenario(compose_fails=None, send_fails=None):
+def scenario(compose_fails=None, send_fails=None, people_only=False):
     """Run three companies a, b, c; the given exception is raised by compose
     or send the given number of times for company a. Returns the log and the
     call counts."""
@@ -248,7 +332,7 @@ def scenario(compose_fails=None, send_fails=None):
             raise send_fails[0]
         return "<mid>"
     outreach.compose, outreach.send = compose, send
-    done = outreach.run(tmp, dry_run=False, max_send=15, force=True, use_web=False)
+    done = outreach.run(tmp, dry_run=False, max_send=15, force=True, use_web=False, people_only=people_only)
     return load_log(tmp), n, done
 
 
@@ -279,6 +363,12 @@ log, n, done = scenario(send_fails=(smtplib.SMTPRecipientsRefused({"careers@acme
 check("run: a refused recipient is 'send failed' once, no retry, run goes on",
       sorted(log["sent"]) == ["b", "c"] and log["skipped"]["a"].startswith("send failed") and n["send"]["a"] == 1,
       f"sent={sorted(log['sent'])} skipped={log['skipped']} send={n['send']}")
+
+
+log, n, done = scenario(people_only=True)
+check("run --people: a company with only a shared mailbox is skipped, nothing composed",
+      not log["sent"] and all(v.startswith("no named recruiter") for v in log["skipped"].values()) and not n["compose"],
+      f"sent={sorted(log['sent'])} skipped={log['skipped']} compose={n['compose']}")
 
 
 width = max(len(n) for n, _, _ in RESULTS)

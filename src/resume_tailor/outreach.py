@@ -7,6 +7,14 @@ printed on a page — and send one e-mail from the applicant's own account:
 who they are, which role, one real project, a low-key ask for a short
 call, the tailored résumé attached, LinkedIn in the signature.
 
+A named recruiter's own address is preferred to a shared mailbox
+wherever one is published: a reply-to on a confirmation, a name printed
+next to an address on a students page, a career-fair directory a web
+search turns up. A personal-looking mailbox (first.last@) counts as a
+person even with no name beside it. The shared mailbox is the fallback,
+not the target; `--people` on a lookup goes back over companies that
+only have a team mailbox, and on a send writes to named people only.
+
 Rules that do not bend: one e-mail per company; never to an address that
 was guessed rather than found; never after a rejection; never twice;
 weekdays in working hours; a daily cap. Every send is logged in
@@ -75,8 +83,23 @@ NOREPLY = re.compile(r"no[-_.]?reply|do[-_.]?not[-_.]?reply|donotreply|replies@|
 # Words that make a sender's display name a mailbox label rather than a person
 # ("Roblox Assessment", "GuideWell Talent Acquisition", "Netic Hiring Team").
 TEAM_WORDS = re.compile(r"\b(team|assessments?|support|notifications?|hr|talent|recruit(ing|ment|er)s?|careers?|hiring|acquisition|"
-                        r"university|campus|people|jobs?|noreply|no-reply|system|portal|candidates?|applications?|program|"
-                        r"internships?|engineering|group|inc|llc|corp|company)\b", re.I)
+                        r"university|campus|people|jobs?|noreply|no-reply|system|portal|candidates?|applications?|programs?|"
+                        r"internships?|engineering|group|inc|llc|corp|company|human|resources?|department|office|cent(er|re)|"
+                        r"services?|desk|staffing|employment|admin|info|contact|help|solutions|technologies|systems|partners|"
+                        r"associates|ltd|global|corporate|college|students?|early|onboarding|payroll|benefits)\b", re.I)
+# Mailbox words that are not a first or last name, for telling "dominique.burns@"
+# from "campus.recruiting@", "north.america@" or "new.grad@".
+NOT_A_NAME = set("""us uk na emea apac latam intern interns summer early college school student students new grad grads global
+    corporate north south east west america americas canada europe asia africa india tech technology data software engineering
+    product design research dev eng it web email mail contact info apply applications jobs job work talent hiring hire hires
+    recruit careers career staffing hr people team teams office general enquiries inquiries questions help support service
+    services customer client partner partners media press news events event alumni campus university universities diversity
+    inclusion dei program programs programme internship internships onboarding payroll benefits legal privacy security ops admin
+    sales marketing finance accounting learning training education academy volunteer community foundation giving brand comms
+    communications external internal relations public affairs policy government gov federal state city county health care
+    medical clinical group inc llc corp co company ltd the and of for at in on to from by with join hello hi hey ask get go be
+    my our your no not do reply noreply mailer daemon""".split())
+NAME_LOCAL = re.compile(r"^([a-z]{2,20})[._-]([a-z]{2,25})$")
 
 
 # The applicant-tracking system's own senders and HR service desks: an
@@ -155,6 +178,67 @@ def _person(name: str, company: str = "") -> bool:
     if company and company.split()[0].lower() in name.lower():
         return False
     return all(re.fullmatch(r"[A-Z][a-zA-Z'’.-]+", w) for w in words)
+
+
+def _personal_local(addr: str) -> str:
+    """The name a personal-looking mailbox spells out: "dominique.burns@" is
+    Dominique Burns; "careers@", "hr.lplfinancial@", "campus.recruiting@"
+    and "dboren@" are not (the last may well be a person, but it names no
+    one, so it is ranked by what is printed beside it)."""
+    m = NAME_LOCAL.fullmatch(addr.split("@")[0].lower())
+    if not m or not _writable(addr):  # "bootstrap-icons@1.10.5" spells no one's name
+        return ""
+    for w in m.groups():
+        if w in NOT_A_NAME or TEAM_WORDS.search(w) or RECRUITING.search(w) or NOREPLY.search(w + "@") or SYSTEM_BOX.search(w + "@"):
+            return ""
+    return " ".join(w.title() for w in m.groups())
+
+
+CAP_WORD = re.compile(r"[A-Z][a-zA-Z'’.-]+")
+
+
+def _name_near(addr: str, around: str, company: str = "") -> str:
+    """A person's name printed beside an address that is plainly theirs:
+    "Contact David Boren, University Recruiter, at dboren@…". Every two- and
+    three-word run of capitalised words is tried ("Contact David Boren" is
+    not a person; "David Boren" is), and the name's first or last name must
+    show in the mailbox, so a name beside careers@ attaches to nothing."""
+    local = re.sub(r"[^a-z]", "", addr.split("@")[0].lower())
+    toks = [re.sub(r"[^A-Za-z'’.-]", "", w) for w in (around or "").split()]
+    for i in range(len(toks)):
+        for size in (2, 3):
+            window = toks[i:i + size]
+            if len(window) < size or not all(CAP_WORD.fullmatch(w) for w in window):
+                break
+            name = " ".join(window)
+            if not _person(name, company):
+                continue
+            parts = [re.sub(r"[^a-z]", "", w.lower()) for w in window]
+            first, last = parts[0], parts[-1]
+            if (len(last) >= 3 and last[:4] in local) or (len(first) >= 3 and first in local):
+                return name
+    return ""
+
+
+def _ranked(f: dict, company: str = "") -> dict:
+    """An address entry with its rank settled by what it is now known to be:
+    a named human or a personal-looking mailbox ranks 1 (a confirmation's
+    reply-to keeps 0); an entry whose "name" is a label ("Human Resources")
+    is a team mailbox whatever an earlier pass said. An address on a page
+    that would not load stays where the search left it."""
+    f = dict(f)
+    name = str(f.get("name") or "")
+    rank = int(f.get("rank", 3))
+    if "unreachable" in str(f.get("source") or ""):
+        return f
+    guess = _personal_local(f["address"])
+    if _person(name, company):
+        f["rank"] = min(rank, 1)
+    elif guess:
+        f["rank"], f["name"] = min(rank, 1), guess
+    elif rank <= 1:
+        f["rank"] = 2
+    return f
 RECRUITING = re.compile(r"recruit|campus|universit|talent|career|intern|hiring|early|college|student|people|acquisition|"
                         r"emerging|graduate|jobs@|apply|application", re.I)
 EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
@@ -261,8 +345,10 @@ def from_inbox(results: dict, key: str) -> list[dict]:
         if not _writable(addr) or MECHANICAL_SUBJECT.search(subject) or not _about_company(addr, subject, co.get("company") or ""):
             continue
         person = _person(a.get("name") or "", co.get("company") or "")
-        rank = 0 if (person and a.get("source") == "reply-to") else 1 if person else 2 if RECRUITING.search(addr) else 3
-        out.append({"address": addr, "name": a.get("name") or "", "source": "inbox: " + (a.get("subject") or a.get("source") or ""), "rank": rank})
+        guess = "" if person else _personal_local(addr)
+        rank = 0 if (person and a.get("source") == "reply-to") else 1 if (person or guess) else 2 if RECRUITING.search(addr) else 3
+        out.append({"address": addr, "name": (a.get("name") if person else guess) or "",
+                    "source": "inbox: " + (a.get("subject") or a.get("source") or ""), "rank": rank})
     return sorted(out, key=lambda x: x["rank"])
 
 
@@ -325,9 +411,11 @@ def _harvest(html: str, page: str, found: list[dict]) -> None:
             continue
         if re.search(r"accommodat|disabilit|accessib|assistance", around, re.I) and not named_recruiting:
             continue
-        if campus_page or named_recruiting or RECRUITING.search(around):
+        near = text[max(0, at - 160): at + 80] if at >= 0 else ""
+        name = _name_near(addr, near) or _personal_local(addr)
+        if campus_page or named_recruiting or RECRUITING.search(around) or (name and RECRUITING.search(near)):
             if not any(f["address"] == addr for f in found):
-                found.append({"address": addr, "name": "", "source": "page: " + page[:80], "rank": 2})
+                found.append({"address": addr, "name": name, "source": "page: " + page[:80], "rank": 1 if name else 2})
 
 
 def _company_site(cand: dict, results: dict) -> str:
@@ -419,14 +507,30 @@ def _printed_on(addr: str, url: str) -> bool | None:
     return any(f in low for f in forms)
 
 
-def from_web(company: str, url: str) -> list[dict]:
+PERSON_PROMPT = (
+    "Find a NAMED recruiter at the company \"{company}\"{site} whose own individual e-mail address is printed on a public page: "
+    "a university, campus, early-careers, intern or technical recruiter, or a university-relations manager. Places such "
+    "addresses get printed: university career-fair employer directories and 'employer contact' pages, career-center event "
+    "listings, conference and hackathon sponsor pages, 'meet the recruiting team' pages on the company's site, the recruiter's "
+    "own public posts, event flyers, press releases. Report only a person's individual address (first.last@, flast@, first@), "
+    "never a shared mailbox such as careers@, recruiting@, hr@ or talent@. Do NOT use people-search or data-broker sites "
+    "(SignalHire, RocketReach, ZoomInfo, ContactOut, Apollo, Growjo, Lusha, Hunter, Kaspr, Wiza) and never report a masked, "
+    "partial or pattern-inferred address. Return ONLY a JSON object: {{\"addresses\": [{{\"address\": \"...\", \"name\": "
+    "\"First Last\", \"title\": \"...\", \"page_url\": \"the page where this exact address is printed\", \"evidence\": "
+    "\"published\" or \"guessed\"}}]}}. Mark an address \"published\" only if you saw it written on that page. If you find "
+    "no such person, return {{\"addresses\": []}}."
+)
+
+
+def from_web(company: str, url: str, people: bool = False) -> list[dict]:
     """A web search (RESUME_TAILOR_SEARCH_MODEL, gpt-4o by default) for
     the company's campus or university recruiting addresses printed on a
     page it can cite. Each address is then looked for on that page: printed
     there, it is used; absent from a page that loads, it is dropped; on a
     page that will not load, it is kept only when its domain is the
     company's own, and at the lowest rank. A guess from a naming pattern is
-    reported as such and never used."""
+    reported as such and never used. With `people`, the search asks for a
+    named recruiter's own address and keeps nothing else."""
     try:
         from openai import OpenAI, RateLimitError
         from .llm import _load_env_file
@@ -444,6 +548,8 @@ def from_web(company: str, url: str) -> list[dict]:
             "Mark an address \"published\" only if you saw it written on that page; an address inferred from a naming pattern is "
             "\"guessed\". If you find nothing, return {\"addresses\": []}."
         )
+        if people:
+            prompt = PERSON_PROMPT.format(company=company, site=f" (careers site: {domain})" if domain else "")
         r = None
         for attempt in range(4):
             try:
@@ -489,7 +595,14 @@ def from_web(company: str, url: str) -> list[dict]:
                           file=sys.stderr, flush=True)
                 continue
             name = str(a.get("name") or "")[:60]
-            rank = (1 if _person(name, company) else 2) if printed else 3
+            person = _person(name, company)
+            if not person:
+                name = _personal_local(addr)
+            if people and not name:
+                if debug:
+                    print(f"  [web] {company}: drop {addr} — not a person's own address", file=sys.stderr, flush=True)
+                continue
+            rank = (1 if name else 2) if printed else 3
             out.append({"address": addr, "name": name, "title": str(a.get("title") or "")[:60],
                         "source": ("web: " if printed else "web, page unreachable: ") + page[:100], "rank": rank})
         return out
@@ -498,21 +611,37 @@ def from_web(company: str, url: str) -> list[dict]:
         return []
 
 
+def _has_person(found: list[dict], company: str = "") -> bool:
+    return any(_ranked(f, company)["rank"] <= 1 for f in found)
+
+
+def search(cand: dict, results: dict, use_web: bool = True, people: bool = True) -> list[dict]:
+    """Every source for one company: the inbox, the pages, then a web
+    search when nothing was found, and a person-targeted web search when
+    all that was found is a shared mailbox."""
+    found = from_inbox(results, cand["key"]) + from_pages(cand["url"], _company_site(cand, results))
+    if use_web and not found:
+        found = from_web(cand["company"], cand["url"])
+    if use_web and people and not _has_person(found, cand["company"]):
+        found = found + [f for f in from_web(cand["company"], cand["url"], people=True)
+                         if f["address"] not in {g["address"] for g in found}]
+    return found
+
+
 def find_addresses(cand: dict, results: dict, log: dict, use_web: bool = True) -> list[dict]:
     key = cand["key"]
     cached = log["lookups"].get(key)
     if cached and time.time() - float(cached.get("at") or 0) < 14 * 86400:
         found = list(cached.get("addresses") or [])
     else:
-        found = from_inbox(results, key) + from_pages(cand["url"], _company_site(cand, results))
-        if not found and use_web:
-            found = from_web(cand["company"], cand["url"])
+        found = search(cand, results, use_web=use_web)
         log["lookups"][key] = {"at": time.time(), "addresses": found}
     bounced = set(results.get("bounced") or [])
     own = (_smtp_creds()[0] or "").lower()
     seen: set[str] = set()
     out = []
     for f in found:
+        f = _ranked(f, cand.get("company") or "")  # the cache holds the rank an earlier, looser pass gave
         a = f["address"]
         if a in seen or a in bounced or a == own or not _writable(a):
             continue  # the cache may hold what an earlier, looser filter let through
@@ -596,10 +725,15 @@ def _role_label(role: str) -> str:
     return " - ".join(q for q in parts if q) or "internship"
 
 
-def compose(cand: dict, to: dict, profile_linkedin: str, resume_text: str) -> tuple[str, str]:
+def _greeting(to: dict, company: str) -> str:
     name = (to.get("name") or "").strip()
-    first = name.split()[0] if _person(name, cand.get("company") or "") else ""
-    greeting = first if first else f"{cand['company']} recruiting team"
+    if not _person(name, company):
+        name = _personal_local(to.get("address") or "")
+    return name.split()[0] if name else f"{company} recruiting team"
+
+
+def compose(cand: dict, to: dict, profile_linkedin: str, resume_text: str) -> tuple[str, str]:
+    greeting = _greeting(to, cand.get("company") or "")
     project = project_sentence(cand["company"], cand["role"], resume_text)
     role = _role_label(cand["role"])
     return SUBJECT.format(role=role), BODY.format(greeting=greeting, role=role, project=project, linkedin=profile_linkedin)
@@ -687,7 +821,7 @@ def send(to_addr: str, subject: str, body: str, pdf: str, display_name: str = "S
 # The run
 
 def run(out_dir: str | Path, dry_run: bool = True, max_send: int = DAILY_CAP, force: bool = False,
-        use_web: bool = True, only: str | None = None) -> list[dict]:
+        use_web: bool = True, only: str | None = None, people_only: bool = False) -> list[dict]:
     from .mailscan import load_results
     from .profile import Profile
 
@@ -742,6 +876,9 @@ def run(out_dir: str | Path, dry_run: bool = True, max_send: int = DAILY_CAP, fo
         if not addrs:
             log["skipped"][key] = "no published recruiting address found"
             continue
+        if people_only and int(addrs[0].get("rank", 3)) > 1:
+            log["skipped"][key] = f"no named recruiter found, only {addrs[0]['address']}"
+            continue
         to = addrs[0]
         try:
             resume_text = _resume_text(cand["pdf"])
@@ -786,11 +923,13 @@ def run(out_dir: str | Path, dry_run: bool = True, max_send: int = DAILY_CAP, fo
 
 
 def lookup_all(out_dir: str | Path, use_web: bool = True, refresh: bool = False, only: str | None = None,
-               workers: int = 3) -> dict:
+               workers: int = 3, people: bool = False) -> dict:
     """Fill the address cache for every company applied to that is still
     worth writing to, composing and sending nothing. Companies whose cache
     already holds an address are left alone unless `refresh`; an empty cache
     entry is always retried, since it may date from a pass without the web.
+    With `people`, every company whose cache holds no named person is
+    searched again, whatever its age, and what is found joins the cache.
     The slow part, the web searches, runs a few companies at a time."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
     from .mailscan import load_results
@@ -809,10 +948,13 @@ def lookup_all(out_dir: str | Path, use_web: bool = True, refresh: bool = False,
         if ((comps.get(key) or {}).get("stage") or "") in ("rejected", "oa", "interview", "offer"):
             continue
         cached = log["lookups"].get(key)
-        if cached and not refresh and cached.get("addresses") and time.time() - float(cached.get("at") or 0) < 14 * 86400:
+        if people:
+            if cached and _has_person(cached.get("addresses") or [], cand["company"]):
+                continue
+        elif cached and not refresh and cached.get("addresses") and time.time() - float(cached.get("at") or 0) < 14 * 86400:
             continue
         todo.append(cand)
-    tally = {"companies": len(todo), "inbox": 0, "pages": 0, "web": 0, "none": 0}
+    tally = {"companies": len(todo), "inbox": 0, "pages": 0, "web": 0, "people": 0, "none": 0}
 
     def look(cand: dict) -> tuple[dict, list[dict], str]:
         found = from_inbox(results, cand["key"])
@@ -823,6 +965,13 @@ def lookup_all(out_dir: str | Path, use_web: bool = True, refresh: bool = False,
         if not found and use_web:
             found = from_web(cand["company"], cand["url"])
             how = "web" if found else ""
+        if use_web and not _has_person(found, cand["company"]):
+            more = [f for f in from_web(cand["company"], cand["url"], people=True) if f["address"] not in {g["address"] for g in found}]
+            if more:
+                found, how = found + more, "people"
+        if people:  # what was known stays; a person found now goes ahead of it
+            old = (log["lookups"].get(cand["key"]) or {}).get("addresses") or []
+            found = found + [f for f in old if f["address"] not in {g["address"] for g in found}]
         return cand, found, how or "none"
 
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
@@ -833,11 +982,12 @@ def lookup_all(out_dir: str | Path, use_web: bool = True, refresh: bool = False,
             except Exception as e:  # one company's lookup must not end the pass
                 print(f"  lookup failed: {str(e)[:100]}", file=sys.stderr, flush=True)
                 continue
-            found = sorted(found, key=lambda x: x.get("rank", 3))
+            found = sorted((_ranked(f, cand["company"]) for f in found), key=lambda x: x.get("rank", 3))
             log["lookups"][cand["key"]] = {"at": time.time(), "addresses": found}
             tally[how] += 1
             save_log(out_dir, log)
-            where = f"{found[0]['address']}  ({found[0]['source'][:60]})" if found else "nothing published"
+            where = (f"{found[0]['address']}" + (f"  {found[0]['name']}" if found[0].get("name") else "")
+                     + f"  ({found[0]['source'][:60]})") if found else "nothing published"
             print(f"  [{n}/{len(todo)}] {cand['company'][:30]:30s} {where}", file=sys.stderr, flush=True)
     save_log(out_dir, log)
     return tally
@@ -847,15 +997,18 @@ def run_cli(args) -> int:
     out = Path(args.out)
     if args.action == "lookup":
         tally = lookup_all(out, use_web=not args.no_web, refresh=bool(getattr(args, "refresh", False)), only=args.only,
-                           workers=int(getattr(args, "workers", 3) or 3))
+                           workers=int(getattr(args, "workers", 3) or 3), people=bool(getattr(args, "people", False)))
         print(f"looked up {tally['companies']} companies: inbox {tally['inbox']}, pages {tally['pages']}, "
-              f"web {tally['web']}, nothing {tally['none']}", file=sys.stderr)
+              f"web {tally['web']}, people {tally['people']}, nothing {tally['none']}", file=sys.stderr)
         log = load_log(out)
         have = sum(1 for v in log["lookups"].values() if v.get("addresses"))
-        print(f"cache now holds an address for {have} of {len(log['lookups'])} companies looked up", file=sys.stderr)
+        persons = sum(1 for v in log["lookups"].values() if _has_person(v.get("addresses") or []))
+        print(f"cache now holds an address for {have} of {len(log['lookups'])} companies looked up, a named person for {persons}",
+              file=sys.stderr)
         return 0
     if args.action in ("plan", "send"):
-        done = run(out, dry_run=(args.action == "plan"), max_send=args.max, force=args.force, use_web=not args.no_web, only=args.only)
+        done = run(out, dry_run=(args.action == "plan"), max_send=args.max, force=args.force, use_web=not args.no_web, only=args.only,
+                   people_only=bool(getattr(args, "people", False)))
         for d in done:
             print(f"\n=== {d['company']} — {d['role']}\nTo: {d['name'] + ' ' if d.get('name') else ''}<{d['to']}>   ({d['source']})"
                   + (f"\nalso found: {', '.join(d['alternatives'])}" if d.get("alternatives") else "")
