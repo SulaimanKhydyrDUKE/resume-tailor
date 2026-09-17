@@ -216,6 +216,7 @@ check("find_addresses: the personal mailbox in a stale cache goes first, as a pe
       got and got[0]["address"] == "dominique.burns@acme.com" and got[0]["rank"] == 1 and got[0]["name"] == "Dominique Burns", str(got))
 
 # search(): the person-targeted web search runs only when no person was found
+_real = {k: getattr(outreach, k) for k in ("from_inbox", "_company_site", "from_pages", "from_web")}
 calls = []
 outreach.from_inbox = lambda results, key: []
 outreach._company_site = lambda cand, results: ""
@@ -241,6 +242,8 @@ calls.clear()
 outreach.from_pages = lambda url, site="": [{"address": "careers@acme.com", "name": "", "source": "page: x", "rank": 2}]
 got = search(cand, {}, use_web=False)
 check("search: with the web off, no search of either kind", calls == [] and len(got) == 1, str(calls))
+for k, v in _real.items():  # the real functions back, for the tests below
+    setattr(outreach, k, v)
 
 
 # --- connection failures: wait for the network, never blame the company --------
@@ -305,7 +308,7 @@ outreach.find_addresses = lambda cand, results, log, use_web=True: [{"address": 
 outreach._resume_text = lambda pdf: "Duke University, DukeGPT"
 
 
-def scenario(compose_fails=None, send_fails=None, people_only=False):
+def scenario(compose_fails=None, send_fails=None, people_only=False, find_fails=None):
     """Run three companies a, b, c; the given exception is raised by compose
     or send the given number of times for company a. Returns the log and the
     call counts."""
@@ -316,7 +319,15 @@ def scenario(compose_fails=None, send_fails=None, people_only=False):
         pdf.write_bytes(b"%PDF-1.4")
         cands.append({"key": k, "company": k.upper() + " Corp", "role": "SWE Intern Summer 2027", "id": k, "url": "https://x/" + k, "pdf": str(pdf)})
     outreach.candidates = lambda out_dir: cands
-    n = {"compose": {}, "send": {}}
+    n = {"compose": {}, "send": {}, "find": {}}
+
+    def find(cand, results, log, use_web=True):
+        k = cand["key"]
+        n["find"][k] = n["find"].get(k, 0) + 1
+        if find_fails and k == "a" and n["find"][k] <= find_fails[1]:
+            raise find_fails[0]
+        return [{"address": "careers@acme.com", "name": "", "source": "test", "rank": 2}]
+    outreach.find_addresses = find
 
     def compose(cand, to, linkedin, resume_text):
         k = cand["key"]
@@ -369,6 +380,49 @@ log, n, done = scenario(people_only=True)
 check("run --people: a company with only a shared mailbox is skipped, nothing composed",
       not log["sent"] and all(v.startswith("no named recruiter") for v in log["skipped"].values()) and not n["compose"],
       f"sent={sorted(log['sent'])} skipped={log['skipped']} compose={n['compose']}")
+
+
+log, n, done = scenario(find_fails=(NetworkDown("web search: Connection error."), 1))
+check("run: an outage inside the address search is waited out, all three sent",
+      sorted(log["sent"]) == ["a", "b", "c"] and n["find"]["a"] == 2, f"sent={sorted(log['sent'])} find={n['find']}")
+log, n, done = scenario(find_fails=(NetworkDown("web search: Connection error."), 99))
+check("run: an address search that stays down loses the company, and the run goes on to the next",
+      sorted(log["sent"]) == ["b", "c"] and log["skipped"]["a"].startswith("network down"), f"sent={sorted(log['sent'])} skipped={log['skipped']}")
+
+# from_web: a connection failure raises NetworkDown; any other failure is "nothing found"
+import openai
+_real_openai = openai.OpenAI
+
+
+class _APIConnectionError(Exception):
+    pass
+
+
+_APIConnectionError.__name__ = "APIConnectionError"
+
+
+def _fake_client(exc):
+    class Responses:
+        def create(self, **kw):
+            raise exc
+
+    class Client:
+        def __init__(self, **kw):
+            self.responses = Responses()
+    return Client
+
+
+openai.OpenAI = _fake_client(_APIConnectionError("Connection error."))
+try:
+    outreach.from_web("Acme", "https://acme.com/jobs")
+    check("from_web: a connection failure raises NetworkDown", False, "returned instead of raising")
+except NetworkDown:
+    check("from_web: a connection failure raises NetworkDown", True)
+except Exception as e:
+    check("from_web: a connection failure raises NetworkDown", False, f"raised {type(e).__name__}")
+openai.OpenAI = _fake_client(ValueError("malformed"))
+check("from_web: any other failure is nothing found, not an outage", outreach.from_web("Acme", "https://acme.com/jobs") == [])
+openai.OpenAI = _real_openai
 
 
 width = max(len(n) for n, _, _ in RESULTS)

@@ -607,6 +607,8 @@ def from_web(company: str, url: str, people: bool = False) -> list[dict]:
                         "source": ("web: " if printed else "web, page unreachable: ") + page[:100], "rank": rank})
         return out
     except Exception as e:
+        if _network_error(e):  # says nothing about the company: the caller waits, and nothing is cached
+            raise NetworkDown(f"web search: {str(e)[:100]}") from e
         print(f"  web lookup failed for {company}: {str(e)[:100]}", file=sys.stderr, flush=True)
         return []
 
@@ -764,7 +766,7 @@ def _network_error(e: BaseException) -> bool:
     refused or dropped socket, a timeout, the OpenAI SDK's connection error.
     Bad credentials, a refused recipient or a rejected sentence are not."""
     import socket
-    if isinstance(e, (socket.gaierror, socket.timeout, TimeoutError, ConnectionError, smtplib.SMTPServerDisconnected,
+    if isinstance(e, (NetworkDown, socket.gaierror, socket.timeout, TimeoutError, ConnectionError, smtplib.SMTPServerDisconnected,
                       smtplib.SMTPConnectError)):
         return True
     if isinstance(e, OSError) and getattr(e, "errno", None) in (8, 51, 54, 60, 61, 64, 65):
@@ -871,7 +873,12 @@ def run(out_dir: str | Path, dry_run: bool = True, max_send: int = DAILY_CAP, fo
         if not cand["pdf"] or not Path(cand["pdf"]).is_file():
             log["skipped"][key] = "no résumé file on disk"
             continue
-        addrs = find_addresses(cand, results, log, use_web=use_web)
+        try:
+            addrs = _through_outages(lambda: find_addresses(cand, results, log, use_web=use_web))
+        except NetworkDown as e:
+            if lost(key, cand["company"], e):
+                break
+            continue
         save_log(out_dir, log)
         if not addrs:
             log["skipped"][key] = "no published recruiting address found"
@@ -954,7 +961,7 @@ def lookup_all(out_dir: str | Path, use_web: bool = True, refresh: bool = False,
         elif cached and not refresh and cached.get("addresses") and time.time() - float(cached.get("at") or 0) < 14 * 86400:
             continue
         todo.append(cand)
-    tally = {"companies": len(todo), "inbox": 0, "pages": 0, "web": 0, "people": 0, "none": 0}
+    tally = {"companies": len(todo), "inbox": 0, "pages": 0, "web": 0, "people": 0, "none": 0, "failed": 0}
 
     def look(cand: dict) -> tuple[dict, list[dict], str]:
         found = from_inbox(results, cand["key"])
@@ -963,10 +970,11 @@ def lookup_all(out_dir: str | Path, use_web: bool = True, refresh: bool = False,
             found = from_pages(cand["url"], _company_site(cand, results))
             how = "pages" if found else ""
         if not found and use_web:
-            found = from_web(cand["company"], cand["url"])
+            found = _through_outages(lambda: from_web(cand["company"], cand["url"]))
             how = "web" if found else ""
         if use_web and not _has_person(found, cand["company"]):
-            more = [f for f in from_web(cand["company"], cand["url"], people=True) if f["address"] not in {g["address"] for g in found}]
+            more = [f for f in _through_outages(lambda: from_web(cand["company"], cand["url"], people=True))
+                    if f["address"] not in {g["address"] for g in found}]
             if more:
                 found, how = found + more, "people"
         if people:  # what was known stays; a person found now goes ahead of it
@@ -975,12 +983,13 @@ def lookup_all(out_dir: str | Path, use_web: bool = True, refresh: bool = False,
         return cand, found, how or "none"
 
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        futures = [pool.submit(look, c) for c in todo]
+        futures = {pool.submit(look, c): c for c in todo}
         for n, fut in enumerate(as_completed(futures), 1):
             try:
                 cand, found, how = fut.result()
-            except Exception as e:  # one company's lookup must not end the pass
-                print(f"  lookup failed: {str(e)[:100]}", file=sys.stderr, flush=True)
+            except Exception as e:  # one company's lookup must not end the pass, and a lost one is not cached as "nothing"
+                tally["failed"] += 1
+                print(f"  [{n}/{len(todo)}] {futures[fut]['company'][:30]:30s} lookup failed: {str(e)[:100]}", file=sys.stderr, flush=True)
                 continue
             found = sorted((_ranked(f, cand["company"]) for f in found), key=lambda x: x.get("rank", 3))
             log["lookups"][cand["key"]] = {"at": time.time(), "addresses": found}
@@ -999,7 +1008,8 @@ def run_cli(args) -> int:
         tally = lookup_all(out, use_web=not args.no_web, refresh=bool(getattr(args, "refresh", False)), only=args.only,
                            workers=int(getattr(args, "workers", 3) or 3), people=bool(getattr(args, "people", False)))
         print(f"looked up {tally['companies']} companies: inbox {tally['inbox']}, pages {tally['pages']}, "
-              f"web {tally['web']}, people {tally['people']}, nothing {tally['none']}", file=sys.stderr)
+              f"web {tally['web']}, people {tally['people']}, nothing {tally['none']}, lost to the connection {tally['failed']}",
+              file=sys.stderr)
         log = load_log(out)
         have = sum(1 for v in log["lookups"].values() if v.get("addresses"))
         persons = sum(1 for v in log["lookups"].values() if _has_person(v.get("addresses") or []))
