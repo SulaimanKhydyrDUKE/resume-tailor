@@ -6,8 +6,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from resume_tailor.outreach import (NOREPLY, _about_company, _broker_page, _campus_links, _cited_broker, _harvest, _person, _role_label,
-                                    _sentence_problems, _unligate, _writable, load_log, save_log)
+import resume_tailor.outreach as outreach
+from resume_tailor.outreach import (NOREPLY, NetworkDown, _about_company, _broker_page, _campus_links, _cited_broker, _harvest,
+                                    _network_error, _person, _role_label, _sentence_problems, _through_outages, _unligate,
+                                    _writable, load_log, save_log)
 
 RESULTS = []
 
@@ -156,6 +158,128 @@ check("harvest: on the company's own page the words around it still count", [f["
 check("_person: a named human", _person("Dominique Burns", "BTI360"))
 check("_person: a team label is not", not _person("Netic Hiring Team", "Netic"))
 check("_person: the company's own name is not", not _person("Ambrook Recruiting", "Ambrook"))
+
+# --- connection failures: wait for the network, never blame the company --------
+import smtplib
+import socket
+import tempfile
+from types import SimpleNamespace
+
+
+class APIConnectionError(Exception):  # the OpenAI SDK's class, by name
+    pass
+
+
+for e in (socket.gaierror(8, "nodename nor servname provided, or not known"),
+          smtplib.SMTPServerDisconnected("Connection unexpectedly closed: The read operation timed out"),
+          APIConnectionError("Connection error."), TimeoutError("timed out"), ConnectionResetError(54, "reset"),
+          OSError(8, "nodename nor servname provided, or not known")):
+    check(f"network error: {type(e).__name__}: {str(e)[:40]}", _network_error(e))
+for e in (ValueError("the sentence names Google, which the résumé does not"), smtplib.SMTPAuthenticationError(535, b"bad"),
+          smtplib.SMTPRecipientsRefused({}), RuntimeError("no mailbox credentials (RESUME_TAILOR_IMAP_PASSWORD)"),
+          KeyError("addresses")):
+    check(f"not a network error: {type(e).__name__}", not _network_error(e))
+
+outreach.NETWORK_WAITS = (0, 0)
+outreach.SEND_PAUSE = 0
+
+
+def flaky(fail_times, exc):
+    calls = {"n": 0}
+
+    def fn():
+        calls["n"] += 1
+        if calls["n"] <= fail_times:
+            raise exc
+        return "ok"
+    return fn, calls
+
+
+fn, calls = flaky(2, socket.gaierror(8, "nodename nor servname"))
+check("through outages: recovers after two failures", _through_outages(fn) == "ok" and calls["n"] == 3)
+fn, calls = flaky(99, socket.gaierror(8, "nodename nor servname"))
+try:
+    _through_outages(fn)
+    check("through outages: raises NetworkDown when every try fails", False)
+except NetworkDown:
+    check("through outages: raises NetworkDown when every try fails", calls["n"] == len(outreach.NETWORK_WAITS) + 1)
+fn, calls = flaky(99, ValueError("the sentence names Google"))
+try:
+    _through_outages(fn)
+    check("through outages: a company failure raises at once", False)
+except ValueError:
+    check("through outages: a company failure raises at once", calls["n"] == 1)
+
+
+# --- the run loop itself, with the model and the mail server stubbed ------------
+import resume_tailor.mailscan as mailscan
+from resume_tailor.profile import Profile
+
+mailscan.load_results = lambda out_dir: {}
+Profile.load = staticmethod(lambda root=None: SimpleNamespace(career={}))
+outreach.find_addresses = lambda cand, results, log, use_web=True: [{"address": "careers@acme.com", "name": "", "source": "test", "rank": 2}]
+outreach._resume_text = lambda pdf: "Duke University, DukeGPT"
+
+
+def scenario(compose_fails=None, send_fails=None):
+    """Run three companies a, b, c; the given exception is raised by compose
+    or send the given number of times for company a. Returns the log and the
+    call counts."""
+    tmp = Path(tempfile.mkdtemp())
+    cands = []
+    for k in "abc":
+        pdf = tmp / f"{k}.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+        cands.append({"key": k, "company": k.upper() + " Corp", "role": "SWE Intern Summer 2027", "id": k, "url": "https://x/" + k, "pdf": str(pdf)})
+    outreach.candidates = lambda out_dir: cands
+    n = {"compose": {}, "send": {}}
+
+    def compose(cand, to, linkedin, resume_text):
+        k = cand["key"]
+        n["compose"][k] = n["compose"].get(k, 0) + 1
+        if compose_fails and (k == "a" or compose_fails[2]) and n["compose"][k] <= compose_fails[1]:
+            raise compose_fails[0]
+        return f"SWE Intern, Summer 2027 - quick hello", "Hi"
+
+    def send(to_addr, subject, body, pdf, display_name="x"):
+        k = [c["key"] for c in cands if c["pdf"] == pdf][0]
+        n["send"][k] = n["send"].get(k, 0) + 1
+        if send_fails and k == "a" and n["send"][k] <= send_fails[1]:
+            raise send_fails[0]
+        return "<mid>"
+    outreach.compose, outreach.send = compose, send
+    done = outreach.run(tmp, dry_run=False, max_send=15, force=True, use_web=False)
+    return load_log(tmp), n, done
+
+
+dns = socket.gaierror(8, "nodename nor servname provided, or not known")
+log, n, done = scenario(compose_fails=(dns, 1, False))
+check("run: one DNS failure on the note is waited out, all three sent", sorted(log["sent"]) == ["a", "b", "c"] and not log["skipped"],
+      f"sent={sorted(log['sent'])} skipped={log['skipped']}")
+check("run: the waited-out company was tried twice", n["compose"]["a"] == 2)
+
+log, n, done = scenario(compose_fails=(APIConnectionError("Connection error."), 99, True))
+check("run: the network stays down -> stop after OUTAGE_STOP companies, nothing sent",
+      not log["sent"] and sorted(log["skipped"]) == ["a", "b"] and "c" not in n["compose"],
+      f"sent={sorted(log['sent'])} skipped={log['skipped']} compose={n['compose']}")
+check("run: a lost company is marked 'network down', not 'could not write the note'",
+      all(v.startswith("network down:") for v in log["skipped"].values()), str(log["skipped"]))
+check("run: each lost company got every wait", n["compose"]["a"] == len(outreach.NETWORK_WAITS) + 1)
+
+log, n, done = scenario(compose_fails=(ValueError("the sentence names Google, which the résumé does not"), 99, False))
+check("run: a rejected sentence skips that company at once and the run goes on",
+      sorted(log["sent"]) == ["b", "c"] and log["skipped"]["a"].startswith("could not write the note") and n["compose"]["a"] == 1,
+      f"sent={sorted(log['sent'])} skipped={log['skipped']} compose={n['compose']}")
+
+log, n, done = scenario(send_fails=(smtplib.SMTPServerDisconnected("Connection unexpectedly closed: The read operation timed out"), 1))
+check("run: one SMTP timeout is waited out and the e-mail still goes", sorted(log["sent"]) == ["a", "b", "c"] and n["send"]["a"] == 2,
+      f"sent={sorted(log['sent'])} send={n['send']}")
+
+log, n, done = scenario(send_fails=(smtplib.SMTPRecipientsRefused({"careers@acme.com": (550, b"no such user")}), 99))
+check("run: a refused recipient is 'send failed' once, no retry, run goes on",
+      sorted(log["sent"]) == ["b", "c"] and log["skipped"]["a"].startswith("send failed") and n["send"]["a"] == 1,
+      f"sent={sorted(log['sent'])} skipped={log['skipped']} send={n['send']}")
+
 
 width = max(len(n) for n, _, _ in RESULTS)
 failed = 0

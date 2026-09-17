@@ -17,6 +17,13 @@ address so the next attempt uses another.
 first — inbox, then the posting's pages, then a web search whose every
 address is checked against the page it cites — so a send never waits on
 searches and the cache can be read before anything goes out.
+
+A connection failure — DNS, a dropped socket, a timeout, on the model call
+or on SMTP — says nothing about the company, so the run waits and tries
+that company again (`NETWORK_WAITS`), and stops altogether once
+`OUTAGE_STOP` companies in a row are lost that way: a run that walked the
+whole list during a half-hour Wi-Fi outage once marked forty companies
+skipped and sent eight of its fifteen.
 """
 from __future__ import annotations
 
@@ -39,6 +46,9 @@ from .queue import company_key
 LOG_NAME = "outreach.json"
 DAILY_CAP = 15
 SEND_HOURS = (8, 18)  # local time, Monday to Friday
+SEND_PAUSE = 20  # seconds between two e-mails: a person does not send fifteen in a second
+NETWORK_WAITS = (30, 60, 120)  # seconds to wait after a connection failure before trying the same company again
+OUTAGE_STOP = 2  # companies lost in a row to the connection before the run stops rather than walking the list
 TZ = ZoneInfo("America/New_York")
 
 SUBJECT = "{role}, Summer 2027 - quick hello"
@@ -554,7 +564,7 @@ def project_sentence(company: str, role: str, resume_text: str) -> str:
     from openai import OpenAI
     from .llm import _load_env_file
     _load_env_file()
-    client = OpenAI()
+    client = OpenAI(timeout=120)  # the SDK retries a connection failure twice on its own; the run waits beyond that
     prompt = (
         f"The applicant is e-mailing a recruiter at {company} after applying for: {role}.\n"
         "Write ONE sentence, first person, casual and plain, that names the single project or role on the résumé below "
@@ -611,6 +621,48 @@ def _smtp_creds() -> tuple[str, str]:
     return user, (os.environ.get("RESUME_TAILOR_IMAP_PASSWORD") or "").replace(" ", "")
 
 
+class NetworkDown(RuntimeError):
+    """The connection failed through every wait in NETWORK_WAITS."""
+
+
+def _network_error(e: BaseException) -> bool:
+    """A failure of the connection rather than of the company: DNS, a
+    refused or dropped socket, a timeout, the OpenAI SDK's connection error.
+    Bad credentials, a refused recipient or a rejected sentence are not."""
+    import socket
+    if isinstance(e, (socket.gaierror, socket.timeout, TimeoutError, ConnectionError, smtplib.SMTPServerDisconnected,
+                      smtplib.SMTPConnectError)):
+        return True
+    if isinstance(e, OSError) and getattr(e, "errno", None) in (8, 51, 54, 60, 61, 64, 65):
+        return True
+    if type(e).__name__ in ("APIConnectionError", "APITimeoutError"):
+        return True
+    msg = str(e).lower()
+    return any(t in msg for t in ("connection error", "nodename nor servname", "timed out", "connection reset",
+                                  "network is unreachable", "temporary failure in name resolution"))
+
+
+def _through_outages(fn):
+    """Call fn; after a connection failure wait and call it again, once per
+    entry in NETWORK_WAITS; raise NetworkDown when the last try fails the
+    same way. Any other failure raises at once, since it says something
+    about the company rather than the connection."""
+    for wait in NETWORK_WAITS:
+        try:
+            return fn()
+        except Exception as e:
+            if not _network_error(e):
+                raise
+            print(f"  connection failed ({str(e)[:60]}); waiting {wait}s before trying again", file=sys.stderr, flush=True)
+            time.sleep(wait)
+    try:
+        return fn()
+    except Exception as e:
+        if not _network_error(e):
+            raise
+        raise NetworkDown(str(e)[:120]) from e
+
+
 def send(to_addr: str, subject: str, body: str, pdf: str, display_name: str = "Sulaiman Khydyr") -> str:
     user, password = _smtp_creds()
     if not (user and password):
@@ -650,6 +702,21 @@ def run(out_dir: str | Path, dry_run: bool = True, max_send: int = DAILY_CAP, fo
         return []
     budget = max(0, min(max_send, DAILY_CAP - sent_today(log))) if not force else max_send
     done: list[dict] = []
+    outages = 0  # companies lost in a row to the connection
+
+    def lost(key: str, company: str, e: NetworkDown) -> bool:
+        """Record a company lost to the connection; True when the run should stop."""
+        nonlocal outages
+        outages += 1
+        log["skipped"][key] = f"network down: {e}"
+        save_log(out_dir, log)
+        print(f"  {company}: the connection failed through every wait ({e}); left for the next run", file=sys.stderr, flush=True)
+        if outages >= OUTAGE_STOP:
+            print(f"  the connection has failed for {outages} companies in a row; stopping here so the rest of the list "
+                  "is not marked skipped. Run again once the network is back.", file=sys.stderr, flush=True)
+            return True
+        return False
+
     for cand in candidates(out_dir):
         if budget <= 0:
             break
@@ -678,10 +745,15 @@ def run(out_dir: str | Path, dry_run: bool = True, max_send: int = DAILY_CAP, fo
         to = addrs[0]
         try:
             resume_text = _resume_text(cand["pdf"])
-            subject, body = compose(cand, to, linkedin, resume_text)
+            subject, body = _through_outages(lambda: compose(cand, to, linkedin, resume_text))
+        except NetworkDown as e:
+            if lost(key, cand["company"], e):
+                break
+            continue
         except Exception as e:
             log["skipped"][key] = f"could not write the note: {str(e)[:100]}"
             continue
+        outages = 0
         entry = {"company": cand["company"], "role": cand["role"], "to": to["address"], "name": to.get("name", ""),
                  "source": to.get("source", ""), "subject": subject, "body": body, "posting_id": cand["id"], "pdf": cand["pdf"],
                  "alternatives": [a["address"] for a in addrs[1:4]]}
@@ -690,7 +762,11 @@ def run(out_dir: str | Path, dry_run: bool = True, max_send: int = DAILY_CAP, fo
             budget -= 1
             continue
         try:
-            mid = send(to["address"], subject, body, cand["pdf"])
+            mid = _through_outages(lambda: send(to["address"], subject, body, cand["pdf"]))
+        except NetworkDown as e:
+            if lost(key, cand["company"], e):
+                break
+            continue
         except Exception as e:
             log["skipped"][key] = f"send failed: {str(e)[:120]}"
             save_log(out_dir, log)
@@ -704,7 +780,7 @@ def run(out_dir: str | Path, dry_run: bool = True, max_send: int = DAILY_CAP, fo
         print(f"  sent: {cand['company']} <{to['address']}> — {subject}", file=sys.stderr, flush=True)
         done.append(entry)
         budget -= 1
-        time.sleep(20)  # a person does not send fifteen e-mails in a second
+        time.sleep(SEND_PAUSE)
     save_log(out_dir, log)
     return done
 
