@@ -10,7 +10,7 @@ commands:
   setup: "python -m pip install -q -e . pytest && python -m playwright install --with-deps chromium"
   checks:
     - "python -m compileall -q src"
-    - 'for t in tests/test_*.py; do echo "== $t"; python "$t" || exit 1; done'
+    - "python -m pytest tests -q"
 
 automation:
   implementation_enabled: true

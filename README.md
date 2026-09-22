@@ -19,7 +19,7 @@ uv venv && uv pip install -e .
 .venv/bin/resume-tailor init          # creates ~/.resume-tailor/{career,answers,queue}.yaml and env
 # fill in ~/.resume-tailor/career.yaml (everything you have done) and answers.yaml (form answers)
 # put your API key in ~/.resume-tailor/env (see profile/env.example)
-.venv/bin/resume-tailor tailor --text posting.txt        # one PDF, no browser
+.venv/bin/resume-tailor tailor posting.txt               # one PDF, no browser
 .venv/bin/resume-tailor watch --once --dry-run           # one discovery pass, nothing submitted
 .venv/bin/resume-tailor start && .venv/bin/resume-tailor dashboard   # unattended, with a review page
 ```
