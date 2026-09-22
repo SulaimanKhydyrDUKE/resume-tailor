@@ -1,0 +1,28 @@
+name: Bug report
+description: Provide reproducible evidence for an agent-assisted repair.
+title: "[Bug] "
+labels: ["ai:needs-spec"]
+body:
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Exact steps, environment, logs, screenshots, or failing tests.
+    validations:
+      required: true
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: Constraints or sensitive areas

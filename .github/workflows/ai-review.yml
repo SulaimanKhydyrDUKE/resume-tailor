@@ -1,0 +1,43 @@
+name: Independent AI review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: read
+  id-token: write
+  actions: read
+
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: >-
+      startsWith(github.event.pull_request.head.ref, 'claude/') &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Check out pull request
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+      - name: Review against specification and quality gates
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          allowed_bots: "claude[bot]"
+          track_progress: true
+          display_report: true
+          additional_permissions: |
+            actions: read
+          prompt: |
+            Invoke the repository's review-change skill. Review PR #${{ github.event.pull_request.number }} adversarially against its linked issue, acceptance criteria, CLAUDE.md, and Definition of Done. Do not implement, approve, merge, or deploy. Post material findings with evidence; if none exist, explain the supporting evidence and residual manual checks.
+          claude_args: >-
+            --max-turns 18
+            --allowedTools "Read,Glob,Grep,mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"

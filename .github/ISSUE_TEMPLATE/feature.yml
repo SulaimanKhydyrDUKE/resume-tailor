@@ -1,0 +1,29 @@
+name: Feature or improvement
+description: Capture a rough idea for AI-assisted specification and implementation.
+title: "[Feature] "
+labels: ["ai:needs-spec"]
+body:
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: What should become observably possible?
+    validations:
+      required: true
+  - type: textarea
+    id: user
+    attributes:
+      label: User and situation
+      description: Who needs it and when?
+    validations:
+      required: true
+  - type: textarea
+    id: examples
+    attributes:
+      label: Examples or references
+      description: Add screenshots, links, logs, or examples if available.
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: Boundaries
+      description: What is out of scope or requires your approval?

@@ -1,0 +1,74 @@
+name: AI implementation worker
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  id-token: write
+  actions: read
+
+concurrency:
+  group: ai-worker-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  implement:
+    if: github.event.label.name == 'ai:ready' && github.actor == github.repository_owner
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+      - name: Mark issue as running
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: gh issue edit "$ISSUE_NUMBER" --add-label "ai:running"
+      - name: Implement approved specification
+        id: claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          label_trigger: ai:ready
+          branch_prefix: claude/
+          branch_name_template: "{{prefix}}issue-{{entityNumber}}-{{description}}"
+          track_progress: true
+          display_report: true
+          additional_permissions: |
+            actions: read
+          claude_args: >-
+            --max-turns 40
+            --allowedTools "Read,Glob,Grep,Edit,Write,Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(python:*),Bash(python3:*),Bash(pip:*),Bash(uv:*),Bash(pytest:*),Bash(terraform:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*)"
+      - name: Open draft pull request
+        if: steps.claude.outcome == 'success' && steps.claude.outputs.branch_name != ''
+        env:
+          GH_TOKEN: ${{ steps.claude.outputs.github_token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          BRANCH_NAME: ${{ steps.claude.outputs.branch_name }}
+        run: |
+          existing="$(gh pr list --head "$BRANCH_NAME" --json url --jq '.[0].url // empty')"
+          if [ -z "$existing" ]; then
+            gh pr create --draft --base main --head "$BRANCH_NAME" --title "$ISSUE_TITLE" --body "Automated implementation for #${ISSUE_NUMBER}. Review the acceptance-criteria evidence in the linked issue and workflow report. Human review and merge are required."
+          fi
+      - name: Update successful issue state
+        if: steps.claude.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: gh issue edit "$ISSUE_NUMBER" --remove-label "ai:ready" --remove-label "ai:running" --add-label "ai:pr-open"
+      - name: Mark blocked run
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh issue edit "$ISSUE_NUMBER" --remove-label "ai:running" --add-label "ai:blocked"
+          gh issue comment "$ISSUE_NUMBER" --body "The unattended implementation run did not complete. Inspect: $RUN_URL"

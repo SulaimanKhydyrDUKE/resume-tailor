@@ -1,0 +1,34 @@
+# Machine-readable agent policy. CI runs `setup` then every `checks` entry
+# from `working_directory` via .ai/run_checks.py.
+schema_version: 1
+project: resume-tailor
+status: active
+maturity: beta
+working_directory: .
+
+commands:
+  setup: "python -m pip install -q -e . pytest && python -m playwright install --with-deps chromium"
+  checks:
+    - "python -m compileall -q src"
+    - 'for t in tests/test_*.py; do echo "== $t"; python "$t" || exit 1; done'
+
+automation:
+  implementation_enabled: true
+  requires_ready_label: true
+  max_concurrent_tasks: 1
+  max_repair_attempts: 2
+  human_merge_required: true
+  automatic_deploy: false
+
+forbidden_without_owner_approval:
+  - running any command that opens a browser against a real job site, sends e-mail, or calls a model API
+  - changing what the anti-fabrication chain allows into a résumé
+  - adding paid services
+  - changing which hosts accounts may be created on
+
+evidence:
+  acceptance_criteria_matrix: required
+  command_results: required
+  changed_files: required
+  assumptions_and_risks: required
+  screenshots_for_ui_changes: required

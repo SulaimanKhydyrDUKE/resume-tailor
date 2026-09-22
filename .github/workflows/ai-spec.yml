@@ -1,0 +1,51 @@
+name: AI specification
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: read
+  issues: write
+  id-token: write
+
+concurrency:
+  group: ai-spec-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  draft-specification:
+    if: github.event.label.name == 'ai:needs-spec' && github.actor == github.repository_owner
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+      - name: Draft specification without implementation
+        id: claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          label_trigger: ai:needs-spec
+          track_progress: true
+          display_report: true
+          claude_args: >-
+            --max-turns 18
+            --allowedTools "Read,Glob,Grep,Bash(gh issue view:*),Bash(gh issue comment:*)"
+      - name: Request owner approval
+        if: steps.claude.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: gh issue edit "$ISSUE_NUMBER" --remove-label "ai:needs-spec" --add-label "ai:needs-approval"
+      - name: Mark blocked run
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh issue edit "$ISSUE_NUMBER" --remove-label "ai:needs-spec" --add-label "ai:blocked"
+          gh issue comment "$ISSUE_NUMBER" --body "The specification run did not complete. Inspect: $RUN_URL"

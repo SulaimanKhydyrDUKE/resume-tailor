@@ -1,0 +1,42 @@
+name: Project kickoff
+description: Supply the minimum owner input needed to draft durable project specifications.
+title: "[Kickoff] "
+labels: ["ai:needs-spec"]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: Product idea
+      description: In plain language, what are you trying to build or change?
+    validations:
+      required: true
+  - type: textarea
+    id: user
+    attributes:
+      label: User and problem
+      description: Who is this for, and what problem should it solve?
+    validations:
+      required: true
+  - type: textarea
+    id: first_outcome
+    attributes:
+      label: First real outcome
+      description: What should the first real user be able to accomplish?
+    validations:
+      required: true
+  - type: dropdown
+    id: maturity
+    attributes:
+      label: Intended maturity
+      options:
+        - Production
+        - Beta
+        - Prototype
+        - Spike
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints and approval boundaries
+      description: Include deadlines, stack requirements, privacy/cost limits, and things the agent must not decide.
