@@ -8,6 +8,8 @@ get a tailored PDF.
 from __future__ import annotations
 
 import argparse
+
+from resume_tailor import __version__
 import asyncio
 import re
 import shutil
@@ -703,6 +705,7 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
 
 def main() -> int:
     p = argparse.ArgumentParser(prog="resume-tailor", description=__doc__)
+    p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     pi = sub.add_parser("init", help="create career.yaml and answers.yaml")

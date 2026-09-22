@@ -6,6 +6,9 @@ writes a file the browser server cannot see and the browser cannot attach.
 from __future__ import annotations
 
 import json
+import sys
+
+from resume_tailor import __version__
 import os
 from pathlib import Path
 from typing import Any
@@ -286,6 +289,9 @@ def batch_report() -> str:
 
 
 def main() -> None:
+    if "--version" in sys.argv[1:]:
+        print(f"resume-tailor-mcp {__version__}")
+        return
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     mcp.run()
 
