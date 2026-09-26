@@ -1208,26 +1208,21 @@ class ApplySession:
 
     async def challenge_visible(self) -> bool:
         """A captcha a person would have to solve is on show: hCaptcha's
-        puzzle over Oracle's create-profile step, its checkbox over an iCIMS
-        e-mail step ("Please try again"), reCAPTCHA's "I'm not a robot" —
-        found by the widget frames themselves, wherever they are nested, and
-        by what they say. An invisible one that loads its frames but shows
-        nothing does not count."""
+        puzzle over Oracle's create-profile step or after an iCIMS e-mail
+        step, reCAPTCHA's "I'm not a robot" — found by the widget frames
+        themselves, measured from the document that holds them, in every
+        frame of the page (iCIMS keeps its portal in an iframe of its own).
+        A widget that has loaded its frames but shows nothing does not
+        count: reading what a parked frame *says* once made every iCIMS
+        wall a "bot check" before anything was tried, since the hidden
+        challenge frame's text is "Please try again … Verify" from the start."""
         await self.start()
-        try:
-            if await self._page.evaluate(_CHALLENGE_JS):
-                return True
-        except Exception:
-            pass
-        for fr in self._page.frames[1:]:
-            if not re.search(r"hcaptcha\.com/captcha|recaptcha/api2/(anchor|bframe)|arkoselabs|funcaptcha", fr.url or ""):
-                continue
+        for fr in self._page.frames:
             try:
-                text = await fr.evaluate("() => (document.body && document.body.innerText || '').replace(/\\s+/g, ' ').trim()")
-                shown = await fr.evaluate("() => { const b = document.body; if (!b) return false; const r = b.getBoundingClientRect(); return r.width > 100 && r.height > 40; }")
+                shown = await fr.evaluate(_CHALLENGE_JS)
             except Exception:
                 continue
-            if shown and re.search(r"i am human|i'?m not a robot|try again|verify|select (all|each|the)", text, re.I):
+            if shown:
                 return True
         return False
 
@@ -2397,9 +2392,24 @@ class ApplySession:
 # but a false skip costs one job, and a missed one means the run stalls on a
 # page it cannot actually complete. Either way, this never attempts to solve
 # what it finds; it names it and moves on.
+# The captcha widget frames on show in this document: big enough to be a
+# checkbox or a puzzle, inside the viewport, and under no hidden ancestor.
+# hCaptcha loads its challenge frame on every iCIMS page at top:-9999px
+# under a display:none wrapper and only brings it on screen when the
+# passive check fails — parked, it is not a wall.
 _CHALLENGE_JS = r"""
 () => [...document.querySelectorAll('iframe[src*="hcaptcha.com"], iframe[src*="recaptcha"], iframe[src*="arkoselabs"], iframe[src*="funcaptcha"], iframe[title*="challenge" i], iframe[title*="captcha" i]')]
-  .some(f => { const r = f.getBoundingClientRect(); const s = getComputedStyle(f); return r.width > 200 && r.height > 60 && s.visibility !== 'hidden' && s.display !== 'none'; })
+  .filter(f => {
+    const r = f.getBoundingClientRect();
+    if (r.width <= 200 || r.height <= 60) return false;
+    if (r.bottom <= 0 || r.top >= (window.innerHeight || 900) + 50) return false;
+    for (let p = f; p; p = p.parentElement) {
+      const s = getComputedStyle(p);
+      if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
+    }
+    return true;
+  })
+  .map(f => f.src || f.title || 'challenge')
 """
 _BLOCK_PHRASES = (
     "verify you are human", "i'm not a robot", "unusual traffic",
@@ -2530,6 +2540,8 @@ def _decorative(field: dict) -> bool:
     where = " ".join(((field.get("dom_id") or ""), (field.get("label") or "")))
     if field.get("type") in ("listbox", "select-one", "select") and re.search(r"language|locale|settings", where, re.I):
         return True
+    if (field.get("type") or "").lower() in ("submit", "button", "reset", "image"):
+        return True  # a button is something to press, not a question; it must not pad a wall's field count
     return bool(re.match(r"^\s*current step \d", field.get("label") or "", re.I))
 
 
@@ -2545,6 +2557,10 @@ def blocker_verdict(fields: list[dict], text: str, url: str = "", after_apply: b
     sign-in routes is the portal's account wall. `controls` are the texts
     of the page's buttons and links, when known."""
     text = text.lower()
+    # The badge a captcha vendor prints in a corner ("Protected by hCaptcha
+    # · Privacy · Terms") sits on every page of an iCIMS portal, wall or
+    # form: it is not a wall, and must not feed the phrase tests below.
+    text = re.sub(r"(this site is )?protected by (hcaptcha|recaptcha|cloudflare|turnstile)[^.]{0,60}", " ", text)
     fields = [f for f in fields if not _decorative(f)]
     if any(p in text for p in _BLOCK_PHRASES):
         return "bot_check"

@@ -314,12 +314,53 @@ async def _enter_code(session: ApplySession, code: str) -> bool:
     return True
 
 
-def _accounts_allowed(profile: Profile, url: str) -> bool:
+def _accounts_allowed(profile: Profile, url: str, entry_url: str = "") -> bool:
     """Whether the user has said the tool may create an account on this host
-    (`search.create_accounts_on`, host suffixes)."""
+    (`search.create_accounts_on`, host suffixes) — or on this kind of portal:
+    "icims.com" in the list covers an iCIMS portal white-labelled under the
+    company's own domain (careers.amd.com, firstcitizens.jibeapply.com),
+    which the listing's `?icims=1` or the wall's campus-*.icims.com address
+    gives away. `entry_url` is the listing's URL, kept because the query
+    that names the ATS is gone once the portal has redirected."""
     hosts = [str(h).strip().lower() for h in (profile.answers.get("search", {}).get("create_accounts_on") or []) if str(h).strip()]
-    host = (urlsplit(url).netloc or "").lower()
-    return any(host == h or host.endswith("." + h) or h in host for h in hosts)
+
+    def by_host(u: str) -> bool:
+        host = (urlsplit(u or "").netloc or "").lower()
+        return bool(host) and any(host == h or host.endswith("." + h) or h in host for h in hosts)
+
+    kinds = {kind for needle, kind in ats._KINDS if any(h == needle or h.endswith("." + needle) or needle in h for h in hosts)}
+    kind_of = lambda u: (ats.host_kind(u) or "") if u else ""  # noqa: E731
+    return by_host(url) or by_host(entry_url) or kind_of(url) in kinds or kind_of(entry_url) in kinds
+
+
+def _applicant_email(profile: Profile) -> str:
+    return str(profile.career.get("personal_information", {}).get("email") or profile.flat_answers().get("personal.email") or "")
+
+
+MASK = "••••••••"
+_LOGIN_BOX = re.compile(r"^\s*(login|user ?name|user id|e-?mail( address)?)\s*\*?\s*$", re.I)
+
+
+def _credentials_for(fields: list[dict], email: str, password: str, allowed: bool) -> list[tuple[dict, str, str]]:
+    """The boxes of a "Create a login" block inside an application — iCIMS's
+    Candidate Profile asks for Login, Password and Password (Re-enter) on the
+    page that also takes the résumé. On a portal the user allows accounts on,
+    every password box gets the site password and an empty login box the
+    e-mail. Returns (field, value to type, value to record): the record never
+    holds the password. Anywhere else, nothing — accounts are the user's to
+    create, and an e-mail box on a page with no password box is an ordinary
+    question."""
+    if not allowed or not password or not email or not any((f.get("type") or "").lower() == "password" for f in fields):
+        return []
+    out: list[tuple[dict, str, str]] = []
+    for f in fields:
+        kind = (f.get("type") or "").lower()
+        label = f.get("label") or f.get("name") or ""
+        if kind == "password":
+            out.append((f, password, MASK))
+        elif kind in ("text", "email", "") and _LOGIN_BOX.match(label) and not str(f.get("value") or "").strip():
+            out.append((f, email, email))
+    return out
 
 
 def _site_password() -> str:
@@ -541,6 +582,10 @@ async def _create_account(session: ApplySession, profile: Profile) -> str:
                     pass
         if await press(r"next|continue|send (verification )?code|get code|sign in|log ?in|submit|begin|start"):
             await session._page.wait_for_timeout(2000)
+            # iCIMS runs hCaptcha on this very press: passive when the browser
+            # looks ordinary, a puzzle otherwise. The puzzle is a person's.
+            if await session.challenge_visible():
+                return "captcha"
             still = [f for f in await session.describe_form() if f.get("type") in ("email",) and not f.get("value")]
             if not still or await _code_fields(session) or await _link_wall(session):
                 return "email_step"
@@ -1162,6 +1207,8 @@ def _snapshot(fields: list[dict], unresolved: list[str], sources: dict[tuple, st
             value = ", ".join(f.get("files") or [])
         elif f.get("type") == "checkbox":
             value = "Yes" if f.get("checked") else ""
+        elif (f.get("type") or "").lower() == "password":
+            value = MASK if f.get("value") else ""  # the state file and the dashboard never hold a password
         else:
             value = f.get("value") or ""
         if not label and not value:
@@ -1638,6 +1685,25 @@ async def _fill_pass(session: ApplySession, profile: Profile, fields: list[dict]
                     session._declined.add(g["selector"])
     fields = [f for f in fields if f["id"] not in gone]
 
+    # A "Create a login" block inside the application (iCIMS's Candidate
+    # Profile): on a portal the user allows accounts on, its boxes are filled
+    # from the env file's site password and the applicant's e-mail, and are
+    # not questions for the planner. See _credentials_for.
+    cred = _credentials_for(fields, _applicant_email(profile), _site_password(),
+                            _accounts_allowed(profile, _page_url(session) or "", getattr(session, "entry_url", "") or ""))
+    for f, value, shown in cred:
+        try:
+            try:
+                await session.fill(f["selector"], value, f)
+            except Exception:
+                loc = await session._locate(f["selector"], f)
+                await loc.fill(value, timeout=3000)
+            sources[(f.get("section") or "", f.get("label") or "")] = (
+                "site account: the site password from the env file" if shown == MASK else "site account: the applicant's e-mail")
+        except Exception as e:
+            unresolved.append(f"{f.get('label') or 'password'} ({_brief(e)})")
+    fields = [f for f in fields if f["id"] not in {c[0]["id"] for c in cred}]
+
     # Single controls first — text, pickers, yes/no toggles — and the option
     # groups after them, so a picker's remount does not undo a box checked
     # before it.
@@ -2039,6 +2105,7 @@ async def _process_one(session: ApplySession, profile: Profile, entry: QueueEntr
     # An explicit apply_url is respected; otherwise the ATS convention decides
     # where the form lives relative to the posting.
     apply_url = entry.apply_url if entry.apply_url != entry.url else ats.apply_url_for(entry.url)
+    session.entry_url = apply_url  # the listing's address names the ATS (?icims=1) after the portal has redirected
     _now("opening the application form", entry, url=apply_url)
     try:
         await session.goto(apply_url)
@@ -2059,7 +2126,7 @@ async def _process_one(session: ApplySession, profile: Profile, entry: QueueEntr
         o.status, o.detail = "error", f"could not open the application form: {e}"
         return o
 
-    if blocker == "login_required" and _accounts_allowed(profile, _page_url(session) or apply_url):
+    if blocker == "login_required" and _accounts_allowed(profile, _page_url(session) or apply_url, apply_url):
         # A portal the user told us to make an account on (Workday): create
         # it, or sign in if an earlier attempt already did, and go on.
         _now("creating the site account", entry, url=apply_url)
@@ -2071,7 +2138,9 @@ async def _process_one(session: ApplySession, profile: Profile, entry: QueueEntr
         if how == "captcha":
             o.status = "blocked"
             o.detail = ("a captcha guards this site's sign-in and registration, which the tool does not solve — "
-                        f"create the account or sign in once by hand and rerun: {_page_url(session) or apply_url}")
+                        "on iCIMS the hCaptcha puzzle comes right after the e-mail step; the dashboard's Log in opens it in "
+                        "Chrome, and once you have solved it there the tool fills, submits and keeps the sign-in: "
+                        f"{_page_url(session) or apply_url}")
             return o
         if how == "verify_email":
             # The account exists; the portal wants its e-mail verified first.
@@ -2090,7 +2159,7 @@ async def _process_one(session: ApplySession, profile: Profile, entry: QueueEntr
     if blocker == "login_required":
         where = _page_url(session) or entry.apply_url
         o.status = "needs_login"
-        if _accounts_allowed(profile, where):
+        if _accounts_allowed(profile, where, entry.apply_url):
             o.detail = ("this site wants an account or a sign-in before its form — the account step ran but the wall stayed "
                         f"(see the log's 'account:' notes); open it in Chrome to finish by hand, or log in once and rerun: {where}")
         else:
@@ -2284,7 +2353,7 @@ async def _process_one(session: ApplySession, profile: Profile, entry: QueueEntr
     if not review_page and not await session._wait_for_fields(10):
         signin = any(_SIGNIN_TEXT.search(b.get("text") or "") for b in buttons)
         recovered = False
-        if signin and _accounts_allowed(profile, _page_url(session) or apply_url):
+        if signin and _accounts_allowed(profile, _page_url(session) or apply_url, apply_url):
             # An empty page with a Sign In control (RTX's globalhr tenant):
             # the same account step as a login wall, then on with the form.
             _now("creating the site account", entry, url=apply_url)

@@ -965,6 +965,52 @@ check("silence: a FINRA licensing exam question can be answered No", bool(_SIL.s
 check("silence: a driver's licence is never answered by silence", not _SIL.search("Do you possess a valid U.S. Driver's License?"))
 
 
+# --- iCIMS: the captcha badge, the e-mail wall, white-labelled portals, the inline login ---
+from types import SimpleNamespace
+from resume_tailor.batch import MASK, _accounts_allowed, _credentials_for, _snapshot
+
+_icims_wall = [{"type": "email", "label": "Email"}, {"type": "select-one", "label": "— Make a Selection — Continue"},
+               {"type": "checkbox", "label": "By selecting \"continue\" and submitting your information, you", "required": True},
+               {"type": "submit", "label": "Email"}]
+check("blocker: iCIMS's e-mail wall is a login wall, not a bot check",
+      blocker_verdict(_icims_wall, "Email. By selecting continue and submitting your information. Next. Protected by hCaptcha Privacy | Terms",
+                      "https://campus-americas.icims.com/jobs/26270/research-intern/login", after_apply=True, controls=["Next"]) == "login_required")
+check("blocker: the hCaptcha badge on a two-field page is not a bot check",
+      blocker_verdict([{"type": "email", "label": "Email"}, {"type": "checkbox", "label": "I agree"}],
+                      "Protected by hCaptcha Privacy | Terms", "https://campus-x.icims.com/jobs/1/candidate", after_apply=True, controls=["Next"]) != "bot_check")
+check("blocker: a real captcha phrase still is one", blocker_verdict([{"type": "email"}], "Please verify you are human", "https://x.com/jobs/1") == "bot_check")
+check("blocker: a submit control does not pad a wall into a form",
+      blocker_verdict([{"type": "email", "label": "Email"}, {"type": "submit", "label": "Go"}, {"type": "submit", "label": "Go"}, {"type": "button", "label": "Help"}],
+                      "Sign in to continue", "https://portal.x.com/login") == "login_required")
+
+_p = SimpleNamespace(answers={"search": {"create_accounts_on": ["icims.com", "myworkdayjobs.com"]}})
+check("accounts: an iCIMS portal on its own domain", _accounts_allowed(_p, "https://campus-firstcitizens.icims.com/jobs/35709/login"))
+check("accounts: a white-labelled iCIMS listing (?icims=1) counts as icims.com", _accounts_allowed(_p, "https://firstcitizens.jibeapply.com/jobs/35709?icims=1"))
+check("accounts: the listing's kind carries to the portal's redirect",
+      _accounts_allowed(_p, "https://careers.amd.com/careers-home/jobs/1/login", "https://careers.amd.com/careers-home/jobs/1?icims=1"))
+check("accounts: an unknown host stays off limits", not _accounts_allowed(_p, "https://jobs.example.com/login"))
+check("accounts: an unknown host with an unknown listing stays off limits", not _accounts_allowed(_p, "https://jobs.example.com/login", "https://jobs.example.com/1"))
+check("accounts: workday by host suffix still works", _accounts_allowed(_p, "https://acme.wd5.myworkdayjobs.com/en-US/x"))
+check("accounts: an empty list allows nothing", not _accounts_allowed(SimpleNamespace(answers={}), "https://campus-x.icims.com/jobs/1/login"))
+
+_profile_page = [{"id": "rt-1", "type": "text", "label": "Login", "value": "me@x.com"}, {"id": "rt-2", "type": "password", "label": "Password", "value": ""},
+                 {"id": "rt-3", "type": "password", "label": "Password (Re-enter)", "value": ""}, {"id": "rt-4", "type": "text", "label": "First Name", "value": ""},
+                 {"id": "rt-5", "type": "file", "label": "Resume"}]
+cred = _credentials_for(_profile_page, "me@x.com", "s3cret", allowed=True)
+check("credentials: both password boxes get the site password, recorded masked",
+      [(c[0]["id"], c[1], c[2]) for c in cred] == [("rt-2", "s3cret", MASK), ("rt-3", "s3cret", MASK)], str([(c[0]["id"], c[1], c[2]) for c in cred]))
+_empty_login = [dict(_profile_page[0], value="")] + _profile_page[1:]
+check("credentials: an empty Login box gets the e-mail", any(c[0]["id"] == "rt-1" and c[1] == "me@x.com" for c in _credentials_for(_empty_login, "me@x.com", "s3cret", True)))
+check("credentials: a filled Login box is left alone", not any(c[0]["id"] == "rt-1" for c in cred))
+check("credentials: nothing on a host the user did not allow", _credentials_for(_profile_page, "me@x.com", "s3cret", allowed=False) == [])
+check("credentials: nothing without a site password", _credentials_for(_profile_page, "me@x.com", "", allowed=True) == [])
+check("credentials: an e-mail box on a page with no password box is an ordinary question",
+      _credentials_for([{"id": "rt-1", "type": "email", "label": "Email", "value": ""}], "me@x.com", "s3cret", True) == [])
+snap = _snapshot([{"id": "rt-2", "type": "password", "label": "Password", "value": "s3cret"}, {"id": "rt-4", "type": "text", "label": "First Name", "value": "Sam"}], [], {})
+check("snapshot: a password never reaches the record", [(e["question"], e["answer"]) for e in snap] == [("Password", MASK), ("First Name", "Sam")], str(snap))
+
+
+
 width = max(len(n) for n, _, _ in RESULTS)
 failed = 0
 for name, ok, detail in RESULTS:
