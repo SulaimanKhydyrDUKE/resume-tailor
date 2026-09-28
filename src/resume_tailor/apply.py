@@ -21,6 +21,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from .untrusted import VISIBLE_TEXT_JS, scrub, scrub_fields
+
 DEFAULT_PROFILE_DIR = Path.home() / ".resume-tailor" / "browser-profile"
 
 # Pulled from the page rather than guessed at, because every ATS names its
@@ -856,8 +858,13 @@ _APPLY_JS = """
   }).filter(x => x.text)
 """
 _APPLY_JS = _deep(_APPLY_JS)
+# The posting's text as a person sees it: the smallest container holding
+# most of the page, read by the visible-text walk (untrusted.py) rather than
+# innerText, so text hidden by size, colour, position or aria-hidden — the
+# place a portal puts a sentence meant for an automated reader — is left out.
+# The plain innerText travels alongside for the fallback in read_posting_text.
 _POSTING_JS = """
-() => {
+() => {""" + VISIBLE_TEXT_JS + """
   const sel = 'main, article, [role=main], #content, .content, #job, .job, .posting, .job-description,'
             + ' [class*="description"], [class*="posting"], [class*="job-content"], [class*="JobDescription"]';
   let best = document.body, bestLen = (document.body.innerText || '').length;
@@ -865,7 +872,8 @@ _POSTING_JS = """
     const len = (el.innerText || '').length;
     if (len >= bestLen * 0.5 && len < bestLen) { best = el; bestLen = len; }
   }
-  return (best.innerText || '').trim();
+  const plain = (best.innerText || '').trim();
+  return {vis: visibleText(best), plainLen: plain.length, plain: plain};
 }
 """
 _POSTING_JS = _deep(_POSTING_JS)
@@ -965,6 +973,7 @@ class ApplySession:
     _declined: set = field(default_factory=set, repr=False)  # lone checkboxes answered No: unticked on purpose
     _gh_slugs: set = field(default_factory=set, repr=False)  # Greenhouse boards the pages loaded talked to
     _uploaded: set = field(default_factory=set, repr=False)  # file fields (selector or label) that took a file
+    injection_notes: list = field(default_factory=list, repr=False)  # third-party text aimed at an automated reader, removed (untrusted.py)
 
     @property
     def _doc(self):
@@ -1191,7 +1200,24 @@ class ApplySession:
         limit, tokens are the budget.
         """
         await self.start()
-        text = await self._page.evaluate(_POSTING_JS)
+        got = await self._page.evaluate(_POSTING_JS)
+        if isinstance(got, dict):
+            vis, plain = str(got.get("vis") or ""), str(got.get("plain") or "")
+            if len(vis) < 200 and len(plain) > 2 * max(len(vis), 1):
+                # A page still fading in, or a container the walk cannot see
+                # into: one more look, then the plain text rather than nothing.
+                await self._page.wait_for_timeout(1500)
+                again = await self._page.evaluate(_POSTING_JS)
+                if isinstance(again, dict):
+                    vis, plain = str(again.get("vis") or ""), str(again.get("plain") or plain)
+                if len(vis) < 200:
+                    self.injection_notes.append("posting: the visible-text walk found almost nothing; the page's plain text was used")
+                    vis = plain
+            text = vis
+        else:
+            text = str(got or "")
+        text, notes = scrub(text)
+        self.injection_notes.extend(f"posting: {n}" for n in notes)
         text = re.sub(r"\n{3,}", "\n\n", text or "")
         return text[:max_chars]
 
@@ -1200,6 +1226,11 @@ class ApplySession:
         fields = await self._doc.evaluate(_FIELD_JS)
         _relabel_workday(fields)
         _relabel_greenhouse(fields)
+        # A label, hint or option written for an automated reader goes before
+        # any model sees the form (untrusted.py); the record keeps a note.
+        for n in scrub_fields(fields):
+            if f"form: {n}" not in self.injection_notes:
+                self.injection_notes.append(f"form: {n}")
         return fields
 
     async def buttons(self) -> list[dict]:
