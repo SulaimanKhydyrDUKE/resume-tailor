@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import json
 import os
 import random
 import re
@@ -69,7 +70,18 @@ _LEAVE_BLANK = re.compile(r"middle (name|initial)|phone extension|\bext(ension)?
 _SELF_ID = re.compile(r"self-?identif|eeo|equal employment|diversity|transgender|sexual orientation|hispanic|latino|ethnicity|"
                       r"\brace\b|veteran|disability|\bgender\b|pronoun", re.I)
 _DECLINE_WORDS = ("decline", "prefer not", "do not wish", "don't wish", "not to answer", "rather not", "choose not",
-                  "not to say", "not to disclose", "do not want", "don't want", "not want to")
+                  "not to say", "not to disclose", "do not want", "don't want", "not want to", "not specified", "unspecified",
+                  "no answer", "opt out", "not to identify", "not to self", "undisclosed", "not disclose", "wish not", "n/a",
+                  "not applicable", "i choose not", "choose to not", "not provide", "not to provide")
+# A checkbox or radio whose whole label is a region, in a "where are you
+# authorized to work" list: the candidate's own region is ticked, the rest
+# are not — each is a resolved answer, not an unanswered question.
+_REGION = re.compile(r"^\s*(north america|united states( of america)?|u\.?s\.?a?\.?|usa|the americas|americas|canada|mexico|"
+                     r"latin america|latam|south america|central america|caribbean|europe|emea|european union|\beu\b|asia|apac|"
+                     r"asia[- ]pacific|africa|middle east|mena|australia|oceania|new zealand|united kingdom|\buk\b|india|china|"
+                     r"japan|singapore|germany|france|ireland|netherlands|switzerland|israel|brazil)\s*[*:]?\s*$", re.I)
+_HOME_REGION = re.compile(r"north america|united states|u\.?s\.?a?\b|usa|americas", re.I)
+_INSTITUTION = re.compile(r"\b(university|college|institute|polytechnic|school of|academy|universit[aä]t)\b", re.I)
 _ACK_OPTION = re.compile(r"^\s*(yes|i understand|understood|i acknowledge|acknowledged|ok|okay|i agree|agree|i confirm|confirm|"
                          r"accept|i accept|i have read.*)\s*[.!]?\s*$", re.I)
 # A statement put to the applicant as a required field is an acknowledgement
@@ -88,7 +100,11 @@ _SOURCE_FIELD = re.compile(
     r"|\breferral source\b|\bapplication source\b", re.I)
 # In order of preference: the postings come from a job board (the SimplifyJobs
 # list), so those options are true; "Other" is true of anything; LinkedIn is not.
-_GENERIC_SOURCE_OPTIONS = ("job board", "job site", "job posting", "other", "internet", "online")
+# Honest, generic answers to "how did you hear about us", in order of
+# preference: the postings come from a public list, so "job board", "internet"
+# or "other" is true and "LinkedIn", "Indeed" or "a friend" would be a claim.
+_GENERIC_SOURCE_OPTIONS = ("job board", "job site", "job posting", "simplify", "online job", "internet", "online", "website",
+                           "company website", "career site", "careers page", "career page", "search engine", "google", "github", "other")
 _SOURCE_FREE_TEXT = "Job board (SimplifyJobs internship list)"
 
 
@@ -849,12 +865,107 @@ async def _write_document(profile: Profile, label: str, kind: str, posting_text:
     return out
 
 
+def _school_names(profile: Profile) -> list[str]:
+    """The candidate's institutions, lowercased, from the record."""
+    names = []
+    for ed in (profile.career.get("education_details") or []) if isinstance(profile.career, dict) else []:
+        for k in ("institution", "school", "university", "name"):
+            v = str(ed.get(k) or "").strip().lower()
+            if v:
+                names.append(v)
+    return names
+
+
+def _not_my_school(label: str, mine: list[str]) -> bool:
+    """A checkbox labelled with an institution that is none of the candidate's."""
+    low = (label or "").lower()
+    if not mine or not _INSTITUTION.search(low) or "?" in low or len(low) > 80:
+        return False
+    return not any(m in low or low in m for m in mine)
+
+
+# The page's complaint that a section must hold an entry ("Please provide at
+# least one education entry"), and the control that adds one.
+_ENTRY_NEEDED = re.compile(r"at least one (?:work |prior |previous )?(?:experience|employment|education|job|position|school|employer)"
+                           r"(?: history)?(?: entry| record| item)?", re.I)
+_ADD_JS = r"""
+() => {
+  const out = []; let k = 0;
+  for (const b of document.querySelectorAll('button, a, [role=button]')) {
+    const t = (b.innerText || b.textContent || '').replace(/\s+/g, ' ').trim();
+    if (!/^\+?\s*add(\s+(another|new|an?|entry|education|experience|employment|position|job|school|work(\s+experience)?|history))*\s*$/i.test(t)) continue;
+    const r = b.getBoundingClientRect(); if (r.width === 0 || r.height === 0) continue;
+    let heading = '';
+    for (let el = b.parentElement; el && el !== document.body && !heading; el = el.parentElement) {
+      for (let p = el.previousElementSibling; p && !heading; p = p.previousElementSibling) {
+        const h = p.matches && p.matches('h1,h2,h3,h4,h5,legend,[role=heading]') ? p : (p.querySelector ? p.querySelector('h1,h2,h3,h4,h5,legend,[role=heading]') : null);
+        if (h && (h.innerText || '').trim()) heading = (h.innerText || '').trim().slice(0, 60);
+      }
+      if (!heading) {
+        const hh = el.querySelector && el.querySelector('h1,h2,h3,h4,h5,legend,[role=heading]');
+        if (hh && (hh.innerText || '').trim() && hh.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) heading = (hh.innerText || '').trim().slice(0, 60);
+      }
+    }
+    b.dataset.rtAdd = String(++k);
+    out.push({ k: String(k), text: t.slice(0, 40), heading });
+  }
+  return out;
+}
+"""
+
+
+def _entries_wanted(errors: list[str]) -> set[str]:
+    wanted = set()
+    for e in errors or []:
+        for m in _ENTRY_NEEDED.finditer(e):
+            wanted.add("education" if re.search(r"education|school", m.group(0), re.I) else "experience")
+    return wanted
+
+
+def _pick_add(adds: list[dict], want: str) -> dict | None:
+    """The Add control for the section the page named, by its heading or
+    its own words; a lone Add on the page counts when nothing names it."""
+    pat = r"education|school|academic|degree" if want == "education" else r"experience|employment|work|job|position|career|employer"
+    for a in adds:
+        if re.search(pat, (a.get("heading") or "") + " " + (a.get("text") or ""), re.I):
+            return a
+    return adds[0] if len(adds) == 1 else None
+
+
+async def _add_entries_for(session: ApplySession, errors: list[str]) -> int:
+    """Press the Add of every section the page says must hold an entry —
+    SmartRecruiters' Education and Work Experience blocks come empty, and
+    Next refuses until each has one. Returns how many were pressed; the
+    caller fills what appeared."""
+    wanted = _entries_wanted(errors)
+    if not wanted:
+        return 0
+    try:
+        adds = await session._doc.evaluate(_ADD_JS)
+    except Exception:
+        return 0
+    pressed = 0
+    for want in sorted(wanted):
+        pick = _pick_add(adds, want)
+        if pick is None:
+            continue
+        if await _click_hard(session, f'[data-rt-add="{pick["k"]}"]'):
+            pressed += 1
+            await session._page.wait_for_timeout(1200)
+            await session._wait_for_fields(8)
+    return pressed
+
+
 def _autofill_boilerplate(label: str, field: dict, options: list[str] | None = None) -> str | None:
     """The narrow, explicitly-enumerated set of required fields safe to answer
     without a profile match, because the answer carries no factual claim about
     the candidate. Everything else — anything about the candidate's situation,
     qualifications, or legal status — is answered from the bank or not at all."""
     opts_now = list(options) if options is not None else list(field.get("options") or [])
+    if field.get("type") in ("checkbox", "radio") and not opts_now and _REGION.match(label or ""):
+        # Before the acknowledgement rule below: a required "Europe" box in a
+        # where-may-you-work list is a No, not a statement to agree to.
+        return "yes" if _HOME_REGION.search(label) else "no"
     if re.fullmatch(r"\s*(today'?s\s+)?date(\s+signed)?\s*[*✱]?\s*", label, re.I) and not opts_now:
         # The date beside a signature line — the self-identification forms'
         # "Name / Date" — is today. The field's own format hint decides how
@@ -1281,6 +1392,13 @@ async def _decide(question: str, field: dict, options: list[str], profile: Profi
     key = (section, question, tuple(options))
     if key in decided:
         return decided[key]
+    if field.get("type") == "checkbox" and not options and _not_my_school(question, _school_names(profile)):
+        # A list of universities as checkboxes ("Which school do you attend?"
+        # on a regional employer's form): every school that is not the
+        # candidate's is a No, not a question nobody can answer.
+        decided[key] = "no"
+        sources[(section, question)] = "boilerplate rule: not the candidate's school"
+        return "no"
     if not field.get("required") and _LEAVE_BLANK.search(question):
         # A middle name, a phone extension, a second address line: the
         # profile has none, and a fuzzy bank hit ("name", "phone") would put
@@ -2357,6 +2475,19 @@ async def _process_one_inner(session: ApplySession, profile: Profile, entry: Que
                         if label and (f.get("id") in invalid_ids or any(
                                 label[:30].lower() in e.lower() for e in errors if not re.match(r"rt-\d+: ", e))):
                             demanded.add(label.lower())
+                    added = await _add_entries_for(session, errors)
+                    if added:
+                        _now(f"adding the entr{'y' if added == 1 else 'ies'} the page asked for", entry, url=apply_url)
+                        unresolved, more = await _fill_form(session, profile, pdf_path, jd_text)
+                        o.answers = o.answers + more
+                        buttons = await session.buttons()
+                        again = _pick_next_button(buttons) or await _ask_button(buttons, "next")
+                        if again is not None and not _NOT_SUBMIT.search(again.get("text", "")):
+                            await session.advance(again["selector"])
+                            if await _step_signature(session) != page_before:
+                                moved = True
+                                break
+                        continue  # the next round reads the page's new complaints
                     if not demanded:
                         if round_no == 0 and not errors:
                             # Nothing named and nothing said: the click may have
@@ -2443,7 +2574,20 @@ async def _process_one_inner(session: ApplySession, profile: Profile, entry: Que
     # verification step) once produced a false "applied".
     buttons = await session.buttons()
     review_page = await _is_review_page(session, profile, buttons)
-    if not review_page and not await session._wait_for_fields(10):
+    if not review_page:
+        # Oracle draws its review step as a skeleton for a long moment, and a
+        # page judged mid-draw read as "not an application form". A slow
+        # portal gets the time, then one more look for the review page.
+        slow = ats.host_kind(_page_url(session) or apply_url) in ("oracle", "workday", "successfactors", "taleo", "icims")
+        if not await session._wait_for_fields(40 if slow else 10):
+            try:
+                await session._page.wait_for_load_state("networkidle", timeout=10000)
+            except Exception:
+                pass
+            await session._page.wait_for_timeout(2000)
+            buttons = await session.buttons()
+            review_page = await _is_review_page(session, profile, buttons)
+    if not review_page and not await session._wait_for_fields(3):
         signin = any(_SIGNIN_TEXT.search(b.get("text") or "") for b in buttons)
         recovered = False
         if signin and _accounts_allowed(profile, _page_url(session) or apply_url, apply_url):
@@ -2606,6 +2750,148 @@ def _wall_url(record: dict | None, entry: QueueEntry) -> str:
     return urls[-1].rstrip(".,;)") if urls else (entry.apply_url or entry.url)
 
 
+# Sites worth a hand sign-in before the loop runs: where to open the window,
+# which cookie host the session lands on, and which cookie name says it is
+# there. Google's session shows only in a visible window (Google hides it
+# from headless browsers), so it serves `login`/`review`/`submit --show`.
+DEFAULT_HAND_LOGINS = (
+    {"name": "Google", "url": "https://accounts.google.com/", "host": "google.com", "cookie": r"^(SID|__Secure-1PSID)$",
+     "check": "https://myaccount.google.com/", "headed_only": True},
+    {"name": "jobright.ai", "url": "https://jobright.ai/", "host": "jobright.ai", "cookie": r"^SESSION_ID$",
+     "check": "https://jobright.ai/jobs/recommend"},
+    {"name": "TikTok careers", "url": "https://lifeattiktok.com/position/application", "host": "lifeattiktok.com",
+     "cookie": r"^atsx-portal-session", "check": "https://lifeattiktok.com/position/application"},
+)
+
+
+def hand_login_sites(profile: Profile | None) -> list[dict]:
+    """The built-in list plus `search.hand_logins` from answers.yaml — each
+    a URL, or {name, url, host, cookie, check}. A URL alone is checked by
+    any live cookie on its host."""
+    from urllib.parse import urlsplit
+
+    sites = [dict(s) for s in DEFAULT_HAND_LOGINS]
+    extra = ((profile.answers.get("search") or {}).get("hand_logins") or []) if profile is not None else []
+    for e in extra:
+        if isinstance(e, str):
+            host = urlsplit(e if "://" in e else "https://" + e).netloc.lower()
+            e = {"name": host, "url": e if "://" in e else "https://" + e, "host": re.sub(r"^www\.", "", host)}
+        if not isinstance(e, dict) or not e.get("url"):
+            continue
+        e.setdefault("name", e.get("host") or e["url"])
+        e.setdefault("host", re.sub(r"^www\.", "", urlsplit(e["url"]).netloc.lower()))
+        if any(s["host"] == e["host"] for s in sites):
+            continue
+        sites.append(e)
+    return sites
+
+
+def session_on_file(site: dict, logins_dir: Path | None = None) -> tuple[bool, str]:
+    """Whether the saved logins hold a live session for this site: a live
+    cookie on its host (or a parent host) whose name matches `cookie`, or
+    any live cookie when the site names none. Returns (yes, what was seen)."""
+    from .apply import ApplySession
+
+    d = Path(logins_dir) if logins_dir else ApplySession.LOGINS_DIR
+    host = site["host"].lower()
+    parts = host.split(".")
+    candidates = [".".join(parts[i:]) for i in range(len(parts) - 1)]
+    now = time.time()
+    seen: list[str] = []
+    for h in candidates:
+        p = d / (re.sub(r"[^a-z0-9.-]", "_", h) + ".json")
+        if not p.is_file():
+            continue
+        try:
+            cookies = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        for c in cookies:
+            exp = c.get("expires")
+            if exp and exp > 0 and exp < now:
+                continue
+            seen.append(c.get("name") or "")
+            if not site.get("cookie") or re.search(site["cookie"], c.get("name") or ""):
+                return True, f"{c.get('name')} on {h}"
+    return False, (f"{len(seen)} cookies on file, none a session" if seen else "nothing on file")
+
+
+async def setup_logins(profile: Profile | None, only: str | None = None, check: bool = False, restart: bool = False) -> int:
+    """Walk the sites a user signs into by hand before the loop runs: show
+    what is on file, open each in the tool's visible Chrome for a sign-in,
+    save the cookies, and (with --check) confirm each session headless the
+    way the workers will see it. Returns the number of sites signed in."""
+    from .apply import ApplySession
+
+    sites = [s for s in hand_login_sites(profile) if not only or only.lower() in s["name"].lower() or only.lower() in s["host"]]
+    if not sites:
+        print("no such site; the list is: " + ", ".join(s["name"] for s in hand_login_sites(profile)), file=sys.stderr)
+        return 0
+    width = max(len(s["name"]) for s in sites)
+
+    def show(title: str) -> None:
+        print(f"\n{title}", file=sys.stderr)
+        for s in sites:
+            ok, what = session_on_file(s)
+            print(f"  {'signed in ' if ok else 'not yet   '} {s['name'].ljust(width)}  {what}", file=sys.stderr)
+
+    if check:
+        show("Sessions on file")
+        session = ApplySession(headless=True, fast=True, profile_dir=ApplySession.LOGINS_DIR.parent / "login-check-profile")
+        good = 0
+        try:
+            await session.start()
+            print("\nAs a headless worker sees them", file=sys.stderr)
+            for s in sites:
+                url = s.get("check") or s["url"]
+                try:
+                    await session.goto(url)
+                    await asyncio.sleep(4)
+                    landed = (_page_url(session) or "").lower()
+                    buttons = " ".join((b.get("text") or "") for b in await session.buttons()).lower()
+                    walled = bool(re.search(r"/login|/signin|/sign-in|/auth|accountchooser|/account/about", landed)) \
+                        or bool(re.search(r"\b(sign in|log in|login)\b", buttons))
+                    if s.get("headed_only"):
+                        verdict = "visible windows only (this site hides its session from headless browsers)"
+                    elif walled:
+                        verdict = "signed out — the site asked for a sign-in"
+                    else:
+                        verdict = "signed in"
+                        good += 1
+                    print(f"  {s['name'].ljust(width)}  {verdict}  ({landed[:60]})", file=sys.stderr)
+                except Exception as e:
+                    print(f"  {s['name'].ljust(width)}  could not open: {_brief(e)}", file=sys.stderr)
+        finally:
+            await session.stop()
+        return good
+
+    show("Sessions on file")
+    print("\nFor each site a Chrome window opens (the tool's own profile of your installed Chrome). Sign in there, then close "
+          "the window or press Enter here. Enter = open it, s = skip, q = stop.", file=sys.stderr)
+    signed = 0
+    for s in sites:
+        ok, _ = session_on_file(s)
+        prompt = f"\n{s['name']} — {'already on file; open anyway' if ok else 'open'}? [Enter/s/q] "
+        print(prompt, end="", file=sys.stderr, flush=True)
+        answer = (await asyncio.get_event_loop().run_in_executor(None, sys.stdin.readline)).strip().lower()
+        if answer.startswith("q"):
+            break
+        if answer.startswith("s"):
+            continue
+        await login_site(s["url"])
+        ok, what = session_on_file(s)
+        signed += int(ok)
+        print(f"  {s['name']}: {'signed in' if ok else 'no session seen'} ({what})", file=sys.stderr)
+    show("Sessions on file now")
+    if restart:
+        from .cli import stop_workers_for_reload
+        stop_workers_for_reload()
+    else:
+        print("\nWorkers load these at start: run `resume-tailor stop` (the supervisor relaunches them) or `resume-tailor setup-logins --restart`.",
+              file=sys.stderr)
+    return signed
+
+
 async def login_site(url: str, timeout_s: float = 30 * 60) -> int:
     """A visible Chrome on any page the user names — accounts.google.com,
     jobright.ai, TikTok — so they can sign in by hand, in their own time.
@@ -2652,7 +2938,6 @@ async def login_site(url: str, timeout_s: float = 30 * 60) -> int:
     named = [h for h in hosts if re.search(r"google|jobright|tiktok|bytedance|linkedin|handshake", h)]
     print(f"  kept {saved} cookies ({len(hosts)} sites on file); sign-ins of note: " + (", ".join(named) or "none yet"),
           file=sys.stderr, flush=True)
-    print("  run `resume-tailor stop` so the workers relaunch with these sessions.", file=sys.stderr, flush=True)
     return saved
 
 

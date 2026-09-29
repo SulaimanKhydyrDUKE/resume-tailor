@@ -36,13 +36,36 @@ DEFAULT_URL = (
 
 # The other GitHub internship lists, kept as README tables rather than JSON:
 # one row per posting with the company, the title, a location, and a link.
-# `search.extra_sources` in answers.yaml replaces this list.
+# answers.yaml -> search.sources switches any of these (or the JSON feed,
+# "simplify") off by name; search.extra_sources adds the owner's own.
 TABLE_SOURCES = [
     ("jobright-swe", "https://raw.githubusercontent.com/jobright-ai/2026-Software-Engineer-Internship/master/README.md"),
     ("jobright-ba", "https://raw.githubusercontent.com/jobright-ai/2026-Business-Analyst-Internship/master/README.md"),
     ("speedyapply", "https://raw.githubusercontent.com/speedyapply/2026-SWE-College-Jobs/main/README.md"),
     ("vanshb03", "https://raw.githubusercontent.com/vanshb03/Summer2026-Internships/main/README.md"),
 ]
+
+
+def sources_from_profile(answers: dict) -> tuple[bool, list[tuple[str, str]]]:
+    """Which lists discovery reads, from answers.yaml -> search:
+
+        sources:                     # a built-in left out stays on
+          simplify: true             # the SimplifyJobs JSON feed
+          jobright-ba: false
+        extra_sources:               # your own README-table lists
+          - [my-list, https://raw.githubusercontent.com/.../README.md]
+
+    Returns (the JSON feed on?, the README-table sources in force). The
+    dashboard's Job sources card writes exactly these two keys."""
+    s = (answers or {}).get("search") or {}
+    flags = s.get("sources") if isinstance(s.get("sources"), dict) else {}
+    tables = [(name, url) for name, url in TABLE_SOURCES if bool(flags.get(name, True))]
+    for item in s.get("extra_sources") or []:
+        if isinstance(item, (list, tuple)) and len(item) == 2 and str(item[1]).startswith("http"):
+            tables.append((str(item[0]), str(item[1])))
+        elif isinstance(item, dict) and str(item.get("url") or "").startswith("http"):
+            tables.append((str(item.get("name") or item["url"]), str(item["url"])))
+    return bool(flags.get("simplify", True)), tables
 _MONTHS = {m: i for i, m in enumerate(("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"), 1)}
 _LINK_MD = re.compile(r"\[([^\]]*)\]\((https?://[^)\s]+)\)")
 _LINK_HTML = re.compile(r'href="(https?://[^"]+)"')
@@ -305,10 +328,12 @@ def _write_atomic(path: Path, text: str) -> None:
 
 
 def refresh(out_dir: str | Path, url: str = DEFAULT_URL,
-            table_sources: list[tuple[str, str]] | None = None) -> tuple[list[dict], bool]:
+            table_sources: list[tuple[str, str]] | None = None, feed: bool = True) -> tuple[list[dict], bool]:
     """Fetch if changed, else reuse the cached copy; the README-table sources
     are re-read every time and merged in (a posting already known from the
-    JSON feed keeps that record). Returns (listings, changed)."""
+    JSON feed keeps that record). `feed=False` leaves the JSON feed out
+    altogether (answers.yaml -> search.sources.simplify: false), so the
+    cache holds only the tables' rows. Returns (listings, changed)."""
     import fcntl
 
     out_dir = Path(out_dir)
@@ -317,28 +342,33 @@ def refresh(out_dir: str | Path, url: str = DEFAULT_URL,
     with open(out_dir / "discover.lock", "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         try:
-            return _refresh_locked(out_dir, url, table_sources)
+            return _refresh_locked(out_dir, url, table_sources, feed)
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)
 
 
-def _refresh_locked(out_dir: Path, url: str, table_sources: list[tuple[str, str]] | None) -> tuple[list[dict], bool]:
+def _refresh_locked(out_dir: Path, url: str, table_sources: list[tuple[str, str]] | None,
+                    feed: bool = True) -> tuple[list[dict], bool]:
     meta, cache = load_cached(out_dir)
     cached_simplify = [l for l in (cache or []) if not str(l.get("id", "")).startswith("gh:")]
-    try:
-        listings, etag = fetch(url, etag=meta.get("etag") if cache is not None else None)
-    except OSError as e:
-        # A DNS blip or a dropped connection (this Mac resolves nothing for
-        # a few seconds now and then, and eight workers all fetch at once):
-        # the cached list stands until the next pass. With no cache at all
-        # there is nothing to stand on, and the error is the caller's.
-        if cache is None:
-            raise
-        print(f"  listings fetch failed ({str(e)[:80]}); using the cached copy", file=sys.stderr, flush=True)
-        listings, etag = None, meta.get("etag")
-    changed = listings is not None
-    if listings is None:
-        listings = cached_simplify
+    if feed:
+        try:
+            listings, etag = fetch(url, etag=meta.get("etag") if cache is not None else None)
+        except OSError as e:
+            # A DNS blip or a dropped connection (this Mac resolves nothing for
+            # a few seconds now and then, and eight workers all fetch at once):
+            # the cached list stands until the next pass. With no cache at all
+            # there is nothing to stand on, and the error is the caller's.
+            if cache is None:
+                raise
+            print(f"  listings fetch failed ({str(e)[:80]}); using the cached copy", file=sys.stderr, flush=True)
+            listings, etag = None, meta.get("etag")
+        changed = listings is not None
+        if listings is None:
+            listings = cached_simplify
+    else:
+        # The feed is switched off: its rows leave the cache, and the cache changes if it held any.
+        listings, etag, changed = [], meta.get("etag"), bool(cached_simplify)
     tables = fetch_tables(table_sources)
     known = {(l.get("url") or "").split("?")[0] for l in listings}
     extra = [l for l in tables if l["url"].split("?")[0] not in known]
@@ -541,7 +571,10 @@ def _worn_out(rec: dict, inbox: bool | None = None) -> bool:
     try, whatever its count says — the passes it sat out were not attempts."""
     from . import mailbox
 
-    if (rec.get("detail") or "").startswith("re-queued"):
+    if (rec.get("detail") or "").startswith(("re-queued", "retry:")):
+        # "re-queued" is the dashboard's hand re-queue (which also lifts the
+        # judges' gate); "retry:" is the bulk re-queue after a fix, which
+        # lifts only the attempt cap.
         return False
     attempts = int(rec.get("attempts") or 0)
     if rec.get("status") == "needs_login":

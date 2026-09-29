@@ -119,6 +119,47 @@ answer a requirement no job has yet.
 `answers.yaml` is the form answer bank: work authorization per country,
 sponsorship, notice period, salary, relocation. Filled once, looked up per form.
 
+## Set up site sign-ins (once)
+
+The tool drives *your installed Chrome*, but on profiles of its own under
+`~/.resume-tailor/` — never your everyday profile (Chrome refuses automation
+there, and a profile can be open in one Chrome at a time). So those profiles
+start signed into nothing. A few sites only show their postings or forms to
+a signed-in visitor, and a Google session is what "Sign in with Google"
+buttons need. Sign in once, by hand:
+
+```bash
+resume-tailor setup-logins            # Google, jobright.ai, TikTok careers, plus search.hand_logins
+resume-tailor setup-logins --check    # what is on file, and how a headless worker sees each session
+resume-tailor setup-logins --only tiktok --restart   # one site, then relaunch the workers
+```
+
+For each site a Chrome window opens on its sign-in page. Sign in the way you
+normally would (Google, e-mail, whatever it offers), then close the window or
+press Enter in the terminal. The cookies are saved to
+`~/.resume-tailor/logins/<host>.json`, which every worker loads at start —
+so finish with `resume-tailor stop` (the supervisor relaunches the workers)
+or pass `--restart`. `resume-tailor login --site <url>` does the same for a
+single page.
+
+What this does and does not cover:
+
+- jobright.ai and TikTok sessions carry over to the headless workers and are
+  checked by `--check`. Set `search.jobright_account: true` once jobright is
+  signed in, so its links are followed.
+- Google hides its session from headless browsers, so the Google sign-in
+  serves the visible windows (`login`, `review`, `submit --show`), not the
+  unattended loop. Sites with only a Google button still need those.
+- CAPTCHAs are never solved. A site that puts one before its form (many
+  iCIMS boards, TikTok's *registration*) is `blocked` until you pass it by
+  hand in one of these windows; the session then holds.
+- Sessions expire on the site's schedule (candidate portals: hours to weeks).
+  `--check` tells you when to sign in again.
+
+Add sites in `answers.yaml` → `search.hand_logins`: a URL, or
+`{name, url, host, cookie, check}` where `cookie` is a regex for the cookie
+that marks a session and `check` a page only a signed-in visitor can see.
+
 ## Tailor
 
 ```bash
@@ -309,6 +350,7 @@ as `needs_login` with the exact URL and retried each pass.
 ```bash
 resume-tailor dashboard          # http://127.0.0.1:8765 — every posting, its status, screenshot and PDF
 resume-tailor login <company>    # opens that posting's login wall in the tool's browser; sign in, it applies
+resume-tailor setup-logins       # one-time hand sign-ins (Google, jobright, TikTok…) that every worker then carries
 resume-tailor submit <company>   # submits an application held under approve_before_submit
 resume-tailor review <company>   # reopen a needs_review posting with its filled form
 ```

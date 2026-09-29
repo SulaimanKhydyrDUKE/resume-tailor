@@ -1,10 +1,13 @@
 """A window on the loop: what was attempted, what came of it, and what was sent.
 
 `resume-tailor dashboard` serves a single-page app (React, shipped with the
-package) and a small read-only JSON API over the files the watch already
-writes — batch-state.json, the listings cache, the PDFs and screenshots under
-output/ — so nothing runs twice and nothing is copied. Local only: it binds
-to 127.0.0.1 and never writes.
+package) and a small JSON API over the files the watch already writes —
+batch-state.json, the listings cache, the PDFs and screenshots under output/ —
+so nothing runs twice and nothing is copied. Local only: it binds to
+127.0.0.1. The reads never write; the POSTs do exactly what a button says —
+open a posting in Chrome, record a status by hand — and the Settings tab
+edits the files under ~/.resume-tailor through settings.py, which is the
+one place the tool writes its own configuration.
 """
 from __future__ import annotations
 
@@ -21,6 +24,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 from .profile import DEFAULT_PROFILE_DIR
+from .settings import child_env
 
 STATIC = Path(__file__).resolve().parent / "static" / "dashboard.html"
 _SHOT_KINDS = ("post-submit", "pre-submit", "needs-review", "dry-run")
@@ -313,7 +317,7 @@ def open_for_review(out_dir: Path, entry_id: str) -> int:
     log = open(DEFAULT_PROFILE_DIR / "review.log", "a", buffering=1)
     proc = subprocess.Popen(
         [sys.executable, "-m", "resume_tailor.cli", "review", entry_id, "--out", str(out_dir)],
-        cwd=out_dir.parent, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
+        cwd=out_dir.parent, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True, env=child_env())
     (REVIEWS_DIR / f"{_safe(entry_id)}.json").write_text(
         json.dumps({"pid": proc.pid, "since": time.strftime("%Y-%m-%dT%H:%M:%S")}), encoding="utf-8")
     return proc.pid
@@ -331,7 +335,7 @@ def open_for_login(out_dir: Path, entry_id: str) -> int:
     log = open(DEFAULT_PROFILE_DIR / "login.log", "a", buffering=1)
     proc = subprocess.Popen(
         [sys.executable, "-m", "resume_tailor.cli", "login", entry_id, "--out", str(out_dir)],
-        cwd=out_dir.parent, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
+        cwd=out_dir.parent, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True, env=child_env())
     (REVIEWS_DIR / f"{_safe(entry_id)}.json").write_text(
         json.dumps({"pid": proc.pid, "since": time.strftime("%Y-%m-%dT%H:%M:%S"), "mode": "login"}), encoding="utf-8")
     return proc.pid
@@ -347,7 +351,7 @@ def open_for_submit(out_dir: Path, entry_id: str) -> int:
     log = open(DEFAULT_PROFILE_DIR / "approve.log", "a", buffering=1)
     proc = subprocess.Popen(
         [sys.executable, "-m", "resume_tailor.cli", "submit", entry_id, "--out", str(out_dir)],
-        cwd=out_dir.parent, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
+        cwd=out_dir.parent, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True, env=child_env())
     return proc.pid
 
 
@@ -407,9 +411,44 @@ class _Handler(BaseHTTPRequestHandler):
             if path.startswith("/api/mark/"):
                 rec = mark(self.out_dir, path[len("/api/mark/"):], str(body.get("status", "")))
                 return self._send(json.dumps({"ok": True, "status": rec["status"]}).encode("utf-8"), "application/json")
+            if path.startswith("/api/settings/"):
+                return self._send(json.dumps(self._settings_post(path[len("/api/settings/"):], body)).encode("utf-8"), "application/json")
         except Exception as e:
             return self._send(json.dumps({"error": str(e)}).encode("utf-8"), "application/json", 400)
         self._send(b"not found", "text/plain", 404)
+
+    def _settings_post(self, action: str, body: dict) -> dict:
+        """The Settings tab's writes, each to the file it names (settings.py).
+        Every one answers with what was saved, or raises for a 400."""
+        from . import settings
+
+        if action == "env":
+            updates = body.get("updates") or {}
+            if not isinstance(updates, dict) or not updates:
+                raise ValueError("nothing to save")
+            settings.write_env({str(k): (None if v is None else str(v)) for k, v in updates.items()})
+            return {"ok": True, "saved": sorted(updates)}
+        if action == "answers":
+            return {"ok": True, **settings.save_answers_section(str(body.get("section") or ""), body.get("data") or {},
+                                                                  [str(x) for x in (body.get("removed") or [])])}
+        if action == "basics":
+            return {"ok": True, **settings.save_basics(body)}
+        if action == "resume":
+            return {"ok": True, **settings.save_skeleton(body.get("skeleton") or {})}
+        if action == "resume/upload":
+            import base64
+
+            try:
+                data = base64.b64decode(str(body.get("data") or ""), validate=True)
+            except Exception as e:
+                raise ValueError("the upload did not arrive whole") from e
+            dest = settings.save_upload(str(body.get("name") or ""), data)
+            result = settings.run_intake(dest, self.out_dir)
+            result["upload"] = dest.name
+            return {"ok": True, **result}
+        if action == "restart":
+            return {"ok": True, **settings.restart_workers(self.out_dir)}
+        raise ValueError(f"unknown settings action {action!r}")
 
     def do_GET(self):
         path = unquote(urlsplit(self.path).path)
@@ -434,6 +473,15 @@ class _Handler(BaseHTTPRequestHandler):
             # Reveal button asks: never part of the index or the files list.
             try:
                 body = json.dumps(reveal_logins()).encode("utf-8")
+            except Exception as e:
+                return self._send(json.dumps({"error": str(e)}).encode("utf-8"), "application/json", 500)
+            return self._send(body, "application/json")
+        if path == "/api/settings":
+            # Everything the Settings tab edits, read fresh from the files;
+            # secrets come back as set/unset with their last four characters.
+            try:
+                from .settings import settings_view
+                body = json.dumps(settings_view(self.out_dir)).encode("utf-8")
             except Exception as e:
                 return self._send(json.dumps({"error": str(e)}).encode("utf-8"), "application/json", 500)
             return self._send(body, "application/json")

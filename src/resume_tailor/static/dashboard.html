@@ -33,6 +33,7 @@
   .secret button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   .hosts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
   .hosts span { background: #f3f4f6; border: 1px solid var(--line); border-radius: 999px; padding: 2px 9px; font-size: 12px; }
+  .hosts span.plain { background: none; border: none; padding: 2px 0; }
   header { background: var(--panel); border-bottom: 1px solid var(--line); padding: 12px 20px; display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; }
   header h1 { font-size: 17px; margin: 0; }
   .watch { color: var(--muted); font-size: 13px; }
@@ -471,7 +472,7 @@ function FilesTab({ onOpen }) {
   const [pick, setPick] = useState(null);
   const [secret, setSecret] = useState(null);   // null = hidden; otherwise the revealed record
   const [busy, setBusy] = useState(false);
-  const [allHosts, setAllHosts] = useState(false);
+  const [hostQ, setHostQ] = useState("");
   useEffect(() => {
     let alive = true;
     const load = async () => {
@@ -500,6 +501,14 @@ function FilesTab({ onOpen }) {
   if (!files) return <div className="empty">loading…</div>;
   const rows = files.resumes.filter(r => !q || (r.company + " " + r.role + " " + r.folder).toLowerCase().includes(q.toLowerCase()));
   const current = rows.find(r => r.id === pick) || rows[0];
+  // The saved-login hosts are hundreds of Workday tenants; a wall of them says
+  // nothing. One line of counts by ATS family, and a lookup for one portal.
+  const hostFamily = h => /myworkday/.test(h) ? "Workday" : /icims\.com$/.test(h) ? "iCIMS" : /oraclecloud\.com$|taleo\.net$/.test(h) ? "Oracle"
+    : /greenhouse\.io$/.test(h) ? "Greenhouse" : /lever\.co$/.test(h) ? "Lever" : /ashbyhq\.com$/.test(h) ? "Ashby" : /applytojob\.com$/.test(h) ? "JazzHR"
+    : /successfactors|sapsf\.com$/.test(h) ? "SuccessFactors" : "other";
+  const hostGroups = Object.entries(files.logins.hosts.reduce((m, h) => { const k = hostFamily(h); m[k] = (m[k] || 0) + 1; return m; }, {}))
+    .sort((a, b) => (a[0] === "other") - (b[0] === "other") || b[1] - a[1]);
+  const hostHits = hostQ.trim() ? files.logins.hosts.filter(h => h.includes(hostQ.trim().toLowerCase())) : [];
   return (
     <div>
       <div className="card" style={{ marginTop: 0 }}>
@@ -524,11 +533,20 @@ function FilesTab({ onOpen }) {
               </div>
             </div>
           )}
-          <div className="none" style={{ marginTop: 12 }}>Portals with a saved sign-in ({files.logins.hosts.length}; {files.logins.saved_sites} sites hold cookies in all):</div>
-          <div className="hosts">
-            {(allHosts ? files.logins.hosts : files.logins.hosts.slice(0, 40)).map(h => <span key={h}>{h}</span>)}
-            {files.logins.hosts.length > 40 ? <a href="#" onClick={e => { e.preventDefault(); setAllHosts(!allHosts); }} style={{ fontSize: 12, alignSelf: "center" }}>{allHosts ? "show fewer" : `show all ${files.logins.hosts.length}`}</a> : null}
+          <div className="none" style={{ marginTop: 12 }}>
+            {files.logins.hosts.length} portals hold a saved sign-in ({files.logins.saved_sites} sites with cookies in all)
+            {hostGroups.length ? <span> · {hostGroups.map(([k, n]) => `${n} ${k}`).join(" · ")}</span> : null}
           </div>
+          <div style={{ marginTop: 8 }}>
+            <input className="search" placeholder="Saved sign-in at…? type a company or host" value={hostQ} onChange={e => setHostQ(e.target.value)} />
+          </div>
+          {hostQ.trim() ? (
+            <div className="hosts">
+              {hostHits.slice(0, 12).map(h => <span key={h}>{h}</span>)}
+              {!hostHits.length ? <span className="none plain">no saved sign-in matches “{hostQ.trim()}”</span> : null}
+              {hostHits.length > 12 ? <span className="none plain">+{hostHits.length - 12} more</span> : null}
+            </div>
+          ) : null}
         </div>
       </div>
       <div className="workers-head">
