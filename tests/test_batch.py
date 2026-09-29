@@ -181,6 +181,19 @@ with tempfile.TemporaryDirectory() as d:
     check("state: an entry re-recorded by the later writer takes its latest status", merged.done["job-2"]["status"] == "applied")
     check("state: applied companies merge", {"acme", "aco"} <= merged.applied_companies)
     check("state: the writer's own view is refreshed after saving", "job-A" in b.done and "job-B" in b.done)
+    # A hand-run retry edits records it did not itself record. save() writes
+    # back only touched entries, so the edit must count as touched or the
+    # re-queue is silently lost and every capped record stays capped.
+    c = RunState.load(spath)
+    c.done["job-B"]["attempts"] = 3
+    c.done["job-B"]["detail"] = "could not answer: x"
+    c._touched.add("job-B"); c.save()
+    d = RunState.load(spath)
+    check("state: mark_retry changes the given records and nothing else", d.mark_retry(["job-B", "job-A"], "fixed x") == 2)
+    again = RunState.load(spath)
+    check("state: a re-queue survives the merge with the file on disk",
+          (again.done["job-B"].get("detail") or "").startswith("retry: fixed x · could not answer: x"))
+    check("state: a re-queue of a re-queued record is not stacked", again.mark_retry(["job-B"], "twice") == 0)
 
 # --- boilerplate autofill: the never-guess-on-a-real-field boundary ------
 
@@ -1118,6 +1131,81 @@ check("entry editors: Title… is Work Experience 1 with Start/End dates; Instit
 check("education whole-date box gets MM/YYYY from the record", _education_date_answer(_prof, "Education 1", "Start date", []) == "08/2024")
 check("education whole-date end box from the completion date", _education_date_answer(_prof, "Education 1", "End date", []) == "05/2028")
 
+
+
+# --- the field scan on a real page: names wired by id, hidden radios named by
+# aria-labelledby, a greyed-out submit, Ant Design's option entries ---------
+_SCAN_HTML = """<!doctype html><html><body><form>
+<div id="loc-label">Location</div><span>*</span>
+<input id="loc" aria-label="textbox" aria-labelledby="loc-label" aria-required="true" aria-autocomplete="list">
+<div id="pr-label">Pronouns</div>
+<input id="pr" aria-label="Search" aria-labelledby="pr-label" role="combobox" placeholder="Search">
+<p>Check Yes or No to indicate your agreement to receive text message updates from Acme regarding your job application.</p>
+<div role="radiogroup">
+  <div role="radio" aria-checked="false"><input type="radio" name="sms" value="true" style="display:none" aria-labelledby="l1"><div id="l1"><p>Yes - I consent to receiving text messages</p></div></div>
+  <div role="radio" aria-checked="false"><input type="radio" name="sms" value="false" style="display:none" aria-labelledby="l2"><div id="l2"><p>No - I do not consent to receiving text messages</p></div></div>
+</div>
+<button type="submit" disabled>Apply</button>
+</form>
+<div class="ant-select-dropdown"><div class="rc-virtual-list">
+  <div class="ant-select-item ant-select-item-option"><div class="ant-select-item-option-content">Yes</div><span class="ant-select-item-option-state"></span></div>
+  <div class="ant-select-item ant-select-item-option ant-select-item-option-active"><div class="ant-select-item-option-content">No</div></div>
+</div></div>
+</body></html>"""
+
+
+async def _scan_page():
+    import tempfile as _tf
+    from resume_tailor.apply import ApplySession
+    s = ApplySession(headless=True, profile_dir=Path(_tf.mkdtemp()) / "profile")
+    try:
+        await s.start()
+        await s._page.set_content(_SCAN_HTML)
+        fields = await s.describe_form()
+        buttons = await s.buttons()
+        options = [o["t"] for o in await s._visible_options(wait_ms=200)]
+        return fields, buttons, options
+    finally:
+        try:
+            await s.stop()
+        except Exception:
+            pass
+
+
+try:
+    _fields, _buttons, _opts = _aio.run(_scan_page())
+    _by = {f.get("dom_id"): f for f in _fields if f.get("dom_id")}
+    check("scan: a name wired by aria-labelledby beats a generic aria-label (Rippling's 'textbox')",
+          (_by.get("loc") or {}).get("label", "").startswith("Location"), _by.get("loc"))
+    check("scan: a picker whose aria-label is 'Search' is named by its aria-labelledby",
+          (_by.get("pr") or {}).get("label", "") == "Pronouns", _by.get("pr"))
+    _sms = [f for f in _fields if f.get("name") == "sms"]
+    check("scan: display:none radios with visible aria-labelledby labels are listed", len(_sms) == 2, [(f.get("label"), f.get("option_label")) for f in _sms])
+    check("scan: such a group is named by the paragraph before it",
+          all("text message updates" in (f.get("label") or "") for f in _sms), [f.get("label") for f in _sms])
+    check("scan: each radio carries its own option wording",
+          sorted(f.get("option_label") or "" for f in _sms) == ["No - I do not consent to receiving text messages", "Yes - I consent to receiving text messages"],
+          [f.get("option_label") for f in _sms])
+    check("scan: a disabled submit is reported disabled", any(b.get("text") == "Apply" and b.get("disabled") for b in _buttons), _buttons)
+    check("scan: Ant Design option entries are read, without their inner content nodes doubling them", _opts == ["Yes", "No"], _opts)
+except Exception as e:  # the browser is part of this check, as in test_untrusted
+    check("scan: the page test ran in a browser", False, f"{type(e).__name__}: {str(e)[:160]}")
+
+from resume_tailor.batch import _greyed_submit, _TEXT_CONSENT
+check("submit: the one disabled submit-worded button is the greyed submit",
+      (_greyed_submit([{"text": "Exit to job board"}, {"text": "Apply", "disabled": True, "type": "submit"}]) or {}).get("text") == "Apply")
+check("submit: an enabled Apply is not a greyed submit", _greyed_submit([{"text": "Apply", "type": "submit"}]) is None)
+check("submit: a disabled Withdraw is not a submit", _greyed_submit([{"text": "Withdraw application", "disabled": True}]) is None)
+from resume_tailor.batch import _decide as _decide_fn
+_consenting = _P(career={}, answers={"consents": {"text_message_updates": "Yes"}}, root=Path("."))
+_sms_q = "Check Yes or No to indicate your agreement to receive text message updates from Tive Inc regarding your job application. Frequency may vary. Reply STOP to opt out."
+_sms_opts = ["Yes - I consent to receiving text messages", "No - I do not consent to receiving text messages"]
+_src = {}
+check("consent: the bank's text-message entry answers the paragraph, in the option's words",
+      _aio.run(_decide_fn(_sms_q, {"type": "radio"}, _sms_opts, _consenting, "", {}, _src, None, "radio")) == _sms_opts[0] and "text_message_updates" in str(_src))
+check("consent: a text-message consent paragraph is recognised",
+      bool(_TEXT_CONSENT.search("Check Yes or No to indicate your agreement to receive text message updates from Tive Inc regarding your job application. Frequency may vary."))
+      and bool(_TEXT_CONSENT.search("Do you consent to receive SMS notifications?")) and not _TEXT_CONSENT.search("Do you agree to the terms of service?"))
 
 width = max(len(n) for n, _, _ in RESULTS)
 failed = 0

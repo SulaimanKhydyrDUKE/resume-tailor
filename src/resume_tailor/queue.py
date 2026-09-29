@@ -177,6 +177,10 @@ class RunState:
             if not rec or (rec.get("detail") or "").startswith(("retry:", "re-queued")):
                 continue
             rec["detail"] = f"retry: {why} · {(rec.get('detail') or '')[:220]}"
+            # save() writes back only the entries this process touched;
+            # everything else is taken as it stands on disk, so an edit
+            # that is not marked touched is silently lost.
+            self._touched.add(eid)
             n += 1
         if n:
             self.save()
