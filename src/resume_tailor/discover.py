@@ -599,6 +599,10 @@ def select(listings: list[dict], prefs: Prefs, state: RunState | None = None,
         # different utm_source values, and "same link" must still be seen.
         attempted_urls = {url_key((by_listing_id.get(rid) or {}).get("url") or "") for rid, rec in state.done.items()
                           if rec.get("status") not in RETRYABLE} - {""}
+        # A jobright row is applied to at the employer's own address (the
+        # record's `url`); a later direct copy of that posting is the same link.
+        attempted_urls |= {url_key(rec.get("url") or "") for rec in state.done.values()
+                           if rec.get("url") and rec.get("status") not in RETRYABLE} - {""}
         if cooldown_days:
             cutoff = (datetime.now().astimezone() - timedelta(days=cooldown_days)).isoformat()
             for rid, rec in state.done.items():

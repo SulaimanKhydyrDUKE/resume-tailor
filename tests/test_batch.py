@@ -1011,6 +1011,21 @@ check("snapshot: a password never reaches the record", [(e["question"], e["answe
 
 
 
+# --- a jobright page resolves to the employer's own posting ---------------------
+from resume_tailor.batch import original_link
+_jr = [["Jobs", "https://jobright.ai/jobs"], ["Original Job Post", "https://ibmglobal.avature.net/en_US/careers/JobDetail?jobId=134486&src=jobright&jr_id=6abadbe0"],
+       ["Share", "https://jobright.ai/share/x"]]
+check("jobright: the Original Job Post link, tracking parameters stripped",
+      original_link(_jr) == "https://ibmglobal.avature.net/en_US/careers/JobDetail?jobId=134486", original_link(_jr))
+_gh = [["Original Job Post", "https://job-boards.greenhouse.io/embed/job_app?for=aquatic&token=8489233002&jr_id=6a3f&utm_source=jobright"]]
+check("jobright: a Greenhouse embed keeps its own parameters", original_link(_gh) == "https://job-boards.greenhouse.io/embed/job_app?for=aquatic&token=8489233002", original_link(_gh))
+check("jobright: one unlabelled external job link still counts",
+      original_link([["Apply", "https://acme.wd5.myworkdayjobs.com/en-US/x/job/1?src=jobright"], ["Company", "https://jobright.ai/company/acme"]]) == "https://acme.wd5.myworkdayjobs.com/en-US/x/job/1")
+check("jobright: two different external links and no label is nothing (never a guess)",
+      original_link([["A", "https://a.com/jobs/1"], ["B", "https://b.com/careers/2"]]) == "")
+check("jobright: no external link is nothing", original_link([["Jobs", "https://jobright.ai/jobs"]]) == "" and original_link([]) == "")
+
+
 width = max(len(n) for n, _, _ in RESULTS)
 failed = 0
 for name, ok, detail in RESULTS:
