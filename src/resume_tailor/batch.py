@@ -397,19 +397,7 @@ async def _click_hard(session: ApplySession, selector: str) -> bool:
     """Click a control that an overlay may be covering (Workday floats a
     click-filter div over its Create Account button): a normal click, then a
     forced one, then the element's own click handler."""
-    loc = session._doc.locator(selector).first
-    for attempt in ("normal", "force", "js"):
-        try:
-            if attempt == "normal":
-                await loc.click(timeout=5000)
-            elif attempt == "force":
-                await loc.click(force=True, timeout=5000)
-            else:
-                await loc.evaluate("e => e.click()")
-            return True
-        except Exception:
-            continue
-    return False
+    return await session.click_hard(selector)
 
 
 async def _create_account(session: ApplySession, profile: Profile) -> str:
@@ -902,9 +890,16 @@ def _education_date_answer(profile: Profile, section: str, question: str, option
     q = (question or "").lower()
     which = "start" if re.search(r"\b(start|from|begin)", q) else "end" if re.search(r"\b(end|to|graduat|complet|finish)", q) else None
     part = "month" if "month" in q else "year" if "year" in q else None
-    if not which or not part:
+    if not which:
         return None
-    want = _education_dates(profile).get(f"{which}_{part}")
+    dates = _education_dates(profile)
+    if not part:
+        # A whole-date box ("Start date", "Pick a date"): month and year as MM/YYYY.
+        if options or not dates.get(f"{which}_year"):
+            return None
+        m = dates.get(f"{which}_month")
+        return (f"{_MONTH_NAMES.index(m) + 1:02d}/{dates[which + '_year']}" if m else dates[which + "_year"])
+    want = dates.get(f"{which}_{part}")
     if not want:
         return None
     if options:
@@ -944,23 +939,34 @@ _ENTRY_NEEDED = re.compile(r"at least one (?:work |prior |previous )?(?:experien
 _ADD_JS = r"""
 () => {
   const out = []; let k = 0;
-  for (const b of document.querySelectorAll('button, a, [role=button]')) {
-    const t = (b.innerText || b.textContent || '').replace(/\s+/g, ' ').trim();
-    if (!/^\+?\s*add(\s+(another|new|an?|entry|education|experience|employment|position|job|school|work(\s+experience)?|history))*\s*$/i.test(t)) continue;
-    const r = b.getBoundingClientRect(); if (r.width === 0 || r.height === 0) continue;
+  const s = v => (typeof v === 'string' ? v : '');
+  // The same candidates as the button scan: real buttons, links styled as
+  // buttons, and custom elements whose tag ends in -button (SmartRecruiters).
+  const btnLike = el => !!el.matches && (el.matches('button, input[type=submit], input[type=button], [role=button], a.btn, a[class*="btn-"], a[class*="button"]') || /-button$/i.test(el.tagName));
+  const vis = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  const textOf = el => (s(el.innerText) || s(el.value) || el.getAttribute('aria-label') || s(el.textContent) || '').replace(/\s+/g, ' ').trim();
+  const isAdd = t => /^\+?\s*add(\s+(another|new|an?|entry|education|experience|employment|position|job|school|work(\s+experience)?|history|more))*\s*$/i.test(t);
+  const cands = document.querySelectorAll('*').filter(el => btnLike(el) && vis(el) && isAdd(textOf(el)));
+  const within = (outer, inner) => { let n = inner.parentNode || inner.host; while (n) { if (n === outer) return true; n = n.parentNode || n.host; } return false; };
+  const list = cands.filter(b => !cands.some(c => c !== b && within(b, c)));
+  const headingText = h => (s(h.innerText) || s(h.textContent) || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+  for (const b of list) {
+    // The section the Add belongs to: the nearest enclosing block whose own
+    // text is short — a header row like "Education * Please provide at
+    // least one education entry Add" — rather than a distant page heading.
     let heading = '';
-    for (let el = b.parentElement; el && el !== document.body && !heading; el = el.parentElement) {
-      for (let p = el.previousElementSibling; p && !heading; p = p.previousElementSibling) {
-        const h = p.matches && p.matches('h1,h2,h3,h4,h5,legend,[role=heading]') ? p : (p.querySelector ? p.querySelector('h1,h2,h3,h4,h5,legend,[role=heading]') : null);
-        if (h && (h.innerText || '').trim()) heading = (h.innerText || '').trim().slice(0, 60);
-      }
-      if (!heading) {
-        const hh = el.querySelector && el.querySelector('h1,h2,h3,h4,h5,legend,[role=heading]');
-        if (hh && (hh.innerText || '').trim() && hh.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) heading = (hh.innerText || '').trim().slice(0, 60);
-      }
+    let el = b.parentNode || b.host;
+    for (let depth = 0; el && depth < 10 && !heading; depth++) {
+      if (el.nodeType !== 1) { el = el.host || null; continue; }
+      const t = textOf(el).replace(textOf(b), ' ').replace(/\s+/g, ' ').trim();
+      if (t && t.length <= 200) heading = t.slice(0, 80);
+      el = el.parentNode || el.host;
+    }
+    if (!heading) {
+      for (let p = b.previousElementSibling; p && !heading; p = p.previousElementSibling) heading = headingText(p);
     }
     b.dataset.rtAdd = String(++k);
-    out.push({ k: String(k), text: t.slice(0, 40), heading });
+    out.push({ k: String(k), text: textOf(b).slice(0, 40), heading });
   }
   return out;
 }
@@ -996,6 +1002,23 @@ def _add_js() -> str:
         from .apply import _deep
         _ADD_JS_DEEP = _deep(_ADD_JS.strip())
     return _ADD_JS_DEEP
+
+
+async def _save_entry_editors(session: ApplySession) -> int:
+    """Press the Save of every open entry editor (SmartRecruiters draws each
+    added Experience or Education as an editor with Cancel and Save; Next
+    refuses while one is open). A plain "Save" only — never "Save and
+    Continue", which is a step control."""
+    pressed = 0
+    for _ in range(4):
+        btn = next((b for b in await session.buttons() if not b.get("disabled") and re.fullmatch(r"\s*save\s*", b.get("text") or "", re.I)), None)
+        if btn is None:
+            break
+        if not await _click_hard(session, btn["selector"]):
+            break
+        pressed += 1
+        await session._page.wait_for_timeout(1200)
+    return pressed
 
 
 async def _add_entries_for(session: ApplySession, errors: list[str]) -> int:
@@ -2551,6 +2574,7 @@ async def _process_one_inner(session: ApplySession, profile: Profile, entry: Que
                         _now(f"adding the entr{'y' if added == 1 else 'ies'} the page asked for", entry, url=apply_url)
                         unresolved, more = await _fill_form(session, profile, pdf_path, jd_text)
                         o.answers = o.answers + more
+                        await _save_entry_editors(session)
                         buttons = await session.buttons()
                         again = _pick_next_button(buttons) or await _ask_button(buttons, "next")
                         if again is not None and not _NOT_SUBMIT.search(again.get("text", "")):

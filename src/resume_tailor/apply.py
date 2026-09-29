@@ -368,7 +368,15 @@ _FIELD_JS = r"""
       let sib = node.previousElementSibling;
       while (sib) {
         const t = txt(sib);
-        if (t && t.length <= MAXQ && !sib.querySelector('input, select, textarea, button') && !placeholderish(t) && !/^[*✱:\s]+$/.test(t)) return t;
+        if (t && !sib.querySelector('input, select, textarea, button') && !placeholderish(t) && !/^[*✱:\s]+$/.test(t)) {
+          if (t.length <= MAXQ) return t;
+          // A block too long to be a label — a compliance paragraph that
+          // ends in the actual question — names the control by its last
+          // question sentence.
+          const sents = t.split(/(?<=[.!?])\s+/).map(x => x.trim()).filter(Boolean);
+          const last = sents.length ? sents[sents.length - 1] : '';
+          if (last && /\?\s*[*✱]?\s*$/.test(last) && last.length <= MAXQ) return last;
+        }
         sib = sib.previousElementSibling;
       }
       node = node.parentElement;
@@ -1229,6 +1237,7 @@ class ApplySession:
         _relabel_workday(fields)
         _relabel_greenhouse(fields)
         _relabel_ashby(fields)
+        _relabel_entry_editors(fields)
         # A label, hint or option written for an automated reader goes before
         # any model sees the form (untrusted.py); the record keeps a note.
         for n in scrub_fields(fields):
@@ -1337,9 +1346,7 @@ class ApplySession:
             else:
                 return None
         before = list(self._ctx.pages)
-        try:
-            await self._doc.locator(chosen["selector"]).first.click()
-        except Exception:
+        if not await self.click_hard(chosen["selector"]):
             return None
         try:
             await self._page.wait_for_load_state("networkidle", timeout=8000)
@@ -2132,7 +2139,12 @@ class ApplySession:
             try:
                 await button.click(force=True, timeout=5000)
             except Exception:
-                return False, f"the submit control could not be clicked — something covers it: {str(first).splitlines()[0][:160]}"
+                try:
+                    # Workday's click-filter overlay takes the pointer; the
+                    # element's own handler still fires.
+                    await button.evaluate("e => e.click()")
+                except Exception:
+                    return False, f"the submit control could not be clicked — something covers it: {str(first).splitlines()[0][:160]}"
         import time
 
         deadline = time.monotonic() + SUBMIT_WAIT_S
@@ -2308,6 +2320,28 @@ class ApplySession:
             labels = ()
         return (self._page.url if self._page is not None else "", labels)
 
+    async def click_hard(self, selector: str) -> bool:
+        """Press a control an overlay may be covering. Workday floats a
+        transparent click-filter div over every button (Create Account, Save
+        and Continue, Submit); Playwright's normal click sees the overlay
+        intercepting and retries until it times out, so the step never
+        moves and nothing says why. A normal click first, then a forced
+        one, then the element's own click handler."""
+        await self.start()
+        loc = self._doc.locator(selector).first
+        for attempt in ("normal", "force", "js"):
+            try:
+                if attempt == "normal":
+                    await loc.click(timeout=5000)
+                elif attempt == "force":
+                    await loc.click(force=True, timeout=5000)
+                else:
+                    await loc.evaluate("e => e.click()")
+                return True
+            except Exception:
+                continue
+        return False
+
     async def advance(self, selector: str, seconds: float = 45.0) -> bool:
         """Click a Next/Continue control of a multi-step form and wait for
         the following step to render. True when the page changed.
@@ -2323,7 +2357,8 @@ class ApplySession:
             await self._page.keyboard.press("Escape")  # any open menu would take this click instead
         except Exception:
             pass
-        await self._doc.locator(selector).first.click()
+        if not await self.click_hard(selector):
+            return False
         try:
             await self._page.wait_for_load_state("networkidle", timeout=8000)
         except Exception:
@@ -2536,6 +2571,38 @@ def _relabel_ashby(fields: list[dict]) -> None:
             f["label"] = "Start date — Year" if years == 1 else "End date — Year"
         elif t == "checkbox":
             f["label"] = "I am still a student here"
+
+
+_EXP_HEAD = re.compile(r"^(title|job title|position)\*?$", re.I)
+_EDU_HEAD = re.compile(r"^(institution|school|university|school name|institution name)\*?$", re.I)
+_ENTRY_PART = re.compile(r"^(company|employer|office location|location|description|from|to|start|end|start date|end date|"
+                         r"i currently work here|current|major|degree|field of study|school location|i currently attend|gpa)\*?$", re.I)
+
+
+def _relabel_entry_editors(fields: list[dict]) -> None:
+    """An entry editor opened by an Add button (SmartRecruiters' Experience and
+    Education blocks) puts its controls under the page's own heading, so
+    "Title", "From" and "To" arrive with the job title as their section.
+    From the head control of each editor — Title, or Institution — the
+    controls that follow are that entry's, in a Work Experience or
+    Education section, with From and To read as its start and end."""
+    block = None
+    for f in fields:
+        label = (f.get("label") or "").strip()
+        if _EXP_HEAD.match(label):
+            block = "Work Experience 1"
+        elif _EDU_HEAD.match(label):
+            block = "Education 1"
+        elif block and not _ENTRY_PART.match(label):
+            block = None
+        if not block:
+            continue
+        f["section"] = block
+        low = label.lower().rstrip("*")
+        if low == "from":
+            f["label"] = "Start date"
+        elif low == "to":
+            f["label"] = "End date"
 
 
 def usable(fields: list[dict]) -> list[dict]:

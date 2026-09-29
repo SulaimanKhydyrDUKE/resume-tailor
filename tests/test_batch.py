@@ -1106,6 +1106,18 @@ check("education month as a number option", _education_date_answer(_prof, "Educa
 check("education dates: nothing outside an Education section", _education_date_answer(_prof, "Work Experience 1", "Start date — Month", ["August"]) is None)
 check("education dates: nothing when the option is absent (never a near miss)", _education_date_answer(_prof, "Education", "Start date — Year", ["2027", "2026"]) is None)
 
+from resume_tailor.apply import _relabel_entry_editors
+_sr = [{"type": "text", "label": "First name*"}, {"type": "text", "label": "Title*"}, {"type": "text", "label": "Company"}, {"type": "text", "label": "From"},
+       {"type": "text", "label": "To"}, {"type": "checkbox", "label": "I currently work here"}, {"type": "text", "label": "Institution*"}, {"type": "text", "label": "Major"},
+       {"type": "text", "label": "From"}, {"type": "checkbox", "label": "I currently attend"}, {"type": "text", "label": "LinkedIn"}]
+_relabel_entry_editors(_sr)
+check("entry editors: Title… is Work Experience 1 with Start/End dates; Institution… is Education 1; the rest untouched",
+      [f.get("section") for f in _sr] == [None, "Work Experience 1", "Work Experience 1", "Work Experience 1", "Work Experience 1", "Work Experience 1",
+                                          "Education 1", "Education 1", "Education 1", "Education 1", None]
+      and _sr[3]["label"] == "Start date" and _sr[4]["label"] == "End date" and _sr[8]["label"] == "Start date", str([(f.get("section"), f["label"]) for f in _sr]))
+check("education whole-date box gets MM/YYYY from the record", _education_date_answer(_prof, "Education 1", "Start date", []) == "08/2024")
+check("education whole-date end box from the completion date", _education_date_answer(_prof, "Education 1", "End date", []) == "05/2028")
+
 
 width = max(len(n) for n, _, _ in RESULTS)
 failed = 0
