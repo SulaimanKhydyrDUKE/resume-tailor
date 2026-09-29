@@ -19,6 +19,12 @@ check("unwrap: the address behind l.instagram.com",
 check("unwrap: tracking parameters go, real ones stay",
       unwrap("https://boards.greenhouse.io/x/jobs/1?gh_jid=1&utm_medium=story&fbclid=z") == "https://boards.greenhouse.io/x/jobs/1?gh_jid=1")
 check("unwrap: a plain address is untouched", unwrap("https://careers.example.com/intern") == "https://careers.example.com/intern")
+_wd = "https://fox.wd1.myworkdayjobs.com/en-US/Domestic/job/New-York-New-York-USA/Summer-2027-FOX-Technology-Internship-Program---New-York--NY_R50033968"
+check("unwrap: a Workday apply link is the posting", unwrap(_wd + "/apply/useMyLastApplication") == _wd)
+from resume_tailor.igstories import workday_facts
+check("workday: title and location read off the address",
+      workday_facts(_wd) == {"title": "Summer 2027 FOX Technology Internship Program - New York, NY", "location": "New York New York USA"})
+check("workday: not a Workday address, nothing", workday_facts("https://jobs.lever.co/x/1") == {})
 payload = {"reels_media": [{"items": [
     {"story_link_stickers": [{"story_link": {"url": "https://l.instagram.com/?u=https%3A%2F%2Fjobs.ashbyhq.com%2Fnetic%2Fabc"}}]},
     {"story_cta": [{"links": [{"webUri": "https://www.linkedin.com/jobs/view/4321"}]}]},

@@ -65,9 +65,13 @@ def unwrap(url: str) -> str:
     parts = urllib.parse.urlsplit(url)
     if not parts.scheme:
         return url
+    path = parts.path
+    if re.search(r"myworkdayjobs\.com$|myworkdaysite\.com$", parts.netloc, re.I):
+        # A Workday "apply" link (…/apply/useMyLastApplication) is the posting plus a step: keep the posting.
+        path = re.sub(r"/apply(/[^/]*)?/?$", "", path)
     keep = [(k, v) for k, v in urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
             if not re.match(r"^(utm_|fbclid|igshid|igsh$|mc_cid|mc_eid|ref$|source$)", k, re.I)]
-    return urllib.parse.urlunsplit((parts.scheme, parts.netloc, parts.path, urllib.parse.urlencode(keep), ""))
+    return urllib.parse.urlunsplit((parts.scheme, parts.netloc, path, urllib.parse.urlencode(keep), ""))
 
 
 def links_from_story_json(obj) -> list[str]:
@@ -210,6 +214,19 @@ def greenhouse_facts(url: str) -> dict:
             "location": str((d.get("location") or {}).get("name") or "")[:80]}
 
 
+def workday_facts(url: str) -> dict:
+    """Title and location read off a Workday posting's own address
+    (…/job/<Location>/<Title-slug>_<req>): the page renders with JavaScript
+    and a plain fetch shows nothing. "---" is a dash, "--" a comma."""
+    m = re.search(r"myworkday(?:jobs|site)\.com/.*?/job/([^/]+)/([^/?#]+?)(?:_[A-Z0-9-]+)?/?(?:[?#]|$)", url or "", re.I)
+    if not m:
+        return {}
+    def words(seg: str) -> str:
+        seg = seg.replace("---", "\x00").replace("--", ", ").replace("-", " ").replace("\x00", " - ")
+        return re.sub(r"\s+", " ", seg).strip()
+    return {"title": words(urllib.parse.unquote(m.group(2)))[:120], "location": words(urllib.parse.unquote(m.group(1)))[:80]}
+
+
 def add_url(out_dir: str | Path, url: str, company: str = "", title: str = "") -> dict:
     """A posting the user hands over (a link from a story, a friend, a
     mail): recorded under the page "added" so discovery lists it like any
@@ -224,6 +241,8 @@ def add_url(out_dir: str | Path, url: str, company: str = "", title: str = "") -
         for k, v in gh.items():
             if v and not facts.get(k):
                 facts[k] = v
+    if not facts.get("title") or len(facts["title"]) < 4:
+        facts.update({k: v for k, v in workday_facts(posting).items() if v})
     facts.pop("company_from_host", None)
     if company:
         facts["company"] = company
