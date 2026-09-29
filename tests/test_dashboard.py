@@ -153,6 +153,32 @@ check("settled_date: a date named in the model's summary beats an earlier one fr
       _settled_date({"date": "2026-09-28T12:53", "received": "2026-09-28T12:53:00-04:00", "what": "Invitation to Duke campus event on October 7th",
                      "rule_dates": ["2026-10-05T00:00", "2026-10-07T00:00"]}).startswith("2026-10-07"))
 
+# --- the Files tab: résumés on disk, portals with a saved sign-in, no secret -------
+from resume_tailor.dashboard import build_files, portal_hosts
+_names = ["jobright.ai.json", "acme.wd5.myworkdayjobs.com.json", "doubleclick.net.json", "campus-x.icims.com.json", "1rx.io.json",
+          "careers.example.com.json", "google.com.json", "linkedin.com.json"]
+check("portal_hosts: ATS hosts, careers hosts and jobright kept; ad-tech, google and linkedin dropped",
+      portal_hosts(_names, ["icims.com"]) == ["acme.wd5.myworkdayjobs.com", "campus-x.icims.com", "careers.example.com", "jobright.ai"], str(portal_hosts(_names, ["icims.com"])))
+_ftmp = Path(_tempfile.mkdtemp())
+(_ftmp / "resumes" / "acme-swe" / "documents").mkdir(parents=True)
+(_ftmp / "resumes" / "acme-swe" / "First_Last_resume.pdf").write_bytes(b"%PDF-1.4")
+(_ftmp / "resumes" / "acme-swe" / "documents" / "cover-letter.pdf").write_bytes(b"%PDF-1.4")
+(_ftmp / "beta.pdf").write_bytes(b"%PDF-1.4")
+(_ftmp / "batch-state.json").write_text(_json.dumps({"done": {
+    "a": {"company": "Acme", "role": "SWE Intern", "status": "applied", "when": "2026-09-11T10:00:00-04:00", "pdf": str(_ftmp / "resumes" / "acme-swe" / "First_Last_resume.pdf")},
+    "a2": {"company": "Acme", "role": "SWE Intern", "status": "needs_review", "when": "2026-09-12T10:00:00-04:00", "pdf": str(_ftmp / "resumes" / "acme-swe" / "First_Last_resume.pdf")},
+    "b": {"company": "Beta", "role": "Intern", "status": "applied", "when": "2026-09-13T10:00:00-04:00", "pdf": str(_ftmp / "beta.pdf")},
+    "c": {"company": "Gone", "role": "Intern", "status": "applied", "when": "2026-09-14T10:00:00-04:00", "pdf": str(_ftmp / "missing.pdf")}}}))
+_ldir = _ftmp / "logins"; _ldir.mkdir()
+for n in _names: (_ldir / n).write_text("[]")
+_files = build_files(_ftmp, logins_dir=_ldir, answers={"search": {"create_accounts_on": ["icims.com"]}})
+check("files: one entry per PDF on disk, newest first, a missing file skipped",
+      [r["company"] for r in _files["resumes"]] == ["Beta", "Acme"] and _files["counts"]["resumes"] == 2, str([r["company"] for r in _files["resumes"]]))
+check("files: documents beside the résumé are listed with /files/ links",
+      _files["resumes"][1]["documents"] == [{"name": "cover-letter.pdf", "url": "/files/resumes/acme-swe/documents/cover-letter.pdf"}], str(_files["resumes"][1]["documents"]))
+check("files: portals with a saved sign-in, and the count of every saved site", _files["logins"]["hosts"][:2] == ["acme.wd5.myworkdayjobs.com", "campus-x.icims.com"] and _files["logins"]["saved_sites"] == len(_names))
+check("files: no password anywhere in the files response", "password" not in _json.dumps(_files).lower())
+
 
 width = max(len(n) for n, _, _ in RESULTS)
 failed = 0

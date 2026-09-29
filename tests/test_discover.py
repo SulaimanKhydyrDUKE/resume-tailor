@@ -323,6 +323,10 @@ check("retry cap: a hand re-queue lifts it", not _worn(_wall.done["wall"]))
 _once = RunState(path=Path(tempfile.mkdtemp()) / "state.json")
 _once.record("wall1", {"status": "needs_login", "detail": "this site wants an account"})
 check("retry cap: one login wall is still retried", not _worn(_once.done["wall1"]))
+from resume_tailor.discover import _worn_out as _wo
+check("worn out: a 'retry:' detail lifts the cap like a hand re-queue",
+      not _wo({"status": "needs_review", "attempts": 3, "detail": "retry: after a fix · could not answer: x"}) and _wo({"status": "needs_review", "attempts": 3, "detail": "could not answer: x"}))
+
 
 width = max(len(n) for n, _, _ in RESULTS)
 failed = 0

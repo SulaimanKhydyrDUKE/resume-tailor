@@ -928,6 +928,28 @@ check("network: a blank page takes the wait-and-retry path",
       bool(_NETWORK_ERROR.search("could not load the application form: the page came up blank or as a browser error")))
 check("network: a real missing form does not", not _NETWORK_ERROR.search("no application form was found on this page"))
 
+# --- hand sign-ins: the site list and what counts as a session on file ---------
+import json as _json, tempfile as _tmp, time as _time
+from types import SimpleNamespace as _NS
+from resume_tailor.batch import hand_login_sites, session_on_file, DEFAULT_HAND_LOGINS
+_hl = hand_login_sites(_NS(answers={"search": {"hand_logins": ["https://app.joinhandshake.com/login", {"name": "Wellfound", "url": "https://wellfound.com/login", "cookie": "^_wellfound_session$"}, "https://jobright.ai/"]}}))
+check("hand logins: the built-in three come first", [x["name"] for x in _hl[:3]] == [x["name"] for x in DEFAULT_HAND_LOGINS])
+check("hand logins: a bare URL becomes a site keyed by its host", any(x["host"] == "app.joinhandshake.com" and x["url"].startswith("https://") for x in _hl))
+check("hand logins: a dict keeps its cookie rule", any(x["name"] == "Wellfound" and x["cookie"] == "^_wellfound_session$" and x["host"] == "wellfound.com" for x in _hl))
+check("hand logins: a duplicate of a built-in host is not listed twice", sum(1 for x in _hl if x["host"] == "jobright.ai") == 1)
+check("hand logins: no profile means the built-in list", [x["host"] for x in hand_login_sites(None)] == [x["host"] for x in DEFAULT_HAND_LOGINS])
+_ld = Path(_tmp.mkdtemp())
+(_ld / "google.com.json").write_text(_json.dumps([{"name": "NID", "domain": ".google.com", "expires": _time.time() + 9e6}, {"name": "SID", "domain": ".google.com", "expires": _time.time() + 9e6}]))
+(_ld / "jobright.ai.json").write_text(_json.dumps([{"name": "SESSION_ID", "domain": "jobright.ai", "expires": _time.time() - 60}]))
+(_ld / "lifeattiktok.com.json").write_text(_json.dumps([{"name": "atsx-portal-session-v1", "domain": "lifeattiktok.com", "expires": -1}]))
+_g, _j, _t = (dict(x) for x in DEFAULT_HAND_LOGINS)
+check("session on file: Google's SID counts", session_on_file(_g, _ld)[0] and "SID" in session_on_file(_g, _ld)[1])
+check("session on file: an expired session says so", session_on_file(_j, _ld)[0] is False and "expired" in session_on_file(_j, _ld)[1])
+check("session on file: a session cookie with no expiry counts", session_on_file(_t, _ld)[0])
+check("session on file: a site with no cookie rule takes any live cookie", session_on_file({"host": "www.google.com"}, _ld)[0])
+check("session on file: nothing saved reads as nothing", session_on_file({"host": "example.org"}, _ld) == (False, "nothing on file"))
+
+
 # --- résumé lint and the current employer ------------------------------------
 from types import SimpleNamespace as _NS
 from resume_tailor import gates as _gates
@@ -1024,6 +1046,65 @@ check("jobright: one unlabelled external job link still counts",
 check("jobright: two different external links and no label is nothing (never a guess)",
       original_link([["A", "https://a.com/jobs/1"], ["B", "https://b.com/careers/2"]]) == "")
 check("jobright: no external link is nothing", original_link([["Jobs", "https://jobright.ai/jobs"]]) == "" and original_link([]) == "")
+
+
+# --- the needs-review fixes: disabled controls, entries on demand, wider rules ------
+from resume_tailor.apply import usable
+from resume_tailor.batch import _DECLINE_WORDS, _GENERIC_SOURCE_OPTIONS, _entries_wanted, _not_my_school, _pick_add
+check("usable: a disabled select is not a field (Ashby's end date under 'Still student')",
+      [f["label"] for f in usable([{"label": "School", "type": "select"}, {"label": "End Month", "type": "select", "disabled": True}, {"label": "Degree", "type": "text", "disabled": False}])] == ["School", "Degree"])
+check("entries wanted: education and experience from SmartRecruiters' complaints",
+      _entries_wanted(["Please provide at least one work experience entry", "Please provide at least one education entry"]) == {"education", "experience"})
+check("entries wanted: nothing from an ordinary error", _entries_wanted(["Phone number is required"]) == set())
+_adds = [{"k": "1", "text": "Add", "heading": "Work Experience"}, {"k": "2", "text": "+ Add", "heading": "Education"}]
+check("pick add: the Education section's own Add", _pick_add(_adds, "education")["k"] == "2" and _pick_add(_adds, "experience")["k"] == "1")
+check("pick add: a lone Add counts when nothing names it", _pick_add([{"k": "7", "text": "Add", "heading": ""}], "education")["k"] == "7")
+check("pick add: two unnamed Adds is no pick (never a guess)", _pick_add([{"k": "1", "text": "Add", "heading": ""}, {"k": "2", "text": "Add", "heading": ""}], "education") is None)
+check("regions: the candidate's own region is ticked, the others are not",
+      _autofill_boilerplate("North America", {"type": "checkbox", "required": True}, []) == "yes"
+      and _autofill_boilerplate("Europe", {"type": "checkbox", "required": True}, []) == "no"
+      and _autofill_boilerplate("Asia*", {"type": "checkbox"}, []) == "no"
+      and _autofill_boilerplate("United States", {"type": "checkbox"}, []) == "yes")
+check("regions: a question that merely mentions a region is not a region box",
+      _autofill_boilerplate("Are you authorized to work in Europe?", {"type": "checkbox"}, []) is None)
+check("schools: a listed university that is not the candidate's is a No",
+      _not_my_school("Michigan State University", ["duke university"]) and _not_my_school("Calvin University", ["duke university"]))
+check("schools: the candidate's own school is not", not _not_my_school("Duke University", ["duke university"]))
+check("schools: a question about universities is not a school box", not _not_my_school("Which university do you attend?", ["duke university"]))
+check("schools: no record schools, no rule", not _not_my_school("Calvin University", []))
+check("decline wording: 'I do not wish to answer' and 'Not specified' count",
+      any(w in "i do not wish to answer" for w in _DECLINE_WORDS) and any(w in "not specified" for w in _DECLINE_WORDS))
+check("self-identification select picks a 'not specified' option",
+      _autofill_boilerplate("Gender*", {"type": "select-one", "required": True, "section": "Voluntary Self-Identification"}, ["Male", "Female", "Not Specified"]) == "Not Specified")
+check("source picker: 'Company website' is an honest generic when 'job board' is absent",
+      _autofill_boilerplate("How did you hear about us?*", {"type": "select-one", "required": True}, ["Employee referral", "LinkedIn", "Company website"]) == "Company website")
+check("source picker: named sources alone are still never claimed",
+      _autofill_boilerplate("How did you hear about us?*", {"type": "select-one", "required": True}, ["Employee referral", "LinkedIn", "Career fair"]) is None)
+
+from types import SimpleNamespace as _NS
+from resume_tailor.apply import _relabel_ashby
+from resume_tailor.batch import _education_date_answer, _education_dates
+_ashby = [{"type": "text", "label": "Education History", "placeholder": "Search schools...", "options": []},
+          {"type": "select-one", "label": "Education History", "options": ["Month...", "January", "February", "March", "April", "May", "June", "July"]},
+          {"type": "select-one", "label": "Education History", "options": ["Year...", "2027", "2026", "2025", "2024", "2023", "2022"]},
+          {"type": "select-one", "label": "Education History", "options": ["Month...", "January", "February", "March", "April", "May", "June", "July"]},
+          {"type": "select-one", "label": "Education History", "options": ["Year...", "2027", "2026", "2025", "2024", "2023", "2022"]},
+          {"type": "checkbox", "label": "Education History", "options": []}]
+_relabel_ashby(_ashby)
+check("ashby relabel: school, start month/year, end month/year, still a student, all under Education",
+      [f["label"] for f in _ashby] == ["School", "Start date — Month", "Start date — Year", "End date — Month", "End date — Year", "I am still a student here"]
+      and all(f["section"] == "Education 1" for f in _ashby), str([f["label"] for f in _ashby]))
+_two = [{"type": "text", "label": "Education History", "placeholder": "Search schools...", "options": []}, {"type": "text", "label": "Something else", "options": []}]
+_relabel_ashby(_two)
+check("ashby relabel: fewer than three such controls are left alone", _two[0]["label"] == "Education History")
+_prof = _NS(career={"education_details": [{"institution": "Duke University", "start_date": "08/2024", "year_of_completion": "May 2028"}]})
+check("education dates: parsed from the record", _education_dates(_prof) == {"start_month": "August", "start_year": "2024", "end_month": "May", "end_year": "2028"}, str(_education_dates(_prof)))
+check("education start month answered in the form's words", _education_date_answer(_prof, "Education 1", "Start date — Month", ["Month...", "August", "September"]) == "August")
+check("education start year answered", _education_date_answer(_prof, "Education 1", "Start date — Year", ["Year...", "2025", "2024"]) == "2024")
+check("education end year answered from the completion date", _education_date_answer(_prof, "Education", "End date — Year", ["2028", "2027"]) == "2028")
+check("education month as a number option", _education_date_answer(_prof, "Education", "Start date — Month", ["01", "08", "12"]) == "08")
+check("education dates: nothing outside an Education section", _education_date_answer(_prof, "Work Experience 1", "Start date — Month", ["August"]) is None)
+check("education dates: nothing when the option is absent (never a near miss)", _education_date_answer(_prof, "Education", "Start date — Year", ["2027", "2026"]) is None)
 
 
 width = max(len(n) for n, _, _ in RESULTS)

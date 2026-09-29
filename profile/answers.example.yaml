@@ -105,6 +105,11 @@ search:
   # jobright.ai rows link to jobright itself, which wants a sign-in before it
   # shows the employer's page; set true once the tool's browser is signed in.
   jobright_account: false
+  # Sites to sign into by hand once with `resume-tailor setup-logins`, on top
+  # of the built-in three (Google, jobright.ai, TikTok careers): a URL, or
+  # {name, url, host, cookie, check} — `cookie` a regex for the cookie name
+  # that marks a session, `check` a page only a signed-in visitor can see.
+  hand_logins: []                      # e.g. [https://app.joinhandshake.com/login]
   # Replace the built-in GitHub README-table sources (jobright-ai, speedyapply,
   # vanshb03) with your own: [[name, raw README url], ...]
   # extra_sources: []
@@ -161,3 +166,21 @@ about:
   outstanding_offers: ""        # "No"
   recent_reading: ""            # for "what have you read lately?" — one or two sentences, real
   university_email: ""          # only for fields that ask for a school e-mail
+
+# Questions that stop applications when the bank is silent, each with one
+# honest answer for most students. The tool matches on the key's words.
+licenses:
+  finra_licenses: "No"
+  securities_industry_essentials_sie_exam: "No — not taken and not planned"
+  real_estate_or_broker_license: "No"
+  professional_licenses_or_certifications: "None"
+employment_obligations:
+  post_employment_obligations: "No"          # non-compete, non-solicit, confidentiality that would affect the role
+  own_or_operate_another_business: "No"
+  employed_by_us_government: "No"
+experience_facts:
+  most_recent_internship_employer: "…"        # "Where did you complete your most recent internship?"
+  current_employer: "…"
+  professional_references: "Available upon request"
+work_regions:
+  regions_authorized_to_work: "United States (North America) only"

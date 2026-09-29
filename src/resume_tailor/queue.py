@@ -167,6 +167,21 @@ class RunState:
         self._touched.add(entry_id)
         self.save()
 
+    def mark_retry(self, ids: list[str], why: str) -> int:
+        """Put finished attempts back in front of the loop by prefixing their
+        detail with "retry: <why> · ", which lifts the attempt cap
+        (discover._worn_out) and nothing else. Returns how many changed."""
+        n = 0
+        for eid in ids:
+            rec = self.done.get(eid)
+            if not rec or (rec.get("detail") or "").startswith(("retry:", "re-queued")):
+                continue
+            rec["detail"] = f"retry: {why} · {(rec.get('detail') or '')[:220]}"
+            n += 1
+        if n:
+            self.save()
+        return n
+
     def already_attempted(self, entry_id: str, retry_statuses: set[str]) -> bool:
         prior = self.done.get(entry_id)
         return prior is not None and prior.get("status") not in retry_statuses

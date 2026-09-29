@@ -277,6 +277,7 @@ _FIELD_JS = r"""
       name: el.name || '',
       dom_id: el.id || '',
       required: el.required || el.getAttribute('aria-required') === 'true' || STAR.test(q) || STARLEAD.test(q) || entryRequired(el),
+      disabled: !!el.disabled || el.getAttribute('aria-disabled') === 'true' || !!(el.closest('fieldset') && el.closest('fieldset').disabled),
       value: (type === 'file' || isOption(el)) ? ''
            : el.tagName === 'SELECT' ? (el.value && el.selectedOptions[0] ? txt(el.selectedOptions[0]) : '')
            : (combo ? comboValue(el) : (el.value || chipValue(el))),
@@ -390,6 +391,7 @@ _FIELD_JS = r"""
     out.push({
       id, selector: `[data-rt-id="${id}"]`, tag: 'listbox', type: 'listbox', label: q, name: '', dom_id: b.id || '',
       required: (STAR.test(q) || STARLEAD.test(q)) || entryRequired(b) || b.getAttribute('aria-required') === 'true',
+      disabled: !!b.disabled || b.getAttribute('aria-disabled') === 'true',
       value: (placeholderish(shown) || shown === q || !shown || /^(select one|choose one|select|choose|--)$/i.test(shown)) ? '' : shown, combobox: true,
       section: sectionOf(b), placeholder: '', hint: hintOf(b), maxlength: undefined,
     });
@@ -1223,9 +1225,10 @@ class ApplySession:
 
     async def describe_form(self) -> list[dict]:
         await self.start()
-        fields = await self._doc.evaluate(_FIELD_JS)
+        fields = usable(await self._doc.evaluate(_FIELD_JS))
         _relabel_workday(fields)
         _relabel_greenhouse(fields)
+        _relabel_ashby(fields)
         # A label, hint or option written for an automated reader goes before
         # any model sees the form (untrusted.py); the record keeps a note.
         for n in scrub_fields(fields):
@@ -2498,6 +2501,50 @@ def _relabel_greenhouse(fields: list[dict]) -> None:
         m = _GH_EDU.match(did)
         if m:
             f["section"] = f"Education {int(m.group(2)) + 1}"
+
+
+_MONTHS_RX = re.compile(r"^(month|january|february|march|april|may|june|july|august|september|october|november|december)", re.I)
+
+
+def _relabel_ashby(fields: list[dict]) -> None:
+    """Ashby's education block is five or six controls all labelled
+    "Education History": a school search box, a start month and year, an end
+    month and year (greyed out under "Still student"), and that box. Read
+    as one label they drew one answer each — the bank's nearest date, which
+    was the high-school one. Named by what each control is, in an Education
+    section, they read like Workday's and are answered from the record's
+    degree."""
+    run = [f for f in fields if re.fullmatch(r"education history(\s*\(\d+\))?\*?", (f.get("label") or "").strip(), re.I)]
+    if len(run) < 3:
+        return
+    months = years = 0
+    for f in run:
+        f["section"] = "Education 1"
+        opts = [str(o) for o in (f.get("options") or [])]
+        t = (f.get("type") or "").lower()
+        if t in ("text", "") and re.search(r"school|universit|college", (f.get("placeholder") or ""), re.I):
+            f["label"] = "School"
+        elif t in ("text", "") and re.search(r"degree", (f.get("placeholder") or ""), re.I):
+            f["label"] = "Degree"
+        elif t in ("text", "") and re.search(r"field|major|study", (f.get("placeholder") or ""), re.I):
+            f["label"] = "Field of study"
+        elif opts and sum(1 for o in opts if _MONTHS_RX.match(o)) >= 6:
+            months += 1
+            f["label"] = "Start date — Month" if months == 1 else "End date — Month"
+        elif opts and sum(1 for o in opts if re.fullmatch(r"(19|20)\d\d", o)) >= 6:
+            years += 1
+            f["label"] = "Start date — Year" if years == 1 else "End date — Year"
+        elif t == "checkbox":
+            f["label"] = "I am still a student here"
+
+
+def usable(fields: list[dict]) -> list[dict]:
+    """The controls a person could act on. A disabled one is not a question:
+    Ashby greys out the education end-date month and year once "Still
+    student" is ticked, and filling those timed out and read as "Education
+    History unanswered" on every such form. Whatever a later answer
+    re-enables shows up on the next look."""
+    return [f for f in fields if not f.get("disabled")]
 
 
 def _relabel_workday(fields: list[dict]) -> None:
