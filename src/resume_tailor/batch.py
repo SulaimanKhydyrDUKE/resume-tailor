@@ -109,6 +109,7 @@ class Outcome:
     revisions: int = 0  # how many times the résumé was revised from the judges' notes before this verdict
     worker: str = ""  # which parallel loop handled it ("0".."3", "fresh"), for the dashboard
     flags: list = field(default_factory=list)  # e.g. third-party text aimed at an automated reader was found and removed (untrusted.py)
+    url: str = ""  # the posting actually opened — a jobright link resolves to the employer's own page (see _resolve_jobright)
 
 
 # Bumped whenever the résumé composer or renderer changes in a way that makes
@@ -1935,6 +1936,46 @@ def _needs_approval(profile: Profile, *names: str) -> bool:
     return any(re.search(r"(?<![a-z0-9])" + re.escape(p) + r"(?![a-z0-9])", n, re.I) for p in pats for n in names if n)
 
 
+_JOBRIGHT_CLOSED = re.compile(r"job has closed|no longer (available|accepting)|position (has been )?filled|this job is closed", re.I)
+_ANCHORS_JS = "() => [...document.querySelectorAll('a[href]')].map(a => [(a.innerText || '').trim().slice(0, 60), a.href])"
+_TRACKING_PARAMS = {"src", "jr_id", "utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term", "ref", "source"}
+
+
+def original_link(anchors: list) -> str:
+    """The employer's own posting behind a jobright page: its "Original Job
+    Post" link, else the one external link that looks like a job page.
+    jobright's tracking parameters come off, so the address matches the
+    same posting's other copies and the loop never applies twice."""
+    from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+    def clean(u: str) -> str:
+        parts = urlsplit(u)
+        q = [kv for kv in parse_qsl(parts.query, keep_blank_values=True) if kv[0] not in _TRACKING_PARAMS]
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(q), ""))
+
+    pairs = [(str(t or ""), str(h or "")) for t, h in (anchors or []) if isinstance(h, str) and h.startswith("http") and "jobright.ai" not in h]
+    for text, href in pairs:
+        if re.search(r"original job post|apply on (the )?company|company (web)?site|official (posting|site)", text, re.I):
+            return clean(href)
+    jobby = {clean(h) for _, h in pairs
+             if re.search(r"job|career|apply|greenhouse|lever\.co|myworkday|icims|ashby|avature|smartrecruiters|taleo|oraclecloud|successfactors|workable", h, re.I)}
+    return next(iter(jobby)) if len(jobby) == 1 else ""
+
+
+async def _resolve_jobright(session: ApplySession, url: str) -> tuple[str, str]:
+    """A jobright row links to jobright's own page, which shows the employer's
+    posting only to a signed-in member (search.jobright_account). Returns
+    ("ok", the employer's address), ("closed", "") when jobright says the
+    job has closed, or ("none", "") when no original link is on the page."""
+    await session.goto(url)
+    await session._page.wait_for_timeout(2500)
+    text = (await session.read_text())[:2000]
+    if _JOBRIGHT_CLOSED.search(text):
+        return "closed", ""
+    link = original_link(await session._page.evaluate(_ANCHORS_JS))
+    return ("ok", link) if link else ("none", "")
+
+
 async def _process_one(session: ApplySession, profile: Profile, entry: QueueEntry, out_dir: Path,
                         shots_dir: Path, apply_once: bool, state: RunState, dry_run: bool,
                         judge_gate: bool = True, approved: bool = False) -> Outcome:
@@ -1947,7 +1988,7 @@ async def _process_one(session: ApplySession, profile: Profile, entry: QueueEntr
                                  judge_gate=judge_gate, approved=approved)
     notes = list(dict.fromkeys(session.injection_notes))
     if notes:
-        o.flags = [f"third-party text addressed an automated reader and was removed ({len(notes)}): " + " | ".join(notes[:6])]
+        o.flags = list(o.flags) + [f"third-party text addressed an automated reader and was removed ({len(notes)}): " + " | ".join(notes[:6])]
         print(f"  [{entry.company_hint}] {o.flags[0][:220]}", file=sys.stderr, flush=True)
     return o
 
@@ -1986,6 +2027,26 @@ async def _process_one_inner(session: ApplySession, profile: Profile, entry: Que
         o.status, o.detail = "skipped", f"another posting at {entry.company_hint} is awaiting your approval (apply_once_at_company)"
         return o
 
+    if "jobright.ai/" in (entry.url or "") and not entry.text:
+        # Everything from here on — the posting text, the form, the record —
+        # uses the employer's own page, not jobright's copy of it.
+        try:
+            how, original = await _resolve_jobright(session, entry.url)
+        except Exception as e:
+            o.status, o.detail = "error", f"could not open the jobright page: {e}"
+            return o
+        if how == "closed":
+            o.status, o.detail = "skipped", "jobright says this job has closed"
+            return o
+        if how != "ok":
+            o.status, o.detail = "needs_review", ("the jobright page shows no link to the employer's posting — signed in? "
+                                                  f"(search.jobright_account): {entry.url}")
+            return o
+        o.flags.append(f"via jobright: {original}")
+        if not entry.apply_url or "jobright.ai/" in entry.apply_url:
+            entry.apply_url = original
+        entry.url = original
+    o.url = entry.url or ""
     jd_text = entry.text
     if not jd_text:
         try:
