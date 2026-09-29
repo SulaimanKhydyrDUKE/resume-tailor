@@ -224,6 +224,8 @@ check("'how you heard about this position' (no 'did') is a source field, answere
 check("a REQUIRED 'who referred you' box gets an honest N/A rather than a name or a stall",
       (_autofill_boilerplate("Who referred you to this position? Enter their first and last name here.",
                              {"type": "text", "tag": "input", "required": True}) or "").startswith("N/A"))
+check("a required 'What is your preferred name?' box is not a referral box (\"preferred\" holds \"referred\")",
+      _autofill_boilerplate("What is your preferred name?", {"type": "text", "required": True}) is None)
 check("an OPTIONAL 'who referred you' box is left blank",
       _autofill_boilerplate("Who referred you to this position?", {"type": "text", "tag": "input", "required": False}) is None)
 check("'How did you first hear about this role?' and 'From what source did you hear of the job opening?' are source fields",
@@ -1146,6 +1148,10 @@ _SCAN_HTML = """<!doctype html><html><body><form>
   <div role="radio" aria-checked="false"><input type="radio" name="sms" value="false" style="display:none" aria-labelledby="l2"><div id="l2"><p>No - I do not consent to receiving text messages</p></div></div>
 </div>
 <button type="submit" disabled>Apply</button>
+<div id="g-label">Gender*</div>
+<button aria-haspopup="listbox" aria-labelledby="g-label">Choose not to Disclose</button>
+<div id="h-label">Hispanic or Latino?</div>
+<button aria-haspopup="listbox" aria-labelledby="h-label">Choose One</button>
 </form>
 <div class="ant-select-dropdown"><div class="rc-virtual-list">
   <div class="ant-select-item ant-select-item-option"><div class="ant-select-item-option-content">Yes</div><span class="ant-select-item-option-state"></span></div>
@@ -1187,11 +1193,24 @@ try:
           sorted(f.get("option_label") or "" for f in _sms) == ["No - I do not consent to receiving text messages", "Yes - I consent to receiving text messages"],
           [f.get("option_label") for f in _sms])
     check("scan: a disabled submit is reported disabled", any(b.get("text") == "Apply" and b.get("disabled") for b in _buttons), _buttons)
+    _lists = {(f.get("label") or ""): f.get("value") for f in _fields if f.get("type") == "listbox"}
+    check("scan: 'Choose not to Disclose' is a chosen value, not an unmade choice", _lists.get("Gender*") == "Choose not to Disclose", _lists)
+    check("scan: 'Choose One' is still an unmade choice", _lists.get("Hispanic or Latino?") == "", _lists)
     check("scan: Ant Design option entries are read, without their inner content nodes doubling them", _opts == ["Yes", "No"], _opts)
 except Exception as e:  # the browser is part of this check, as in test_untrusted
     check("scan: the page test ran in a browser", False, f"{type(e).__name__}: {str(e)[:160]}")
 
 from resume_tailor.batch import _greyed_submit, _TEXT_CONSENT
+from resume_tailor.batch import _application_underway, _LANGUAGE_Q, _record_language
+from resume_tailor.batch import _decide as _decide_fn
+check("language: 'Language*' and 'Spoken languages' are the languages question; 'Programming language' is not",
+      bool(_LANGUAGE_Q.match("Language*")) and bool(_LANGUAGE_Q.match("Spoken languages")) and not _LANGUAGE_Q.match("Programming language*"))
+check("language: the record's first language answers it, in the option's words",
+      _aio.run(_decide_fn("Language*", {"type": "listbox"}, ["English", "French", "Spanish"], _P(career={"languages": [{"language": "English", "proficiency": "Native"}]}, answers={}, root=Path(".")), "", {}, {}, None, "listbox")) == "English")
+check("language: a record without languages answers nothing", _record_language(_P(career={}, answers={}, root=Path("."))) == "")
+check("verdict: a questions page after a step that took the name and e-mail is part of the application",
+      _application_underway([{"question": "First name*", "answer": "Ada"}, {"question": "Email*", "answer": "a@b.c"}]))
+check("verdict: nothing answered yet means no application underway", not _application_underway([{"question": "Email*", "answer": ""}]))
 check("submit: the one disabled submit-worded button is the greyed submit",
       (_greyed_submit([{"text": "Exit to job board"}, {"text": "Apply", "disabled": True, "type": "submit"}]) or {}).get("text") == "Apply")
 check("submit: an enabled Apply is not a greyed submit", _greyed_submit([{"text": "Apply", "type": "submit"}]) is None)

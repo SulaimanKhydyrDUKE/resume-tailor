@@ -105,7 +105,10 @@ _FIELD_JS = r"""
   };
   // Text that names an action or a hint, not the question: a file input's
   // "Attach" button label, a picker's "Start typing...".
-  const placeholderish = t => /^(type your response|your answer|type here.*|enter .*|select\.{0,3}|choose.*|start typing.*|attach( file)?|upload( file)?|browse|choose file|select file|drag and drop.*|drop files?.*)$/i.test(t || '');
+  // "Choose one", "Choose an option", "Choose…" are prompts; "Choose not to
+  // Disclose" is an answer (Workday's Gender list), and once read as a
+  // prompt every such choice looked unmade.
+  const placeholderish = t => /^(type your response|your answer|type here.*|enter .*|select\.{0,3}|choose( one| an? (option|value|answer|selection)| from( the)? list)?\.{0,3}|start typing.*|attach( file)?|upload( file)?|browse|choose file|select file|drag and drop.*|drop files?.*)$/i.test(t || '');
   const MAXQ = 600;
   const STAR = /[*✱]\s*:?\s*$/;
   const STARLEAD = /^\s*[*✱]\s*\S/;  // Workable writes the star first: "* What is your…"
@@ -155,7 +158,7 @@ _FIELD_JS = r"""
     // A picker's own chosen value ("Duke University" in react-select's
     // singleValue node beside the input), its placeholder, or its chips sit
     // before the input too, and are never its name.
-    const PICKER_OWN = '[class*="single-value"], [class*="singleValue"], [class*="selected-value"], [class*="selectedValue"], '
+    const PICKER_OWN = '[class*="single-value"], [class*="singleValue"], [class*="selected-value"], [class*="selectedValue"], [class*="selection-item"], '
       + '[class*="placeholder"], [class*="multi-value"], [class*="multiValue"], [data-automation-id="selectedItem"], [class*="-chip"], spl-chip';
     const pickerOwn = n => n.matches(PICKER_OWN) || !!n.querySelector(PICKER_OWN);
     const walkUp = (start, levels) => {
@@ -249,8 +252,8 @@ _FIELD_JS = r"""
       n = n.parentElement;
       if (!n || n.tagName === 'FORM' || n.tagName === 'BODY') break;
       if (n.querySelectorAll('input, [role=combobox]').length > 2) break;
-      const v = n.querySelector('[class*="single-value"], [class*="singleValue"], [class*="selected-value"], [class*="selectedValue"]');
-      if (v && txt(v)) return txt(v);
+      const v = n.querySelector('[class*="single-value"], [class*="singleValue"], [class*="selected-value"], [class*="selectedValue"], [class*="selection-item"]');
+      if (v && txt(v)) return txt(v);  // (selection-item: Ant Design's Select shows its choice there, the input stays empty)
       // Workday's multi-select keeps its choices as chips beside the input.
       const chips = [...n.querySelectorAll('[data-automation-id="selectedItem"], [data-automation-id*="selectedItem"]')].map(txt).filter(Boolean);
       if (chips.length) return chips.join(' | ');
@@ -470,13 +473,32 @@ e => {
 # shadow root, rendered as a div.c-spl-autocomplete-…-option). Each entry is
 # tagged so the click lands on the same node the scan saw, whatever order
 # a shadow-piercing locator would put them in.
+# A separate country-code control beside the phone number: Workday's own
+# field, or any picker, select or box that says so.
+_COUNTRY_CODE_JS = _deep(r"""
+() => {
+  if (document.querySelector('[data-automation-id="formField-countryPhoneCode"], [data-automation-id*="countryPhoneCode"]')) return true;
+  const rx = /\b(country|dial(ing)?|phone|calling) code\b/i;
+  for (const e of document.querySelectorAll('input, select, button, [role=combobox], [role=listbox]')) {
+    const r = e.getBoundingClientRect(); if (!(r.width > 0 && r.height > 0)) continue;
+    const names = [e.getAttribute('aria-label'), e.placeholder, e.name, e.id, e.innerText,
+                   e.labels && e.labels[0] && e.labels[0].innerText, e.getAttribute('title')];
+    if (names.some(n => n && rx.test(String(n)))) return true;
+  }
+  return false;
+}
+""")
+
 _OPTION_SEL = ('[role=option], [role=listbox] li, [id*="-option-"], [class*="__option"]:not([class*="__options"]), .pac-item, '
                '[class*="autocomplete-option"], [class*="autocomplete-default-option"], '
                'spl-select-option, spl-dropdown-item, [class*="dropdown-item"], '
                # Ant Design's Select (EquipmentShare's Greenhouse-fed form): the
                # entries a person sees carry no role; its role=option list is
                # the zero-width one for screen readers.
-               '[class*="select-item-option"]:not([class*="option-content"]):not([class*="option-state"])')
+               '[class*="select-item-option"]:not([class*="option-content"]):not([class*="option-state"]), '
+               # Oracle JET's lists (its CandidateExperience pickers), by class
+               # where the role is on a wrapper the text is not in.
+               '[class*="listbox-result"], [class*="listview-item"]')
 _OPTIONS_JS = r"""
 () => [...document.querySelectorAll('__OPTION_SEL__')].map((e, i) => {
   const r = e.getBoundingClientRect(); const s = getComputedStyle(e);
@@ -1582,10 +1604,10 @@ class ApplySession:
             return
         phone_label = bool(re.search(r"\bphone\b", (field or {}).get("label") or "", re.I)) and not re.search(
             r"extension|\bext\b|code|type|device", (field or {}).get("label") or "", re.I)
-        if (typ == "tel" or phone_label) and re.match(r"^\s*\+?1\b", value) and await self._doc.evaluate(
-                "() => !!document.querySelector('[data-automation-id=\"formField-countryPhoneCode\"], [data-automation-id*=\"countryPhoneCode\"]')"):
-            # The country code has its own field here (Workday): the number
-            # takes the national digits alone.
+        if (typ == "tel" or phone_label) and re.match(r"^\s*\+?1\b", value) and await self._doc.evaluate(_COUNTRY_CODE_JS):
+            # The country code has its own control here (Workday's, Oracle's
+            # "Country code" picker beside the number): the number takes the
+            # national digits alone — "19103360632" is "not a valid number".
             digits = re.sub(r"\D", "", value)
             value = digits[1:] if len(digits) == 11 and digits.startswith("1") else digits
         if tag == "select":

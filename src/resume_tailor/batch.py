@@ -65,6 +65,18 @@ def _is_search_picker(field: dict) -> bool:
 # decide, with the entry in view: never the bank ("currently enrolled: Yes"
 # once ticked "I currently work here"), never an acknowledgement rule.
 _NO_BANK = re.compile(r"currently work here|currently (employed|attend)|i am fluent", re.I)
+_LANGUAGE_Q = re.compile(r"^\s*(spoken |native |primary |first |preferred )?languages?\s*(spoken|known)?\s*[*✱:]?\s*$", re.I)
+
+
+def _record_language(profile: Profile) -> str:
+    """The first language in career.yaml → languages, or ''."""
+    for entry in profile.career.get("languages") or []:
+        name = str((entry or {}).get("language") or "").strip() if isinstance(entry, dict) else str(entry or "").strip()
+        if name:
+            return name
+    return ""
+
+
 # A consent to text messages, however long the paragraph around it.
 _TEXT_CONSENT = re.compile(r"(text messag|\bsms\b)[\s\S]{0,160}?(consent|agree|opt[- ]?in|updates?|notif)|"
                            r"(consent|agree|opt[- ]?in)[\s\S]{0,160}?(text messag|\bsms\b)", re.I)
@@ -188,6 +200,14 @@ def _pick_submit_button(buttons: list[dict]) -> dict | None:
                 return inside[0]
             return None  # several equally plausible buttons: refuse
     return None
+
+
+def _application_underway(answers: list[dict]) -> bool:
+    """Earlier steps of this attempt already took the applicant's name,
+    e-mail or résumé: a later page of questions is part of the application,
+    however little it looks like one on its own."""
+    return any(a.get("answer") and re.search(r"\b(first name|last name|full name|e-?mail|resume|résumé|cv)\b", a.get("question") or "", re.I)
+               for a in answers)
 
 
 def _greyed_submit(buttons: list[dict]) -> dict | None:
@@ -1124,7 +1144,9 @@ def _autofill_boilerplate(label: str, field: dict, options: list[str] | None = N
         # only") whose every option is a form of yes: the only answer there is.
         return next(o for o in opts_now if o.strip())
     if (field.get("required") and not opts_now and field.get("type") in ("text", "textarea", "")
-            and re.search(r"who referred you|referred you\b.*\bname|referr(ed|al) (name|by)|name of (the )?(person|employee) who referred|referrer'?s? name", label, re.I)):
+            and re.search(r"who referred you|\breferred you\b.*\bname|\breferr(ed|al) (name|by)|name of (the )?(person|employee) who referred|\breferrer'?s? name", label, re.I)):
+        # (word-bounded: "preferred name" holds "referred name" inside it,
+        # and once got the no-referral line as the applicant's name)
         # A required "who referred you" box with no referral to name: the
         # honest answer, rather than a stalled application or someone's name.
         return "N/A — no referral; found the posting on a job board"
@@ -1568,6 +1590,18 @@ async def _decide(question: str, field: dict, options: list[str], profile: Profi
             sources[(section, question)] = "record: the ongoing role's employer"
             decided[key] = emp
             return emp
+    if _LANGUAGE_Q.match(question):
+        # Workday's Languages block ("Language*", then "I am fluent in this
+        # language"): the record's first language, in the option's words.
+        # Without one in career.yaml → languages, nothing is assumed — the
+        # planner once read "Language" as a programming language.
+        lang = _record_language(profile)
+        if lang:
+            i = closest_option(lang, options) if options else None
+            if not options or i is not None:
+                sources[(section, question)] = "record: languages"
+                decided[key] = options[i] if options else lang
+                return decided[key]
     edu_date = _education_date_answer(profile, section, question, options)
     if edu_date is not None:
         sources[(section, question)] = "record: the degree's dates"
@@ -2757,9 +2791,12 @@ async def _process_one_inner(session: ApplySession, profile: Profile, entry: Que
     if not any(a.get("answer") for a in o.answers):
         o.status, o.detail = "needs_review", "nothing was filled on this page; not submitted"
         return o
-    if not review_page and not _looks_like_application(await session.describe_form()):
+    if not review_page and not _looks_like_application(await session.describe_form()) and not _application_underway(o.answers):
         # A posting page's "Apply now" is not a submit, however the button
-        # picker reads it: the page must hold the application itself.
+        # picker reads it: the page must hold the application itself — unless
+        # an earlier step of this very attempt already took the name, e-mail
+        # or résumé (SmartRecruiters' "Preliminary questions", Oracle's
+        # questionnaire), in which case this page of questions is its tail.
         shot = await session.screenshot(shots_dir / f"{_safe(entry.id)}-needs-review.png")
         o.status, o.detail = "needs_review", "the page at submit time is not an application form (a job page or a sign-in step); not submitted"
         o.screenshot = str(shot)
