@@ -2,6 +2,8 @@
 shows it — and the record of answers each attempt leaves behind. No server,
 no browser."""
 import json
+import os
+import time
 import sys
 import tempfile
 from pathlib import Path
@@ -73,7 +75,25 @@ with tempfile.TemporaryDirectory() as d:
     check("index: screenshots are found by entry id and kind", apps["job-1"]["screenshots"] == {"post-submit": "/files/screenshots/job-1-post-submit.png"})
     check("index: the listing fills in role and posting link when the record lacks them",
           apps["job-2"]["role"] == "Backend Intern" and apps["job-2"]["url"] == "https://jobs.example/2")
-    check("index: answers travel with the record", apps["job-1"]["answers"] == [{"question": "Email", "answer": "a@b.c"}])
+    check("index: the list carries no per-attempt answers (they weigh 80 % of a 12 MB page)", "answers" not in apps["job-1"])
+    from resume_tailor.dashboard import application_detail, cached_view, index_view
+    check("detail: answers travel with the record", application_detail(out, "job-1")["answers"] == [{"question": "Email", "answer": "a@b.c"}])
+    check("detail: an unknown id is None", application_detail(out, "nope") is None)
+    first = index_view(out)
+    check("cache: the same files give the same built view", index_view(out) is first)
+    check("cache: the body is the list, not the details", b'"answers"' not in first["body"] and b'"applications"' in first["body"])
+    check("cache: the gzipped body inflates to the body", __import__("gzip").decompress(first["gz"]) == first["body"])
+    check("cache: an ETag is quoted", first["etag"].startswith('"') and first["etag"].endswith('"'))
+    st = out / "batch-state.json"
+    data = json.loads(st.read_text()); data["done"]["job-1"]["detail"] = "changed by the test"; st.write_text(json.dumps(data))
+    os.utime(st, (time.time() + 5, time.time() + 5))
+    second = index_view(out)
+    check("cache: a changed state file rebuilds the view", second is not first and second["etag"] != first["etag"])
+    check("cache: the rebuilt view carries the change", next(a for a in second["value"]["applications"] if a["id"] == "job-1")["detail"] == "changed by the test")
+    calls = []
+    cached_view("probe", [st], lambda: calls.append(1) or {"n": len(calls)})
+    cached_view("probe", [st], lambda: calls.append(1) or {"n": len(calls)})
+    check("cache: an unchanged input never rebuilds", calls == [1])
     check("index: watch status reports stopped when there is no pid file", idx["watch"]["running"] is False)
 
     import os

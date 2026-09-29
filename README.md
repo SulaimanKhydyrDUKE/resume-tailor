@@ -88,11 +88,12 @@ Results on 2026-09-28 (main at the commit this README ships with):
 | `tests/test_batch.py` | answer ladder, submit choice, blockers, accounts, credentials, R7–R9, R11–R13 | 354/354 passed |
 | `tests/test_discover.py` | filters, caps, sharding, R14 | 115/115 passed |
 | `tests/test_dashboard.py` | index, mark, answers snapshot, R17 | 18/18 passed |
+| `tests/test_settings.py` | the Settings tab's writes: env file in place, YAML with comments, sources, basics, skeleton, intake checks | 46/46 passed |
 | `tests/test_mailscan.py` | inbox stages, R18 | 20/20 passed |
 | `tests/test_outreach.py` | address filters, ranking, outages, the send loop, R19 | 192/192 passed |
 | `tests/test_untrusted.py` | scrub, field scrub, visible-text walk in Chromium, R20 | 44/44 passed |
 
-761 checks, 7 suites. CI (`.github/workflows/ci.yml`) runs `python -m
+807 checks, 8 suites. CI (`.github/workflows/ci.yml`) runs `python -m
 compileall -q src` and every one of these scripts on each push and pull
 request, from the commands in `.ai/project.yaml`.
 
@@ -159,6 +160,30 @@ What this does and does not cover:
 Add sites in `answers.yaml` → `search.hand_logins`: a URL, or
 `{name, url, host, cookie, check}` where `cookie` is a regex for the cookie
 that marks a session and `check` a page only a signed-in visitor can see.
+
+## Instagram stories as a source
+
+A page that posts application links on its stories can feed the loop. Sign in
+once (`resume-tailor login --site instagram.com`, in the tool's own Chrome),
+put the page under `search.instagram_pages` in `answers.yaml`, then:
+
+```bash
+resume-tailor instagram read          # one pass now; --show for a visible window
+resume-tailor instagram links         # what has been read, newest first
+resume-tailor instagram watch         # every 2.5 h (the overnight supervisor runs this lane)
+resume-tailor instagram unpark        # after a sign-in, when Instagram had interrupted a pass
+```
+
+A sticker shows a label, never the address, so each link is taken three
+ways: the redirect wrapper behind the sticker (`l.instagram.com/?u=…`,
+decoded), the story data the page fetches (every sticker's address is in
+it), and, failing both, a press on the sticker with the opened tab read.
+Short links and link-in-bio pages are followed to the posting; the posting
+page gives the company and title, so the listing passes the usual filters
+and reaches the fresh lane like any other. Frames with no link are kept as
+screenshots under `output/instagram/<page>/`. Instagram forbids automated
+access and answers it with a check on the account: the reader is slow on
+purpose, and on any check or login wall it parks the page and stops.
 
 ## Tailor
 
@@ -319,7 +344,7 @@ required field is still empty.
 
 | Variable | Default | What it does |
 |---|---|---|
-| `RESUME_TAILOR_PROVIDER` | `anthropic` | `anthropic` or `openai`. Which model family tailors. |
+| `RESUME_TAILOR_PROVIDER` | `anthropic` | `anthropic` or `openai`. Which model family tailors. (Every row of this table can also be set on the dashboard's Settings tab.) |
 | `RESUME_TAILOR_MODEL` | `claude-opus-5` / `gpt-5.2` | Override the provider's default model id. |
 | `RESUME_TAILOR_AUDIT_MODEL` | same as model | The per-bullet audit checks — two-thirds of a run's calls — go to this model instead. Point it at one with a roomier rate limit (e.g. `o3-mini`) on a constrained tier. |
 | `RESUME_TAILOR_JUDGE_MODEL` | same as model | The two pre-submission match judges. |
@@ -359,6 +384,23 @@ The dashboard is where `awaiting_approval` postings (companies in
 `search.approve_before_submit`) wait with an Approve button, and where
 `needs_login` ones have a Log-in button that does the same as the command.
 It also shows how many discovered postings are still waiting in the pool.
+
+Its **Settings** tab edits the files under `~/.resume-tailor` without a text
+editor: the provider, API keys and per-role models (the `env` file — a key is
+shown only as set/unset), which GitHub lists discovery reads and your own
+README-table lists (`search.sources` / `search.extra_sources`), the search
+rules and judges' bars, your name, school, graduation and GPA (one field fans
+out to `career.yaml`, every graduation spelling in `answers.yaml`, and the
+résumé skeleton), every section of the answer bank, and the résumé skeleton
+itself — including **uploading a résumé** (PDF, Word, LaTeX or text), which
+is transcribed into the skeleton's shape by one model call, every number
+checked against the file's own text, and saved only when you press Save.
+Workers read these files when they start, so the tab says which files changed
+since and has a Restart button.
+
+```bash
+resume-tailor skeleton draft resume.pdf   # the same transcription from the terminal, printed as JSON; nothing written
+```
 
 If the loop is going to run overnight, keep the machine awake
 (`caffeinate -d -i -s` on a Mac) and plugged in; a supervisor script that

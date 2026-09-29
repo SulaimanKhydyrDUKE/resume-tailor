@@ -455,8 +455,7 @@ def basics_view(profile_dir: Path = DEFAULT_PROFILE_DIR) -> dict:
         "personal": {k: str(pi.get(k) or "") for k in BASIC_PERSONAL},
         "education": {**{k: str(ed.get(k) or "") for k in BASIC_EDU}, "coursework": [str(c) for c in (ed.get("coursework") or [])]},
         "gpa": str(edu_answers.get("gpa") or edu_answers.get("cumulative_gpa") or ""),
-        "show_gpa_on_resume": bool(((base.get("education") or {}).get("gpa") or "").strip()) if isinstance(base.get("education"), dict) else False,
-        "resume_graduation": str(((base.get("education") or {}).get("graduation") or "")) if isinstance(base.get("education"), dict) else "",
+        "show_gpa_on_resume": bool(str((base.get("education") or {}).get("gpa") or "").strip()) if isinstance(base.get("education"), dict) else False,
         "paths": {"career": str(career_path(profile_dir)), "answers": str(answers_path(profile_dir)), "base": str(base_path(profile_dir))},
     }
 
@@ -505,6 +504,7 @@ def save_basics(data: dict, profile_dir: Path = DEFAULT_PROFILE_DIR) -> dict:
             elif k in edu:
                 del edu[k]
     grad = str(education.get("year_of_completion") or "").strip()
+    month_year = grad
     if grad:
         month, year = graduation_parts(grad)
         month_year = f"{month} {year}".strip() if year else grad
@@ -526,7 +526,7 @@ def save_basics(data: dict, profile_dir: Path = DEFAULT_PROFILE_DIR) -> dict:
         if not isinstance(base.get("education"), CommentedMap):
             base["education"] = CommentedMap()
         if grad:
-            base["education"]["graduation"] = scalar(str(data.get("resume_graduation") or grad).strip() or grad)
+            base["education"]["graduation"] = scalar(month_year)  # the skeleton's line follows the record
         if show_gpa and gpa:
             base["education"]["gpa"] = scalar(gpa)
         elif "gpa" in base["education"]:

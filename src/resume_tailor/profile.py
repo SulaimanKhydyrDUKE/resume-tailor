@@ -201,12 +201,31 @@ class Profile:
 
     # --- answers ----------------------------------------------------------
 
+    def for_term(self, term: str) -> "Profile":
+        """This profile with the availability answers for one term, from
+        `availability.by_term` in answers.yaml — a winter posting must not
+        be told "available May through August". No entry for the term, or a
+        summer term: the profile as it is."""
+        term = (term or "").strip()
+        avail = (self.answers.get("availability") or {}) if isinstance(self.answers.get("availability"), dict) else {}
+        by_term = avail.get("by_term") or {}
+        override = by_term.get(term) if isinstance(by_term, dict) else None
+        if not term or not isinstance(override, dict) or not override:
+            return self
+        import copy
+        answers = copy.deepcopy(self.answers)
+        answers["availability"].update({k: v for k, v in override.items() if isinstance(v, (str, int, float, bool))})
+        answers["availability"]["target_term"] = term
+        return Profile(career=self.career, answers=answers, root=self.root, base_resume=self.base_resume)
+
     def flat_answers(self) -> dict[str, str]:
         flat: dict[str, str] = {}
 
         def walk(d: dict, prefix: str = "") -> None:
             for k, v in d.items():
                 key = f"{prefix}{k}"
+                if k == "by_term":
+                    continue  # availability.by_term: swapped in by for_term(), never matched as answers
                 if isinstance(v, dict):
                     walk(v, f"{key}.")
                 elif isinstance(v, (str, int, float, bool)):
