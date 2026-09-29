@@ -12,7 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from resume_tailor import ats
-from resume_tailor.discover import Prefs, evaluate, is_us, select, title_terms, to_entry
+from resume_tailor.discover import TABLE_SOURCES, Prefs, evaluate, is_us, select, sources_from_profile, title_terms, to_entry
 from resume_tailor.queue import RunState
 
 RESULTS = []
@@ -31,6 +31,13 @@ def L(**kw):
 
 
 P = Prefs(max_posting_age_days=0)  # fixtures use tiny epochs as ordering stubs, not dates
+
+# --- which lists are read: answers.yaml -> search.sources / extra_sources ------------
+check("sources: nothing set reads the feed and every built-in table", sources_from_profile({"search": {}}) == (True, TABLE_SOURCES))
+check("sources: a table switched off by name is left out, an owner's list is added, a bad url ignored",
+      sources_from_profile({"search": {"sources": {"speedyapply": False}, "extra_sources": [["mine", "https://raw.githubusercontent.com/a/b/main/README.md"], ["junk", "not a url"]]}})[1]
+      == [t for t in TABLE_SOURCES if t[0] != "speedyapply"] + [("mine", "https://raw.githubusercontent.com/a/b/main/README.md")])
+check("sources: the feed itself can be switched off", sources_from_profile({"search": {"sources": {"simplify": False}}})[0] is False)
 
 # --- is_us ------------------------------------------------------------------
 check("state suffix -> US", is_us(["Huntsville, AL"]) is True)
@@ -323,6 +330,56 @@ check("retry cap: a hand re-queue lifts it", not _worn(_wall.done["wall"]))
 _once = RunState(path=Path(tempfile.mkdtemp()) / "state.json")
 _once.record("wall1", {"status": "needs_login", "detail": "this site wants an account"})
 check("retry cap: one login wall is still retried", not _worn(_once.done["wall1"]))
+from resume_tailor.discover import _worn_out as _wo
+check("worn out: a 'retry:' detail lifts the cap like a hand re-queue",
+      not _wo({"status": "needs_review", "attempts": 3, "detail": "retry: after a fix · could not answer: x"}) and _wo({"status": "needs_review", "attempts": 3, "detail": "could not answer: x"}))
+
+
+# --- by-hand links beat a feed's copy; story links do not ---------------------
+from resume_tailor.discover import merge_hand_links as _mhl, to_entry as _to_entry
+_feed = [{"id": "sim-1", "url": "https://job-boards.greenhouse.io/gitai/jobs/5?gh_src=x", "source": "Simplify", "terms": ["Winter 2026"], "title": "Software Engineer Intern"},
+         {"id": "sim-2", "url": "https://jobs.lever.co/acme/1", "source": "Simplify", "title": "SWE Intern"}]
+_hand = [{"id": "ig:aaaa", "url": "https://job-boards.greenhouse.io/gitai/jobs/5", "source": "added by hand", "terms": ["Summer 2027"], "title": "Field-Deployed SWE Intern"},
+         {"id": "ig:bbbb", "url": "https://jobs.lever.co/acme/1", "source": "instagram:page", "title": "SWE Intern"},
+         {"id": "ig:cccc", "url": "https://jobs.ashbyhq.com/new/9", "source": "instagram:page", "title": "Platform Intern"}]
+_l, _e = _mhl(_feed, [], _hand)
+_ids = [l["id"] for l in _l + _e]
+check("hand links: a by-hand posting replaces the feed's copy of the same link", "sim-1" not in _ids and "ig:aaaa" in _ids)
+check("hand links: a story link a feed already lists is not listed twice", "sim-2" in _ids and "ig:bbbb" not in _ids)
+check("hand links: a story link no feed has is added", "ig:cccc" in _ids)
+check("hand links: ids stay unique", len(_ids) == len(set(_ids)))
+check("entries: the listing's source travels with the queue entry", _to_entry(_hand[0]).source == "added by hand")
+from resume_tailor.discover import entry_term as _et
+check("entries: the term comes from the list's tag", _et({"title": "Software Engineer Intern", "terms": ["Winter 2027"]}) == "Winter 2027")
+check("entries: a term the title names beats the tag", _et({"title": "SWE Intern - Spring 2027", "terms": ["Winter 2026"]}) == "Spring 2027")
+check("entries: N/A is no term", _et({"title": "Intern", "terms": ["N/A"]}) == "")
+_wp = Prefs(max_posting_age_days=0, positions=["Software Engineer Intern"], terms=["Summer 2027", "Winter 2027", "Spring 2027"])
+check("terms: a Winter 2027 listing passes once winter is asked for", evaluate(L(id="w", title="Software Engineer Intern - Winter 2027", terms=["Winter 2027"]), _wp) == "")
+check("terms: a Fall listing still does not", evaluate(L(id="f", title="Software Engineer Intern - Fall 2026", terms=["Fall 2026"]), _wp).startswith("other term"))
+import datetime as _dt2
+_yday = (_dt2.datetime.now().astimezone() - _dt2.timedelta(days=1)).isoformat()
+_hs = RunState(path=Path(tempfile.mkdtemp()) / "s.json",
+               done={"gh:old": {"status": "applied", "company": "GITAI", "when": _yday, "attempts": 1},
+                     "sim-9": {"status": "applied", "company": "Zeta", "when": _yday, "attempts": 1}})
+_hl = [L(id="gh:old", company_name="GITAI", url="https://job-boards.greenhouse.io/gitai/jobs/1", date_posted=100),
+       L(id="ig:new", company_name="GITAI", url="https://job-boards.greenhouse.io/gitai/jobs/5", source="added by hand", date_posted=100),
+       L(id="sim-9", company_name="Zeta", url="https://jobs.lever.co/zeta/1", date_posted=100),
+       L(id="ig:dup", company_name="Zeta", url="https://jobs.lever.co/zeta/1?gh_src=ig", source="added by hand", date_posted=100),
+       L(id="feed-2", company_name="GITAI", url="https://job-boards.greenhouse.io/gitai/jobs/7", source="Simplify", title="Software Engineer Intern", date_posted=100)]
+_hsel, _hwhy = select(_hl, Prefs(max_posting_age_days=0, positions=["Software Engineer Intern"], apply_once_at_company=False, company_cooldown_days=7), _hs)
+_hids = {e.id for e in _hsel}
+check("by hand: the company cooldown does not hold the user's own pick", "ig:new" in _hids)
+check("by hand: a link already applied to is not applied to again", "ig:dup" not in _hids and _hwhy.get("this link was already applied to") == 1)
+check("by hand: a feed posting at the same company still rests", "feed-2" not in _hids)
+_rs = RunState(path=Path(tempfile.mkdtemp()) / "s.json",
+               done={"gh:gone": {"status": "applied", "company": "GITAI", "role": "Field-Deployed Software Engineering Intern", "when": _yday, "attempts": 1}})
+_rl = [L(id="ig:same", company_name="GITAI", title="Field-Deployed Software Engineering Intern", url="https://job-boards.greenhouse.io/gitai/jobs/5437128008", source="added by hand", date_posted=100),
+       L(id="ig:other", company_name="GITAI", title="Robotics Software Intern", url="https://job-boards.greenhouse.io/gitai/jobs/9", source="added by hand", date_posted=100)]
+_rsel, _rwhy = select(_rl, Prefs(max_posting_age_days=0, positions=["Software Engineer Intern"], apply_once_at_company=False), _rs)
+check("by hand: the same role at the same company, applied to under a listing no longer cached, is not applied to again",
+      "ig:same" not in {e.id for e in _rsel} and any(k.startswith("this role was already applied to") for k in _rwhy))
+check("by hand: a different role there still goes", "ig:other" in {e.id for e in _rsel})
+
 
 width = max(len(n) for n, _, _ in RESULTS)
 failed = 0

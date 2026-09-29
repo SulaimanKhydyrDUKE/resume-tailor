@@ -174,11 +174,12 @@ def _discover(args: argparse.Namespace) -> int:
     except ProfileError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
-    from .discover import Prefs, describe, refresh, select
+    from .discover import Prefs, describe, refresh, select, sources_from_profile
     from .queue import RunState
 
     out = Path(args.out)
-    listings, changed = refresh(out, args.source)
+    feed, tables = sources_from_profile(profile.answers)
+    listings, changed = refresh(out, args.source, table_sources=tables, feed=feed)
     state = RunState.load(out / "batch-state.json")
     all_entries, excluded = select(listings, Prefs.from_profile(profile), state)
     entries = all_entries[: args.limit] if args.limit else all_entries
@@ -199,7 +200,7 @@ async def _watch(args: argparse.Namespace) -> int:
         print(f"error: {e}", file=sys.stderr)
         return 1
     from .batch import run_batch
-    from .discover import Prefs, describe, refresh, select
+    from .discover import Prefs, describe, refresh, select, sources_from_profile
     from .llm import get_llm
     from .queue import RunState
 
@@ -214,6 +215,7 @@ async def _watch(args: argparse.Namespace) -> int:
 
     out = Path(args.out)
     prefs = Prefs.from_profile(profile)
+    feed, tables = sources_from_profile(profile.answers)  # which lists to read: answers.yaml -> search.sources
     shard = _parse_shard(getattr(args, "shard", None))
     fresh = bool(getattr(args, "fresh", False))
     tag = ""
@@ -250,7 +252,7 @@ async def _watch(args: argparse.Namespace) -> int:
 
     while True:
         try:
-            listings, changed = refresh(out, args.source)
+            listings, changed = refresh(out, args.source, table_sources=tables, feed=feed)
         except OSError as e:
             # No cache and no network: a worker that dies here takes the
             # supervisor's restart to come back. Wait for the network instead.
@@ -271,8 +273,11 @@ async def _watch(args: argparse.Namespace) -> int:
                 new_ids = ids_now - seen
                 seen |= ids_now
                 seen_path.write_text(json.dumps(sorted(seen)), encoding="utf-8")
-                entries, excluded = select(listings, prefs, state, limit=args.max_per_run)
-                entries = [e for e in entries if e.id in new_ids]
+                # Everything worth applying to, then only what is new, then the
+                # cap — capping first let retries push a new posting out of the
+                # ten and it was never dealt (FOX, 2026-09-29).
+                entries, excluded = select(listings, prefs, state)
+                entries = [e for e in entries if e.id in new_ids][:args.max_per_run]
                 print(f"{tag}[{stamp}] {len(listings)} listings ({'updated' if changed else 'unchanged'}), "
                       f"{len(new_ids)} new on the sources, {len(entries)} worth applying to", file=sys.stderr, flush=True)
                 if entries:
@@ -597,9 +602,69 @@ async def _review(args: argparse.Namespace) -> int:
     return 0
 
 
+def stop_workers_for_reload() -> None:
+    """Stop the loop so the supervisor (or the user) relaunches it on fresh
+    sessions and code; prints what happened."""
+    import subprocess
+
+    r = subprocess.run([sys.executable, "-m", "resume_tailor.cli", "stop"], cwd=PROJECT_ROOT, capture_output=True, text=True)
+    line = (r.stdout or r.stderr).strip().splitlines()
+    print("  " + (line[0][:100] if line else "stopped"), file=sys.stderr)
+    print("  if the overnight supervisor is running it relaunches the workers within 5 minutes; otherwise `resume-tailor start`.", file=sys.stderr)
+
+
+async def _setup_logins(args: argparse.Namespace) -> int:
+    """Sign in by hand, once, to the sites the loop cannot sign into itself."""
+    from .batch import setup_logins
+
+    try:
+        profile = Profile.load(args.profile)
+    except ProfileError:
+        profile = None
+    n = await setup_logins(profile, only=args.only, check=args.check, restart=args.restart)
+    return 0 if n or args.check else 1
+
+
+def _add(args: argparse.Namespace) -> int:
+    """One posting by hand, into the pool: recorded like a story link, read
+    for its facts, and shown against the discovery filters at once."""
+    from .discover import Prefs, evaluate
+    from .igstories import add_url, to_listings
+
+    out = PROJECT_ROOT / args.out
+    rec = add_url(out, args.url, company=args.company or "", title=args.title or "")
+    print(f"{'added' if rec.get('new') else 'already on file'}: {rec.get('company') or '?'} — {rec.get('title') or '?'}"
+          + (f" ({rec['location']})" if rec.get("location") else "") + f"\n  {rec['url']}", file=sys.stderr)
+    try:
+        prefs = Prefs.from_profile(Profile.load(args.profile))
+        listing = next((l for l in to_listings(out) if l["url"] == rec["url"]), None)
+        why = evaluate(listing, prefs) if listing else "not listed"
+        print("  discovery: " + ("will be dealt on the next pass (the fresh lane polls every 5 minutes)" if not why else f"would be left out: {why} — pass --title/--company to correct it"), file=sys.stderr)
+    except Exception as e:
+        print(f"  (could not run the filters: {str(e)[:80]})", file=sys.stderr)
+    return 0
+
+
+async def _instagram(args: argparse.Namespace) -> int:
+    from .igstories import run_cli
+
+    args.out = str(PROJECT_ROOT / args.out)
+    return await run_cli(args)
+
+
 async def _login(args: argparse.Namespace) -> int:
     """Open the site's sign-in page in a visible Chrome; once the user is
-    through, fill and submit the posting in that window and keep the cookies."""
+    through, fill and submit the posting in that window and keep the cookies.
+    With --site, just open that page for a hand sign-in and keep the cookies."""
+    if getattr(args, "site", None):
+        from .batch import login_site
+        url = args.site if "://" in args.site else "https://" + args.site
+        print(f"opening {url}", file=sys.stderr, flush=True)
+        await login_site(url)
+        return 0
+    if not args.posting:
+        print("error: give a posting id or company name, or --site <url>", file=sys.stderr)
+        return 1
     try:
         profile = Profile.load(args.profile)
     except ProfileError as e:
@@ -660,6 +725,74 @@ async def _submit(args: argparse.Namespace) -> int:
     state.record(entry.id, asdict(o))
     print(f"  [{o.status}] {o.company or '?'} — {o.detail[:200]}", file=sys.stderr, flush=True)
     return 0 if o.status == "applied" else 1
+
+
+def cmd_retry(args: argparse.Namespace) -> int:
+    """Bulk re-queue: after a fix to the tool, the records a bug stranded go
+    back in front of the loop. Only the attempt cap is lifted; the judges,
+    the walls and every other rule apply as on any attempt."""
+    import json
+    import re as _re
+
+    from . import ats
+    from .queue import RunState
+
+    out = PROJECT_ROOT / args.out
+    state = RunState.load(out / "batch-state.json")
+    listings: dict[str, dict] = {}
+    cache = out / "listings-cache.json"
+    if cache.is_file():
+        try:
+            for l in json.loads(cache.read_text(encoding="utf-8")):
+                listings[l.get("id") or ""] = l
+        except Exception:
+            pass
+    rx = _re.compile(args.match, _re.I) if args.match else None
+    picked = []
+    for eid, rec in state.done.items():
+        if rec.get("status") != args.status:
+            continue
+        if args.kind and ats.host_kind(rec.get("url") or (listings.get(eid) or {}).get("url") or "") != args.kind:
+            continue
+        if rx and not rx.search(rec.get("detail") or ""):
+            continue
+        if (rec.get("detail") or "").startswith(("retry:", "re-queued")):
+            continue
+        picked.append(eid)
+    for eid in picked[:12]:
+        rec = state.done[eid]
+        print(f"  {rec.get('company', '')[:28]:28s} {rec.get('role', '')[:40]:40s} {(rec.get('detail') or '')[:70]}")
+    if len(picked) > 12:
+        print(f"  … and {len(picked) - 12} more")
+    if args.dry_run:
+        print(f"would retry {len(picked)} {args.status} record(s)")
+        return 0
+    n = state.mark_retry(picked, args.why)
+    print(f"retrying {n} {args.status} record(s): the loop picks them up on its next pass")
+    return 0
+
+
+def cmd_skeleton(args: argparse.Namespace) -> int:
+    """`skeleton draft <résumé>`: transcribe a résumé file (.pdf, .docx, .tex,
+    .txt) into the shape of resume/base.yaml and print it as JSON — one model
+    call, every number checked against the file's own text. Nothing is
+    written: the dashboard's Résumé section runs this behind its upload box
+    and saves what you confirm there."""
+    import json
+
+    from .settings import draft_from_file
+
+    try:
+        result = asyncio.run(draft_from_file(Path(args.file), Path(args.profile) if args.profile else DEFAULT_PROFILE_DIR))
+    except Exception as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    print(json.dumps(result, indent=None if args.json else 2, ensure_ascii=False))
+    if not args.json and result.get("flags"):
+        print("\ncheck these before saving:", file=sys.stderr)
+        for f in result["flags"]:
+            print("  " + f, file=sys.stderr)
+    return 0
 
 
 def cmd_dashboard(args: argparse.Namespace) -> int:
@@ -772,6 +905,14 @@ def main() -> int:
     ps = sub.add_parser("styles", help="list resume themes")
     ps.set_defaults(func=lambda a: (print("\n".join(sorted(available_styles()))), 0)[1])
 
+    psk = sub.add_parser("skeleton", help="the résumé skeleton (resume/base.yaml): `draft <file>` transcribes a résumé into its shape")
+    sks = psk.add_subparsers(dest="skeleton_cmd", required=True)
+    skd = sks.add_parser("draft", help="print a draft skeleton from a .pdf/.docx/.tex/.txt résumé (one model call; nothing is written)")
+    skd.add_argument("file", help="the résumé to transcribe")
+    skd.add_argument("--json", action="store_true", help="one line of JSON, as the dashboard reads it")
+    skd.add_argument("--profile", help=f"profile directory (default {DEFAULT_PROFILE_DIR})")
+    skd.set_defaults(func=cmd_skeleton)
+
     pdash = sub.add_parser("dashboard", help="a local web page of every application: outcome, judges, the answers given, the resume sent")
     pdash.add_argument("--port", type=int, default=8765)
     pdash.add_argument("--out", default="output")
@@ -780,6 +921,22 @@ def main() -> int:
     pdash.add_argument("--stop", action="store_true", help="stop a detached dashboard")
     pdash.set_defaults(func=cmd_dashboard)
 
+    padd = sub.add_parser("add", help="put one posting into the pool by its link (a story, a friend, a mail); the page is read for company and title")
+    padd.add_argument("url")
+    padd.add_argument("--company", default=None)
+    padd.add_argument("--title", default=None)
+    padd.add_argument("--out", default="output")
+    padd.add_argument("--profile", default=None)
+    padd.set_defaults(func=_add)
+    pig = sub.add_parser("instagram", help="stories of a page that posts application links: read them in the tool's signed-in Chrome "
+                                            "(login --site instagram.com first), keep every link, feed the loop; read | links | unpark | watch")
+    pig.add_argument("action", choices=["read", "links", "unpark", "watch"])
+    pig.add_argument("--handle", default=None, help="one page (default: search.instagram_pages in answers.yaml)")
+    pig.add_argument("--interval", type=int, default=150, help="watch: minutes between passes (stories last 24 h; keep this slow)")
+    pig.add_argument("--show", action="store_true", help="a visible window")
+    pig.add_argument("--out", default="output")
+    pig.add_argument("--profile", default=None)
+    pig.set_defaults(func=lambda a: asyncio.run(_instagram(a)))
     pm = sub.add_parser("mail", help="read the inbox for what came of each application (assessments, interviews, offers, rejections)")
     pm.add_argument("action", choices=["scan", "results", "watch"], help="scan once, print the results, or scan every --interval minutes")
     pm.add_argument("--out", default="output")
@@ -788,6 +945,24 @@ def main() -> int:
     pm.add_argument("--limit", type=int, default=None, help="scan at most this many new messages (scan)")
     pm.add_argument("--no-model", action="store_true", help="rules only; do not ask the model about unplaced mail")
     pm.set_defaults(func=lambda a: __import__("resume_tailor.mailscan", fromlist=["run_cli"]).run_cli(a))
+
+    pr = sub.add_parser("retry", help="put finished attempts back in front of the loop after a fix: lifts the attempt cap, keeps the judges' gate")
+    pr.add_argument("--status", default="needs_review", help="which outcome to retry (default needs_review)")
+    pr.add_argument("--kind", default=None, help="only postings on this portal kind (workday, ashby, oracle, smartrecruiters, …)")
+    pr.add_argument("--match", default=None, help="only records whose detail matches this regular expression")
+    pr.add_argument("--why", default="after a fix", help="a few words recorded on each record")
+    pr.add_argument("--dry-run", action="store_true", help="list what would be retried; change nothing")
+    pr.add_argument("--out", default="output")
+    pr.set_defaults(func=cmd_retry)
+
+    pc = sub.add_parser("calendar", help="deadlines read from the inbox, and the days applications went out; also on the dashboard's Calendar tab")
+    pc.add_argument("action", choices=["show", "scan", "ics"],
+                    help="show = upcoming dates and applications by day; scan = read the inbox for dates (output/deadlines.json); ics = write output/calendar.ics")
+    pc.add_argument("--out", default="output")
+    pc.add_argument("--no-model", action="store_true", help="scan: patterns only; do not ask the model to read each message")
+    pc.add_argument("--refresh", action="store_true", help="scan: re-read messages already read")
+    pc.add_argument("--limit", type=int, default=None, help="scan: at most this many messages")
+    pc.set_defaults(func=lambda a: __import__("resume_tailor.calendar", fromlist=["run_cli"]).run_cli(a))
 
     po = sub.add_parser("outreach", help="e-mail the recruiting team of each company applied to: a short note, the résumé attached")
     po.add_argument("action", choices=["lookup", "plan", "send", "log"],
@@ -804,8 +979,18 @@ def main() -> int:
                          "plan/send: write to named people only, skip companies with just a shared mailbox")
     po.set_defaults(func=lambda a: __import__("resume_tailor.outreach", fromlist=["run_cli"]).run_cli(a))
 
-    plg = sub.add_parser("login", help="open a site's sign-in wall in Chrome; after you log in, the tool fills and submits that posting")
-    plg.add_argument("posting", help="an id from the dashboard, or a company name")
+    psl = sub.add_parser("setup-logins", help="one-time hand sign-ins (Google, jobright, TikTok, and search.hand_logins) in the tool's "
+                                              "visible Chrome; the sessions then serve every worker. --check shows what is on file and "
+                                              "how a headless worker sees it")
+    psl.add_argument("--only", default=None, help="just the site whose name or host contains this")
+    psl.add_argument("--check", action="store_true", help="do not open anything: report the sessions on file and test them headless")
+    psl.add_argument("--restart", action="store_true", help="stop the workers afterwards so they relaunch with the sessions")
+    psl.add_argument("--profile", default=None)
+    psl.set_defaults(func=lambda a: asyncio.run(_setup_logins(a)))
+    plg = sub.add_parser("login", help="open a site's sign-in wall in Chrome; after you log in, the tool fills and submits that posting; "
+                                       "or --site <url> to sign in somewhere by hand (Google, jobright, TikTok) and keep the session for every worker")
+    plg.add_argument("posting", nargs="?", default=None, help="an id from the dashboard, or a company name")
+    plg.add_argument("--site", default=None, help="a URL to open for a hand sign-in, e.g. accounts.google.com")
     plg.add_argument("--out", default="output")
     plg.add_argument("--profile", default=None)
     plg.set_defaults(func=lambda a: asyncio.run(_login(a)))

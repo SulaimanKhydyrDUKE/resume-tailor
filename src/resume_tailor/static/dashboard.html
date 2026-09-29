@@ -10,7 +10,30 @@
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
     font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
   #root { height: 100%; }
-  .app { display: grid; grid-template-rows: auto 1fr; height: 100vh; }
+  .app { display: grid; grid-template-rows: auto auto auto 1fr; height: 100vh; }
+  .tabs { display: flex; align-items: flex-end; gap: 4px; padding: 10px 20px 0; background: #dfe3e8; border-bottom: 1px solid #cfd4db; }
+  .tab { padding: 8px 18px 9px; border: 1px solid #cfd4db; border-bottom: none; border-radius: 10px 10px 0 0; background: #eceff3; color: var(--muted); cursor: pointer; font-size: 13px; user-select: none; }
+  .tab:hover { background: #f3f5f8; }
+  .tab.active { background: var(--panel); color: var(--ink); font-weight: 600; margin-bottom: -1px; padding-bottom: 10px; }
+  .tab small { color: var(--muted); margin-left: 6px; font-weight: 400; }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; padding: 10px 20px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  .toolbar:empty { display: none; }
+  .body.single { grid-template-columns: 1fr; }
+  .files { display: grid; grid-template-columns: 460px 1fr; gap: 16px; min-height: 0; }
+  .files .list { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); overflow-y: auto; max-height: calc(100vh - 260px); }
+  .files .list .row { grid-template-columns: 1fr; }
+  .files .list .row .top { align-items: center; }
+  .files .list .row .links { display: flex; gap: 10px; font-size: 12px; }
+  .files iframe.pdf { height: calc(100vh - 340px); }
+  .secret { border: 1px dashed var(--line); border-radius: 10px; padding: 12px 16px; margin-top: 12px; background: #fafafa; }
+  .secret .kv { display: grid; grid-template-columns: 170px 1fr; gap: 6px 12px; font-size: 13px; align-items: baseline; }
+  .secret .kv b { color: var(--muted); font-weight: 600; }
+  .secret code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; background: #eef2ff; padding: 2px 6px; border-radius: 6px; }
+  .secret button { font: inherit; font-size: 13px; padding: 5px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); cursor: pointer; margin-right: 8px; }
+  .secret button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .hosts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .hosts span { background: #f3f4f6; border: 1px solid var(--line); border-radius: 999px; padding: 2px 9px; font-size: 12px; }
+  .hosts span.plain { background: none; border: none; padding: 2px 0; }
   header { background: var(--panel); border-bottom: 1px solid var(--line); padding: 12px 20px; display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; }
   header h1 { font-size: 17px; margin: 0; }
   .watch { color: var(--muted); font-size: 13px; }
@@ -39,6 +62,32 @@
   .badge.info { background: #dbeafe; color: #1e40af; }
   .badge.muted { background: #e5e7eb; color: #374151; }
   .empty { color: var(--muted); padding: 60px; text-align: center; }
+  .calwrap { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .cal { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .cal h3 { margin: 0 0 8px; font-size: 14px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .cal .nav { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .cal .nav b { font-size: 15px; min-width: 150px; }
+  .cal .nav button { border: 1px solid var(--line); background: var(--panel); border-radius: 6px; padding: 2px 9px; cursor: pointer; font: inherit; }
+  .cal .grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+  .cal .dow { color: var(--muted); font-size: 11px; text-align: center; padding-bottom: 2px; }
+  .cal .cell { min-height: 60px; border: 1px solid var(--line); border-radius: 6px; padding: 4px 5px; cursor: pointer; font-size: 12px; background: #fff; }
+  .cal .cell.blank { border-color: transparent; background: transparent; cursor: default; }
+  .cal .cell:hover { background: #f3f4f6; }
+  .cal .cell.sel { background: #eff6ff; border-color: var(--accent); }
+  .cal .cell.today .n { color: var(--accent); font-weight: 700; }
+  .cal .cell .n { color: var(--muted); }
+  .cal .pill { display: block; max-width: 100%; border-radius: 999px; padding: 0 7px; color: #fff; font-size: 11px; font-weight: 600; margin: 4px 0 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .daypanel { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
+  .daypanel .card { margin: 0; }
+  .evt { border-top: 1px solid var(--line); padding: 8px 0; display: grid; gap: 2px; }
+  .evt:first-child { border-top: none; }
+  .evt .t { color: var(--muted); font-size: 12px; }
+  .evt.app { cursor: pointer; }
+  .evt.app:hover { background: #f9fafb; }
+  .evt .links a { margin-right: 10px; font-size: 12px; }
+  .upcoming { display: grid; grid-template-columns: 130px 110px 1fr; gap: 6px 12px; font-size: 13px; align-items: baseline; }
+  .upcoming .k { color: #fff; border-radius: 999px; padding: 0 8px; font-size: 11px; font-weight: 600; text-align: center; }
+  .toggle { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
   .detail h2 { margin: 0 0 4px; font-size: 22px; }
   .detail .sub { color: var(--muted); margin-bottom: 14px; }
   .detail a { color: var(--accent); }
@@ -364,15 +413,13 @@ function Workers({ data, onPick }) {
   );
 }
 
-function Header({ data, err, filter, setFilter, q, setQ, showWorkers }) {
-  const counts = data?.counts || {};
-  const total = Object.values(counts).reduce((a, b) => a + b, 0);
+function Header({ data, err }) {
   const w = data?.watch || {};
   const busy = (data?.workers_now || []).filter(n => n.stage && n.stage !== "idle").length;
   const procs = (w.processes || []).filter(p => p.alive).length;
   return (
     <header>
-      <h1>Applications</h1>
+      <h1>resume-tailor</h1>
       <span className="watch">
         <span className={"dot " + (w.running || w.pass_running ? "on" : "")}></span>
         <b>{w.label || (w.running ? "loop running" : "loop stopped")}</b>
@@ -381,8 +428,31 @@ function Header({ data, err, filter, setFilter, q, setQ, showWorkers }) {
         {data ? <span> · refreshed {new Date(data.generated_at).toLocaleTimeString()}</span> : null}
         {err ? <span className="err"> · {err}</span> : null}
       </span>
+    </header>
+  );
+}
+
+function Tabs({ tab, setTab, data }) {
+  const total = Object.values(data?.counts || {}).reduce((a, b) => a + b, 0);
+  const procs = ((data?.watch || {}).processes || []).filter(p => p.alive).length;
+  const items = [["applications", "Applications", total], ["calendar", "Calendar", null], ["workers", "Workers", procs], ["files", "Files", null]];
+  return (
+    <div className="tabs">
+      {items.map(([id, label, n]) => (
+        <span key={id} className={"tab" + (tab === id ? " active" : "")} onClick={() => setTab(id)}>
+          {label}{n != null ? <small>{n}</small> : null}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function AppsToolbar({ data, filter, setFilter, q, setQ }) {
+  const counts = data?.counts || {};
+  const total = Object.values(counts).reduce((a, b) => a + b, 0);
+  return (
+    <div className="toolbar">
       <div className="chips">
-        <span className="chip link" onClick={showWorkers}>Workers<small>{procs}</small></span>
         <span className={"chip " + (filter === "all" ? "active" : "")} onClick={() => setFilter("all")}>All<small>{total}</small></span>
         {ORDER.filter(s => counts[s]).map(s => (
           <span key={s} className={"chip " + (filter === s ? "active" : "")} onClick={() => setFilter(s)}>
@@ -391,7 +461,124 @@ function Header({ data, err, filter, setFilter, q, setQ, showWorkers }) {
         ))}
       </div>
       <input className="search" placeholder="Search company or role" value={q} onChange={e => setQ(e.target.value)} />
-    </header>
+    </div>
+  );
+}
+
+function FilesTab({ onOpen }) {
+  const [files, setFiles] = useState(null);
+  const [err, setErr] = useState(null);
+  const [q, setQ] = useState("");
+  const [pick, setPick] = useState(null);
+  const [secret, setSecret] = useState(null);   // null = hidden; otherwise the revealed record
+  const [busy, setBusy] = useState(false);
+  const [hostQ, setHostQ] = useState("");
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      try {
+        const r = await fetch("/api/files", { cache: "no-store" });
+        const j = await r.json();
+        if (!alive) return;
+        if (j.error) { setErr(j.error); return; }
+        setFiles(j); setErr(null);
+      } catch (e) { if (alive) setErr(String(e)); }
+    };
+    load();
+    const t = setInterval(load, 60000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
+  const reveal = async () => {
+    setBusy(true);
+    try {
+      const r = await fetch("/api/logins/reveal", { cache: "no-store" });
+      const j = await r.json();
+      setSecret(j.error ? { error: j.error } : j);
+    } catch (e) { setSecret({ error: String(e) }); }
+    setBusy(false);
+  };
+  if (err) return <div className="empty">files: {err}</div>;
+  if (!files) return <div className="empty">loading…</div>;
+  const rows = files.resumes.filter(r => !q || (r.company + " " + r.role + " " + r.folder).toLowerCase().includes(q.toLowerCase()));
+  const current = rows.find(r => r.id === pick) || rows[0];
+  // The saved-login hosts are hundreds of Workday tenants; a wall of them says
+  // nothing. One line of counts by ATS family, and a lookup for one portal.
+  const hostFamily = h => /myworkday/.test(h) ? "Workday" : /icims\.com$/.test(h) ? "iCIMS" : /oraclecloud\.com$|taleo\.net$/.test(h) ? "Oracle"
+    : /greenhouse\.io$/.test(h) ? "Greenhouse" : /lever\.co$/.test(h) ? "Lever" : /ashbyhq\.com$/.test(h) ? "Ashby" : /applytojob\.com$/.test(h) ? "JazzHR"
+    : /successfactors|sapsf\.com$/.test(h) ? "SuccessFactors" : "other";
+  const hostGroups = Object.entries(files.logins.hosts.reduce((m, h) => { const k = hostFamily(h); m[k] = (m[k] || 0) + 1; return m; }, {}))
+    .sort((a, b) => (a[0] === "other") - (b[0] === "other") || b[1] - a[1]);
+  const hostHits = hostQ.trim() ? files.logins.hosts.filter(h => h.includes(hostQ.trim().toLowerCase())) : [];
+  return (
+    <div>
+      <div className="card" style={{ marginTop: 0 }}>
+        <h3>Login info <span className="none" style={{ textTransform: "none", letterSpacing: 0 }}>· hidden until you ask</span></h3>
+        <div className="secret">
+          {secret && !secret.error ? (
+            <div>
+              <div className="kv">
+                <b>account e-mail</b><span><code>{secret.email}</code>{secret.other_emails?.length ? <span className="none"> · older accounts: {secret.other_emails.join(", ")}</span> : null}</span>
+                <b>site password</b><span><code>{secret.site_password || "(not set — RESUME_TAILOR_SITE_PASSWORD)"}</code></span>
+                <b>mailbox the tool reads</b><span><code>{secret.mailbox_user || "(profile e-mail)"}</code></span>
+              </div>
+              <div className="none" style={{ marginTop: 8 }}>{secret.note}</div>
+              <div style={{ marginTop: 10 }}><button onClick={() => setSecret(null)}>Hide</button></div>
+            </div>
+          ) : (
+            <div>
+              <span className="none">The e-mail and the one password the tool uses for every portal account it creates. Nothing is shown until you press the button.</span>
+              <div style={{ marginTop: 10 }}>
+                <button className="primary" disabled={busy} onClick={reveal}>{busy ? "…" : "Show login info"}</button>
+                {secret?.error ? <span className="err">{secret.error}</span> : null}
+              </div>
+            </div>
+          )}
+          <div className="none" style={{ marginTop: 12 }}>
+            {files.logins.hosts.length} portals hold a saved sign-in ({files.logins.saved_sites} sites with cookies in all)
+            {hostGroups.length ? <span> · {hostGroups.map(([k, n]) => `${n} ${k}`).join(" · ")}</span> : null}
+          </div>
+          <div style={{ marginTop: 8 }}>
+            <input className="search" placeholder="Saved sign-in at…? type a company or host" value={hostQ} onChange={e => setHostQ(e.target.value)} />
+          </div>
+          {hostQ.trim() ? (
+            <div className="hosts">
+              {hostHits.slice(0, 12).map(h => <span key={h}>{h}</span>)}
+              {!hostHits.length ? <span className="none plain">no saved sign-in matches “{hostQ.trim()}”</span> : null}
+              {hostHits.length > 12 ? <span className="none plain">+{hostHits.length - 12} more</span> : null}
+            </div>
+          ) : null}
+        </div>
+      </div>
+      <div className="workers-head">
+        <h3>Résumés on disk <span className="none" style={{ textTransform: "none", letterSpacing: 0 }}>· {files.counts.resumes} tailored PDFs, {files.counts.documents} generated documents</span></h3>
+        <input className="search" placeholder="Search company, role or folder" value={q} onChange={e => setQ(e.target.value)} />
+      </div>
+      <div className="files">
+        <div className="list">
+          {rows.slice(0, 400).map(r => (
+            <div key={r.id} className={"row" + (current && current.id === r.id ? " active" : "")} onClick={() => setPick(r.id)}>
+              <div className="top"><span className="co">{r.company}</span><Badge status={r.status} /></div>
+              <div className="role">{r.role}</div>
+              <div className="meta"><span>{fmtWhen(r.when)}</span><span>{r.folder}</span>{r.resume_version ? <span>v{r.resume_version}</span> : null}</div>
+              <div className="links" onClick={e => e.stopPropagation()}>
+                <a href={r.pdf} target="_blank" rel="noreferrer">open PDF</a>
+                {r.documents.map(d => <a key={d.url} href={d.url} target="_blank" rel="noreferrer">{d.name}</a>)}
+                <a href="#" onClick={e => { e.preventDefault(); onOpen(r.id); }}>application</a>
+              </div>
+            </div>
+          ))}
+          {!rows.length ? <div className="empty">nothing matches</div> : null}
+        </div>
+        <div>
+          {current ? (
+            <div>
+              <div className="sub" style={{ marginBottom: 8 }}><b>{current.company}</b> · {current.role} · <a href={current.pdf} target="_blank" rel="noreferrer">open in a new tab</a></div>
+              <iframe className="pdf" src={current.pdf} title="resume" />
+            </div>
+          ) : <div className="empty">pick a résumé on the left</div>}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -547,12 +734,154 @@ function Detail({ app }) {
   );
 }
 
+const KIND_COLOR = { assessment: "#7c3aed", interview: "#2563eb", deadline: "#dc2626", event: "#0891b2", other: "#6b7280" };
+const KIND_LABEL = { assessment: "Assessment", interview: "Interview", deadline: "Deadline", event: "Event", other: "Date" };
+const DOW = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const isoDay = (y, m, d) => `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+const fmtDay = iso => new Date(iso + "T12:00:00").toLocaleDateString([], { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+const fmtTime = iso => (iso && iso.length > 10) ? new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "";
+
+function MonthGrid({ title, year, month, today, selected, onPick, render }) {
+  const first = new Date(year, month, 1);
+  const lead = (first.getDay() + 6) % 7;
+  const days = new Date(year, month + 1, 0).getDate();
+  const cells = [];
+  for (let i = 0; i < lead; i++) cells.push(null);
+  for (let d = 1; d <= days; d++) cells.push(d);
+  while (cells.length % 7) cells.push(null);
+  return (
+    <div className="cal">
+      <h3>{title}</h3>
+      <div className="grid">
+        {DOW.map(d => <div key={d} className="dow">{d}</div>)}
+        {cells.map((d, i) => {
+          if (!d) return <div key={"b" + i} className="cell blank" />;
+          const iso = isoDay(year, month, d);
+          return (
+            <div key={iso} className={"cell" + (iso === today ? " today" : "") + (iso === selected ? " sel" : "")} onClick={() => onPick(iso)}>
+              <div className="n">{d}</div>
+              {render(iso)}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function Calendar({ onOpen }) {
+  const [cal, setCal] = useState(null);
+  const [err, setErr] = useState(null);
+  const [ym, setYm] = useState(() => { const t = new Date(); return [t.getFullYear(), t.getMonth()]; });
+  const [day, setDay] = useState(null);
+  const [onlyApplied, setOnlyApplied] = useState(true);
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      try {
+        const r = await fetch("/api/calendar", { cache: "no-store" });
+        const j = await r.json();
+        if (!alive) return;
+        if (j.error) { setErr(j.error); return; }
+        setCal(j); setErr(null);
+      } catch (e) { if (alive) setErr(String(e)); }
+    };
+    load();
+    const t = setInterval(load, 60000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
+  if (err) return <div className="empty">calendar: {err}</div>;
+  if (!cal) return <div className="empty">loading…</div>;
+  const [year, month] = ym;
+  const label = new Date(year, month, 1).toLocaleDateString([], { month: "long", year: "numeric" });
+  const appsOf = iso => (cal.applied[iso] || []).filter(a => !onlyApplied || a.status === "applied" || a.status === "by_hand");
+  const evsOf = iso => cal.deadlines[iso] || [];
+  const nav = (
+    <div className="nav">
+      <button onClick={() => setYm(month === 0 ? [year - 1, 11] : [year, month - 1])}>‹</button>
+      <b>{label}</b>
+      <button onClick={() => setYm(month === 11 ? [year + 1, 0] : [year, month + 1])}>›</button>
+      <button onClick={() => { const t = new Date(); setYm([t.getFullYear(), t.getMonth()]); setDay(cal.today); }}>today</button>
+      <span className="watch" style={{ marginLeft: "auto" }}>
+        {cal.counts.applied} applied over {Object.keys(cal.applied).length} days · {cal.counts.events} dated events
+        {cal.deadlines_scanned_at ? " · inbox read for dates " + new Date(cal.deadlines_scanned_at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : " · run `resume-tailor calendar scan` to read the inbox for dates"}
+      </span>
+    </div>
+  );
+  const dayApps = day ? appsOf(day) : [];
+  const dayEvs = day ? evsOf(day) : [];
+  return (
+    <div>
+      <div className="card" style={{ marginTop: 0 }}>
+        <h3>Upcoming</h3>
+        {cal.upcoming.length ? (
+          <div className="upcoming">
+            {cal.upcoming.slice(0, 12).map(ev => (
+              <React.Fragment key={ev.uid}>
+                <span style={{ cursor: "pointer" }} onClick={() => { const d = ev.date.slice(0, 10); setDay(d); setYm([+d.slice(0, 4), +d.slice(5, 7) - 1]); }}>{ev.date.slice(0, 10)} {fmtTime(ev.date)}</span>
+                <span className="k" style={{ background: KIND_COLOR[ev.kind] || KIND_COLOR.other }}>{KIND_LABEL[ev.kind] || ev.kind}</span>
+                <span><b>{ev.company}</b> · {ev.what || ev.subject}</span>
+              </React.Fragment>
+            ))}
+          </div>
+        ) : <span className="none">nothing dated ahead — run `resume-tailor calendar scan` to read the inbox for deadlines</span>}
+      </div>
+      <div className="cal" style={{ marginBottom: 12, padding: "10px 16px" }}>
+        {nav}
+        <div className="toggle">
+          <label><input type="checkbox" checked={onlyApplied} onChange={e => setOnlyApplied(e.target.checked)} /> applications only (uncheck for every attempt: held, blocked, review)</label>
+        </div>
+      </div>
+      <div className="calwrap">
+        <MonthGrid title="Deadlines and dates, from your inbox" year={year} month={month} today={cal.today} selected={day} onPick={setDay}
+          render={iso => evsOf(iso).slice(0, 3).map(ev => (
+            <span key={ev.uid} className="pill" style={{ background: KIND_COLOR[ev.kind] || KIND_COLOR.other }} title={ev.company + ": " + (ev.what || ev.subject)}>
+              {ev.company.split(" ")[0].slice(0, 12)}{fmtTime(ev.date) ? " " + fmtTime(ev.date) : ""}
+            </span>
+          )).concat(evsOf(iso).length > 3 ? [<span key="more" className="n">+{evsOf(iso).length - 3}</span>] : [])} />
+        <MonthGrid title="Applications, by the day they went out" year={year} month={month} today={cal.today} selected={day} onPick={setDay}
+          render={iso => { const n = appsOf(iso).length; return n ? <span className="pill" style={{ background: "#16a34a" }}>{n} sent</span> : null; }} />
+      </div>
+      {day ? (
+        <div className="daypanel">
+          <div className="card">
+            <h3>{fmtDay(day)} · deadlines and dates</h3>
+            {dayEvs.length ? dayEvs.map(ev => (
+              <div key={ev.uid} className="evt">
+                <div><span className="k pill" style={{ background: KIND_COLOR[ev.kind] || KIND_COLOR.other, margin: 0 }}>{KIND_LABEL[ev.kind] || ev.kind}</span> <b>{ev.company}</b>{fmtTime(ev.date) ? <span className="t"> · {fmtTime(ev.date)}</span> : null}</div>
+                <div>{ev.what}</div>
+                <div className="t">from the e-mail "{ev.subject}"{ev.received ? ", received " + fmtWhen(ev.received) : ""} · found by {ev.source}</div>
+              </div>
+            )) : <span className="none">nothing due or scheduled this day</span>}
+          </div>
+          <div className="card">
+            <h3>{fmtDay(day)} · {dayApps.length} application{dayApps.length === 1 ? "" : "s"}</h3>
+            {dayApps.length ? dayApps.map(a => (
+              <div key={a.id} className="evt app" onClick={() => onOpen(a.id)} title="open this application">
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}><span><b>{a.company}</b> · {a.role}</span><Badge status={a.status} /></div>
+                <div className="t">{fmtWhen(a.when)}{a.fit ? " · " + a.fit : ""}</div>
+                <div className="links" onClick={e => e.stopPropagation()}>
+                  {a.url ? <a href={a.url} target="_blank" rel="noreferrer">posting</a> : null}
+                  {a.pdf ? <a href={a.pdf} target="_blank" rel="noreferrer">résumé PDF</a> : null}
+                  {a.screenshot ? <a href={a.screenshot} target="_blank" rel="noreferrer">screenshot</a> : null}
+                </div>
+              </div>
+            )) : <span className="none">nothing went out this day</span>}
+          </div>
+        </div>
+      ) : <div className="empty" style={{ padding: "24px 0 0" }}>Click a day on either calendar to see what is due and what went out.</div>}
+    </div>
+  );
+}
+
 function App() {
   const [data, setData] = useState(null);
   const [err, setErr] = useState(null);
   const [filter, setFilter] = useState("all");
   const [q, setQ] = useState("");
   const [sel, setSel] = useState(null);
+  const [tab, setTab] = useState(() => { try { return localStorage.getItem("rt-tab") || "applications"; } catch (e) { return "applications"; } });
+  useEffect(() => { try { localStorage.setItem("rt-tab", tab); } catch (e) {} }, [tab]);
 
   useEffect(() => {
     let alive = true;
@@ -575,34 +904,46 @@ function App() {
     (!q || (a.company + " " + a.role).toLowerCase().includes(q.toLowerCase()))
   ), [data, filter, q]);
   const current = (data?.applications || []).find(a => a.id === sel);
+  const open = id => { setSel(id); setTab("applications"); };
 
   return (
     <div className="app">
-      <Header data={data} err={err} filter={filter} setFilter={setFilter} q={q} setQ={setQ} showWorkers={() => setSel(null)} />
-      <div className="body">
-        <aside>
-          {apps.map(a => <Row key={a.id} app={a} active={a.id === sel} onClick={() => setSel(a.id)} />)}
-          {data && !apps.length ? <div className="empty">nothing here yet</div> : null}
-          {!data && !err ? <div className="empty">loading…</div> : null}
-        </aside>
-        <main>
-          {current ? <Detail app={current} /> : (
-            <div>
-              <Flows flows={data?.flows} />
-              <Workers data={data} onPick={setSel} />
-              <div className="empty" style={{ padding: "30px 0 0" }}>
-                <p>Pick an application on the left for its answers, résumé and screenshots.</p>
-                {data?.watch?.log_tail?.length ? (
-                  <details className="log">
-                    <summary>whole loop log (last lines)</summary>
-                    <pre>{data.watch.log_tail.join("\n")}</pre>
-                  </details>
-                ) : null}
+      <Header data={data} err={err} />
+      <Tabs tab={tab} setTab={setTab} data={data} />
+      {tab === "applications" ? <AppsToolbar data={data} filter={filter} setFilter={s => { setFilter(s); setSel(null); }} q={q} setQ={setQ} /> : <div className="toolbar"></div>}
+      {tab === "applications" ? (
+        <div className="body">
+          <aside>
+            {apps.map(a => <Row key={a.id} app={a} active={a.id === sel} onClick={() => setSel(a.id)} />)}
+            {data && !apps.length ? <div className="empty">nothing here yet</div> : null}
+            {!data && !err ? <div className="empty">loading…</div> : null}
+          </aside>
+          <main>
+            {current ? <Detail app={current} /> : (
+              <div>
+                <Flows flows={data?.flows} />
+                <div className="empty" style={{ padding: "30px 0 0" }}>
+                  <p>Pick an application on the left for its answers, résumé and screenshots.</p>
+                  {data?.watch?.log_tail?.length ? (
+                    <details className="log">
+                      <summary>whole loop log (last lines)</summary>
+                      <pre>{data.watch.log_tail.join("\n")}</pre>
+                    </details>
+                  ) : null}
+                </div>
               </div>
-            </div>
-          )}
-        </main>
-      </div>
+            )}
+          </main>
+        </div>
+      ) : (
+        <div className="body single">
+          <main>
+            {tab === "calendar" ? <Calendar onOpen={open} /> : null}
+            {tab === "workers" ? <Workers data={data} onPick={open} /> : null}
+            {tab === "files" ? <FilesTab onOpen={open} /> : null}
+          </main>
+        </div>
+      )}
     </div>
   );
 }
