@@ -65,6 +65,9 @@ def _is_search_picker(field: dict) -> bool:
 # decide, with the entry in view: never the bank ("currently enrolled: Yes"
 # once ticked "I currently work here"), never an acknowledgement rule.
 _NO_BANK = re.compile(r"currently work here|currently (employed|attend)|i am fluent", re.I)
+# A consent to text messages, however long the paragraph around it.
+_TEXT_CONSENT = re.compile(r"(text messag|\bsms\b)[\s\S]{0,160}?(consent|agree|opt[- ]?in|updates?|notif)|"
+                           r"(consent|agree|opt[- ]?in)[\s\S]{0,160}?(text messag|\bsms\b)", re.I)
 _CURRENT_ROLE = re.compile(r"currently work here|current(ly)? (role|position|employ)|i still work here|present position", re.I)
 _LEAVE_BLANK = re.compile(r"middle (name|initial)|phone extension|\bext(ension)?\.?\b|name suffix|\bsuffix\b|address line ?2|apartment|apt\.?\b|unit number|suite", re.I)
 _SELF_ID = re.compile(r"self-?identif|eeo|equal employment|diversity|transgender|sexual orientation|hispanic|latino|ethnicity|"
@@ -185,6 +188,14 @@ def _pick_submit_button(buttons: list[dict]) -> dict | None:
                 return inside[0]
             return None  # several equally plausible buttons: refuse
     return None
+
+
+def _greyed_submit(buttons: list[dict]) -> dict | None:
+    """The one submit-worded button the page has disabled — a form that is
+    not ready to send, which the page usually explains beside a field."""
+    greyed = [b for b in buttons if b.get("disabled") and _SUBMIT_WORDS.search(b.get("text", ""))
+              and not _NOT_SUBMIT.search(b.get("text", ""))]
+    return greyed[0] if len(greyed) == 1 else None
 
 
 async def _ask_button(buttons: list[dict], purpose: str) -> dict | None:
@@ -1211,6 +1222,28 @@ _MISSING_FIELD = re.compile(
     r"[:\s]*(.+?)\s*$", re.I)
 
 
+
+
+async def _demanded_by_page(session: ApplySession) -> set[str]:
+    """The fields the page itself is asking for right now: those its
+    validation names ("Missing entry for required field: X"), those it flags
+    invalid (by rt id, or by the browser's own constraint check), and those
+    whose label appears in a complaint. They are treated as required, and
+    decided again with the complaint in view."""
+    errors = await session.errors()
+    demanded = set(_missing_labels(errors))
+    invalid_ids = {m.group(1) for e in errors for m in [re.match(r"(rt-\d+): ", e)] if m}
+    for f in await session.describe_form():
+        label = (f.get("label") or "").strip()
+        if not label:
+            continue
+        if f.get("id") in invalid_ids:
+            demanded.add(label)
+        elif any(label[:30].lower() in e.lower() for e in errors if not re.match(r"rt-\d+: ", e)):
+            demanded.add(label)
+    return demanded
+
+
 def _missing_labels(errors: list[str]) -> set[str]:
     """The fields a page's own validation names — "Missing entry for required
     field: Which office would you prefer?" — so they can be treated as
@@ -1481,6 +1514,22 @@ async def _decide(question: str, field: dict, options: list[str], profile: Profi
     key = (section, question, tuple(options))
     if key in decided:
         return decided[key]
+    if _TEXT_CONSENT.search(question):
+        # "Check Yes or No to indicate your agreement to receive text message
+        # updates from … Reply STOP to opt out" (Rippling): a paragraph the
+        # bank's word match cannot see through. The bank's own consent entry
+        # answers it, in the option's words; without one, nothing is assumed.
+        hit, src = profile.lookup("text message updates")
+        if hit is None:
+            hit, src = profile.lookup("sms updates")
+        if hit is not None:
+            picked = str(hit)
+            i = closest_option(picked, options) if options else None
+            if not options or i is not None:
+                picked = options[i] if options else picked
+                sources[(section, question)] = f"answer bank: {src}"
+                decided[key] = picked
+                return picked
     if field.get("type") == "checkbox" and not options and _not_my_school(question, _school_names(profile)):
         # A list of universities as checkboxes ("Which school do you attend?"
         # on a regional employer's form): every school that is not the
@@ -2724,14 +2773,49 @@ async def _process_one_inner(session: ApplySession, profile: Profile, entry: Que
         return o
     buttons = await session.buttons()
     submit = _pick_submit_button(buttons)
+    greyed = _greyed_submit(buttons)
+    if submit is None and greyed:
+        # Rippling keeps Apply greyed out until every required answer is in,
+        # and says under the field which one is missing. That is not an
+        # ambiguous page: one repair round with the complaint in view, then
+        # the button is read again.
+        demanded = await _demanded_by_page(session)
+        if not demanded:
+            # Nothing named. The usual case is a choice the page never marked
+            # required — Rippling's text-message consent, drawn only once the
+            # phone is in — so every radio group with nothing chosen is asked for.
+            groups = {(f.get("label") or "").strip() for f in await session.describe_form()
+                      if f.get("type") in ("radio", "yesno") and (f.get("label") or "").strip()}
+            if groups:
+                demanded = {(f.get("label") or "").strip() for f in await session.unfilled_required(groups)} & groups
+        if demanded:
+            _now("answering what the page still asks for", entry, url=apply_url)
+            try:
+                more_unresolved, more = await _fill_form(session, profile, pdf_path, jd_text, force_required=demanded)
+                o.answers = o.answers + [a for a in more if a.get("answer")]
+            except Exception as e:
+                more_unresolved = [f"repair failed: {_brief(e)}"]
+            buttons = await session.buttons()
+            submit = _pick_submit_button(buttons)
+            greyed = _greyed_submit(buttons)
+            if submit is None and greyed:
+                o.status = "needs_review"
+                o.detail = (f"the submit button {greyed.get('text', '')[:30]!r} stays disabled; the page asks for: "
+                            + ", ".join(sorted(demanded))[:200] + (("; unresolved: " + "; ".join(more_unresolved)[:200]) if more_unresolved else ""))
+                o.screenshot = str(await session.screenshot(shots_dir / f"{_safe(entry.id)}-needs-review.png"))
+                return o
     if submit is None:
         submit = await _ask_button(buttons, "submit")
         if submit is not None and (_NEXT_WORDS.match(submit.get("text", "")) or _NOT_SUBMIT.search(submit.get("text", ""))):
             submit = None  # the model may not turn a Next or Verify into a submit
     if submit is None:
         o.status = "needs_review"
-        o.detail = ("could not identify a single unambiguous submit button; the page offers: "
-                    + ", ".join(repr(b.get("text", "")[:30]) for b in buttons[:12]))
+        if greyed:
+            o.detail = (f"the submit button {greyed.get('text', '')[:30]!r} is disabled and the page does not say which field it wants; "
+                        "it offers: " + ", ".join(repr(b.get("text", "")[:30]) for b in buttons[:12]))
+        else:
+            o.detail = ("could not identify a single unambiguous submit button; the page offers: "
+                        + ", ".join(repr(b.get("text", "")[:30]) for b in buttons[:12]))
         o.screenshot = str(await session.screenshot(shots_dir / f"{_safe(entry.id)}-needs-review.png"))
         return o
 
@@ -2748,18 +2832,7 @@ async def _process_one_inner(session: ApplySession, profile: Profile, entry: Que
         # count as required, are decided again with the page's complaint in
         # view, and the form is sent again — up to three rounds.
         rounds += 1
-        errors = await session.errors()
-        demanded = set(_missing_labels(errors))
-        invalid_ids = {m.group(1) for e in errors for m in [re.match(r"(rt-\d+): ", e)] if m}
-        fields_now = await session.describe_form()
-        for f in fields_now:
-            label = (f.get("label") or "").strip()
-            if not label:
-                continue
-            if f.get("id") in invalid_ids:
-                demanded.add(label)
-            elif any(label[:30].lower() in e.lower() for e in errors if not re.match(r"rt-\d+: ", e)):
-                demanded.add(label)
+        demanded = await _demanded_by_page(session)
         if not demanded:
             break
         _now(f"repairing the form (round {rounds})", entry, url=apply_url)

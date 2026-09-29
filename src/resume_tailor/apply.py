@@ -94,8 +94,12 @@ _FIELD_JS = r"""
   // What a control's own label says — for a radio button that is "Yes", not the question.
   const ownLabel = el => {
     if (el.labels && el.labels.length) return txt(el.labels[0]);
-    if (el.getAttribute('aria-label')) return el.getAttribute('aria-label').trim();
+    // A name wired up by id beats aria-label: Rippling gives every picker's
+    // input aria-label="Search" (its location box "textbox") beside the
+    // aria-labelledby that actually names it.
     const lb = el.getAttribute('aria-labelledby'); if (lb) { const t = byIds(lb); if (t) return t; }
+    const al = (el.getAttribute('aria-label') || '').trim();
+    if (al && !/^(search|textbox|text box|input|select|combobox|listbox|dropdown|type here)$/i.test(al)) return al;
     const wrap = el.closest('label'); if (wrap) return txt(wrap);
     return '';
   };
@@ -257,7 +261,12 @@ _FIELD_JS = r"""
   const sel = 'input:not([type=hidden]), select, textarea';
   // A styled radio or checkbox may be hidden outright behind its label; the
   // label being visible is what makes it a real choice on the page.
-  const labelVisible = el => isOption(el) && el.labels && el.labels.length && vis(el.labels[0]);
+  // The label may be wired by id rather than <label for>: Rippling's
+  // text-message consent radios are display:none inputs named only by
+  // aria-labelledby, and their visible labels are what a person chooses.
+  const labelEl = el => (el.labels && el.labels.length) ? el.labels[0]
+    : (el.getAttribute('aria-labelledby') ? el.getAttribute('aria-labelledby').split(/\s+/).map(id => document.getElementById(id)).find(Boolean) : null);
+  const labelVisible = el => { if (!isOption(el)) return false; const l = labelEl(el); return !!(l && vis(l)); };
   const out = [...document.querySelectorAll(sel)].filter(el => (vis(el) || labelVisible(el)) && !dummy(el)).map(el => {
     const id = tagOf(el);
     const type = (el.type || '').toLowerCase();
@@ -463,7 +472,11 @@ e => {
 # a shadow-piercing locator would put them in.
 _OPTION_SEL = ('[role=option], [role=listbox] li, [id*="-option-"], [class*="__option"]:not([class*="__options"]), .pac-item, '
                '[class*="autocomplete-option"], [class*="autocomplete-default-option"], '
-               'spl-select-option, spl-dropdown-item, [class*="dropdown-item"]')
+               'spl-select-option, spl-dropdown-item, [class*="dropdown-item"], '
+               # Ant Design's Select (EquipmentShare's Greenhouse-fed form): the
+               # entries a person sees carry no role; its role=option list is
+               # the zero-width one for screen readers.
+               '[class*="select-item-option"]:not([class*="option-content"]):not([class*="option-state"])')
 _OPTIONS_JS = r"""
 () => [...document.querySelectorAll('__OPTION_SEL__')].map((e, i) => {
   const r = e.getBoundingClientRect(); const s = getComputedStyle(e);
@@ -584,6 +597,14 @@ _ERRORS_JS = r"""
     const m = msg && document.getElementById(msg);
     out.push((id ? id + ': ' : '') + ((m && txt(m)) || 'invalid'));
   }
+  // A form the browser itself refused to send (Lever): the complaint is the
+  // native bubble on the first control failing its constraint, which is not
+  // in the DOM — the control's own validity says which one and why.
+  for (const c of document.querySelectorAll('input, select, textarea')) {
+    if (!c.willValidate || c.checkValidity() || !vis(c)) continue;
+    const id = c.dataset && c.dataset.rtId;
+    out.push((id ? id + ': ' : '') + (c.validationMessage || 'invalid'));
+  }
   return [...new Set(out)].slice(0, 20);
 }
 """
@@ -592,7 +613,9 @@ _ERRORS_JS = _deep(_ERRORS_JS)
 # loaded" and "résumé.pdf successfully uploaded" both come through role=alert,
 # and either one read as an error cut the wait for a step change short.
 _NOT_AN_ERROR = re.compile(r"page is loaded|successfully|uploaded|upload(ed)? complete|has been (added|attached|saved)|"
-                           r"\bloading\b|please wait|^\s*saved\b|^\s*$", re.I)
+                           r"\bloading\b|please wait|^\s*saved\b|^\s*$|"
+                           # Lever's cookie strip is a live region: a notice, not a complaint.
+                           r"\bcookies?\b|privacy notice|cookie (policy|settings)", re.I)
 
 _US_STATES = {
     "al": "alabama", "ak": "alaska", "az": "arizona", "ar": "arkansas", "ca": "california", "co": "colorado",
@@ -1607,6 +1630,27 @@ class ApplySession:
             await el.fill(value)
         else:
             await self._type(el, value)
+            await self._settle_suggestion(el)
+
+    async def _settle_suggestion(self, el) -> None:
+        """Lever's Current location is a plain text box backed by a suggestion
+        list: on blur without a pick, its script empties the box and the
+        hidden selected-location beside it, and the form then fails the
+        browser's own required check. Once the list shows, the first entry
+        is taken, as a person would."""
+        try:
+            lever = await el.evaluate("e => e.classList.contains('location-input') && !!document.querySelector('#selected-location')")
+        except Exception:
+            return
+        if not lever:
+            return
+        opt = self._page.locator(".dropdown-location").first
+        try:
+            await opt.wait_for(state="visible", timeout=5000)
+            await opt.click()
+            await self._page.wait_for_timeout(300)
+        except Exception:
+            pass
 
     async def _toggle_by_hand(self, selector: str, field: dict | None, want: bool) -> None:
         """A styled box that refuses Playwright's click (Ashby's zero-opacity
@@ -2095,9 +2139,10 @@ class ApplySession:
         el = await self._locate(selector, field)
         await el.click()
         found = await self._visible_options(limit, wait_ms=800)
-        if not found:
+        if not found and not await el.evaluate("e => !!e.readOnly"):
             # Ashby and Workday open the list on input rather than on focus:
             # type a character, read the list while it shows, take it back.
+            # (A read-only box takes no character; its list opened on click.)
             await el.fill("a")
             found = await self._visible_options(limit, wait_ms=1500)
             await el.fill("")
