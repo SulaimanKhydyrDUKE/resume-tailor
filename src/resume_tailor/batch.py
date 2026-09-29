@@ -23,6 +23,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from . import ats, freetext, judge, mailbox, planner, qa
+from .untrusted import scrub
 from .apply import (ApplySession, _SIGNIN_TEXT, _is_empty, _looks_like_application, _pick_option, _value_parts, _YES_WORDS,
                     closest_option, detect_blocker)
 from .planner import Decision
@@ -107,6 +108,7 @@ class Outcome:
     resume_version: int = 0  # which generation of the résumé composer made the cached PDF
     revisions: int = 0  # how many times the résumé was revised from the judges' notes before this verdict
     worker: str = ""  # which parallel loop handled it ("0".."3", "fresh"), for the dashboard
+    flags: list = field(default_factory=list)  # e.g. third-party text aimed at an automated reader was found and removed (untrusted.py)
 
 
 # Bumped whenever the résumé composer or renderer changes in a way that makes
@@ -1936,6 +1938,23 @@ def _needs_approval(profile: Profile, *names: str) -> bool:
 async def _process_one(session: ApplySession, profile: Profile, entry: QueueEntry, out_dir: Path,
                         shots_dir: Path, apply_once: bool, state: RunState, dry_run: bool,
                         judge_gate: bool = True, approved: bool = False) -> Outcome:
+    """_process_one_inner, with the third-party text the attempt met on
+    record: every sentence a posting or form aimed at an automated reader
+    (untrusted.py) ends up in the outcome's flags, for the dashboard and
+    the log. The application itself goes on from the scrubbed text."""
+    session.injection_notes = []
+    o = await _process_one_inner(session, profile, entry, out_dir, shots_dir, apply_once, state, dry_run,
+                                 judge_gate=judge_gate, approved=approved)
+    notes = list(dict.fromkeys(session.injection_notes))
+    if notes:
+        o.flags = [f"third-party text addressed an automated reader and was removed ({len(notes)}): " + " | ".join(notes[:6])]
+        print(f"  [{entry.company_hint}] {o.flags[0][:220]}", file=sys.stderr, flush=True)
+    return o
+
+
+async def _process_one_inner(session: ApplySession, profile: Profile, entry: QueueEntry, out_dir: Path,
+                              shots_dir: Path, apply_once: bool, state: RunState, dry_run: bool,
+                              judge_gate: bool = True, approved: bool = False) -> Outcome:
     o = Outcome(entry_id=entry.id, status="error", company=entry.company_hint, role=entry.title)
 
     if not entry.has_source:
@@ -1995,6 +2014,10 @@ async def _process_one(session: ApplySession, profile: Profile, entry: QueueEntr
         # The essay writer may name only what the posting names; a page that
         # never spells out its own company would leave "Zipline" unsayable.
         jd_text = " — ".join(x for x in (entry.company_hint, entry.title) if x) + "\n\n" + jd_text
+    # A posting handed in as text (a queue entry, a pasted description) has not
+    # been through the page reader: the same scrub applies before any model.
+    jd_text, _jd_notes = scrub(jd_text)
+    session.injection_notes.extend(f"posting: {n}" for n in _jd_notes)
 
     # The address that applies to this posting's location — the default one, or
     # an alternate for postings in the home state — follows the profile into

@@ -50,6 +50,7 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from .queue import company_key
+from .untrusted import GUARD
 
 LOG_NAME = "outreach.json"
 DAILY_CAP = 15
@@ -550,6 +551,7 @@ def from_web(company: str, url: str, people: bool = False) -> list[dict]:
         )
         if people:
             prompt = PERSON_PROMPT.format(company=company, site=f" (careers site: {domain})" if domain else "")
+        prompt = GUARD + "\n\n" + prompt  # the pages the search reads are third-party text (untrusted.py)
         r = None
         for attempt in range(4):
             try:

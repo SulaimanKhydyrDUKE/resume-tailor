@@ -34,6 +34,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from .queue import company_key
+from .untrusted import GUARD, scrub
 
 STAGES = ("applied", "oa", "interview", "offer", "rejected")
 RANK = {"applied": 1, "oa": 2, "interview": 3, "offer": 4}
@@ -347,7 +348,7 @@ def _model_stage(company: str, frm: str, subject: str, body: str) -> dict:
         prompt = (
             "You sort e-mails received by a college student who applied to internships. "
             f"This message is about the company: {company}.\n\n"
-            f"From: {frm}\nSubject: {subject}\n\n{body[:3500]}\n\n"
+            f"From: {frm}\nSubject: {subject}\n\n{scrub(body)[0][:3500]}\n\n"
             "Reply with JSON: {\"stage\": one of \"applied\" (confirmation or generic status), \"oa\" (an assessment, coding test, "
             "or take-home to complete), \"interview\" (an interview or recruiter call is offered or scheduled), \"offer\", "
             "\"rejected\", or \"other\" (not about this application: marketing, event invite, account notice); "
@@ -363,7 +364,8 @@ def _model_stage(company: str, frm: str, subject: str, body: str) -> dict:
                 time.sleep(gap)
             _last_model_call = time.time()
             try:
-                r = client.chat.completions.create(model=model, messages=[{"role": "user", "content": prompt}],
+                r = client.chat.completions.create(model=model, messages=[{"role": "system", "content": GUARD},
+                                                                         {"role": "user", "content": prompt}],
                                                    response_format={"type": "json_object"}, temperature=0)
                 break
             except RateLimitError as e:

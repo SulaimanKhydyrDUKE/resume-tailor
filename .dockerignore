@@ -1,0 +1,7 @@
+.git
+.venv/
+output/
+**/__pycache__/
+*.pyc
+.devcontainer/
+.github/
