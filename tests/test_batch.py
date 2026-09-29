@@ -972,6 +972,11 @@ check("picker: 'Computer Science and Mathematics' lands on 'Computer Science' am
       _AS2._match_option("Computer Science and Mathematics", _fos) == 0)
 check("picker: 'Computer Science' exactly", _AS2._match_option("Computer Science", _fos) == 0)
 check("picker: 'Mathematics' alone picks none of them", _AS2._match_option("Mathematics", _fos) is None)
+_head = [{"t": x} for x in ("Accounting", "Accounting & Finance", "Actuarial Sciences", "Administration", "Advertising", "Aeronautical Engineering", "Aerospace Engineering", "Agriculture")]
+check("picker: a long list with none of the typed words is an ignored search", _AS2._ignored_typing("Computer Science and Mathematics", _head))
+check("picker: a list that shows the typed word was filtered", not _AS2._ignored_typing("Computer Science", _fos))
+check("picker: a short list is never called ignored", not _AS2._ignored_typing("Computer Science", _head[:3]))
+check("picker: nothing typed, nothing ignored", not _AS2._ignored_typing("", _head))
 
 
 # --- availability follows the posting's term ---------------------------------------

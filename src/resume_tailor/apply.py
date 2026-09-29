@@ -1856,6 +1856,20 @@ class ApplySession:
                 return found[: limit + 1]
             await self._page.wait_for_timeout(250)
 
+    @staticmethod
+    def _ignored_typing(typed: str, found: list[dict]) -> bool:
+        """A list that took no notice of what was typed: eight or more entries
+        and not one carrying the first typed word as a whole word ("Computer"
+        for "Computer Science and Mathematics"; Invesco's head has "Actuarial
+        Sciences", which is not "science"). A list that filtered shows the
+        word (or nothing); pressing Enter on that would choose from it."""
+        words = [w.lower() for w in re.findall(r"[A-Za-z0-9']+", typed or "")
+                 if len(w) >= 3 and w.lower() not in ("and", "the", "for", "with", "sciences")]
+        if not words or len(found) < 8:
+            return False
+        first = re.compile(r"\b" + re.escape(words[0]) + r"\b", re.I)
+        return not any(first.search(o.get("t") or "") for o in found)
+
     async def _searches_on_enter(self, el) -> bool:
         """Workday's search pickers (its School or University field) run the
         search only when Enter is pressed — "start typing the name and press
@@ -2016,8 +2030,10 @@ class ApplySession:
             if typed:
                 await el.press_sequentially(typed, delay=30)
             found = await self._visible_options()
-            if not found and typed and await self._searches_on_enter(el):
-                # The list stays empty until the search is run.
+            if typed and ((not found and await self._searches_on_enter(el)) or self._ignored_typing(typed, found)):
+                # The list stays empty until the search is run — or, on some
+                # Workday prompts, keeps showing the unfiltered head of the
+                # whole list ("Accounting…") until Enter runs it.
                 await page.keyboard.press("Enter")
                 await page.wait_for_timeout(1500)
                 found = await self._visible_options(wait_ms=2500)
@@ -2130,13 +2146,9 @@ class ApplySession:
             try:
                 await el.click()
                 await el.fill("")
-                unopened = [o["t"] for o in await self._visible_options(limit, wait_ms=600)]
                 await el.press_sequentially(t[:60], delay=20)
                 found = await self._visible_options(limit, wait_ms=1500)
-                words = [w.lower() for w in re.findall(r"[A-Za-z0-9']+", t) if len(w) >= 3]
-                names_word = bool(words) and any(words[0] in o["t"].lower() for o in found)
-                unfiltered = bool(found) and [o["t"] for o in found][:5] == unopened[:5] and not names_word
-                if (not found and await self._searches_on_enter(el)) or unfiltered:
+                if (not found and await self._searches_on_enter(el)) or self._ignored_typing(t, found):
                     # Workday's prompts run the search on Enter: some show "No
                     # Items." until then, others (Invesco's Field of Study) keep
                     # showing the unfiltered head of a long list — "Accounting…"
