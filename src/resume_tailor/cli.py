@@ -622,6 +622,13 @@ async def _setup_logins(args: argparse.Namespace) -> int:
     return 0 if n or args.check else 1
 
 
+async def _instagram(args: argparse.Namespace) -> int:
+    from .igstories import run_cli
+
+    args.out = str(PROJECT_ROOT / args.out)
+    return await run_cli(args)
+
+
 async def _login(args: argparse.Namespace) -> int:
     """Open the site's sign-in page in a visible Chrome; once the user is
     through, fill and submit the posting in that window and keep the cookies.
@@ -891,6 +898,15 @@ def main() -> int:
     pdash.add_argument("--stop", action="store_true", help="stop a detached dashboard")
     pdash.set_defaults(func=cmd_dashboard)
 
+    pig = sub.add_parser("instagram", help="stories of a page that posts application links: read them in the tool's signed-in Chrome "
+                                            "(login --site instagram.com first), keep every link, feed the loop; read | links | unpark | watch")
+    pig.add_argument("action", choices=["read", "links", "unpark", "watch"])
+    pig.add_argument("--handle", default=None, help="one page (default: search.instagram_pages in answers.yaml)")
+    pig.add_argument("--interval", type=int, default=150, help="watch: minutes between passes (stories last 24 h; keep this slow)")
+    pig.add_argument("--show", action="store_true", help="a visible window")
+    pig.add_argument("--out", default="output")
+    pig.add_argument("--profile", default=None)
+    pig.set_defaults(func=lambda a: asyncio.run(_instagram(a)))
     pm = sub.add_parser("mail", help="read the inbox for what came of each application (assessments, interviews, offers, rejections)")
     pm.add_argument("action", choices=["scan", "results", "watch"], help="scan once, print the results, or scan every --interval minutes")
     pm.add_argument("--out", default="output")

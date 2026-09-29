@@ -160,6 +160,30 @@ Add sites in `answers.yaml` → `search.hand_logins`: a URL, or
 `{name, url, host, cookie, check}` where `cookie` is a regex for the cookie
 that marks a session and `check` a page only a signed-in visitor can see.
 
+## Instagram stories as a source
+
+A page that posts application links on its stories can feed the loop. Sign in
+once (`resume-tailor login --site instagram.com`, in the tool's own Chrome),
+put the page under `search.instagram_pages` in `answers.yaml`, then:
+
+```bash
+resume-tailor instagram read          # one pass now; --show for a visible window
+resume-tailor instagram links         # what has been read, newest first
+resume-tailor instagram watch         # every 2.5 h (the overnight supervisor runs this lane)
+resume-tailor instagram unpark        # after a sign-in, when Instagram had interrupted a pass
+```
+
+A sticker shows a label, never the address, so each link is taken three
+ways: the redirect wrapper behind the sticker (`l.instagram.com/?u=…`,
+decoded), the story data the page fetches (every sticker's address is in
+it), and, failing both, a press on the sticker with the opened tab read.
+Short links and link-in-bio pages are followed to the posting; the posting
+page gives the company and title, so the listing passes the usual filters
+and reaches the fresh lane like any other. Frames with no link are kept as
+screenshots under `output/instagram/<page>/`. Instagram forbids automated
+access and answers it with a check on the account: the reader is slow on
+purpose, and on any check or login wall it parks the page and stops.
+
 ## Tailor
 
 ```bash

@@ -110,6 +110,12 @@ search:
   # {name, url, host, cookie, check} — `cookie` a regex for the cookie name
   # that marks a session, `check` a page only a signed-in visitor can see.
   hand_logins: []                      # e.g. [https://app.joinhandshake.com/login]
+  # Instagram pages whose stories carry application links, read by
+  # `resume-tailor instagram read|watch` in the tool's signed-in Chrome
+  # (`login --site instagram.com` once). Every link sticker's address is
+  # kept and joins the loop like any other listing. Slow by design: one
+  # pass every couple of hours; any check from Instagram parks the page.
+  instagram_pages: []                  # e.g. [ducksjobs]
   # Which lists discovery reads. A built-in left out here stays on; the
   # dashboard's Job sources card writes these two keys.
   # sources:

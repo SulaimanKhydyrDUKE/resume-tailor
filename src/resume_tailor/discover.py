@@ -383,6 +383,14 @@ def _refresh_locked(out_dir: Path, url: str, table_sources: list[tuple[str, str]
     extra = [l for l in extra if "jobright.ai/" not in l["url"] or role_key(l) not in direct]
     if not tables:  # every source down: keep what the cache had
         extra = [l for l in (cache or []) if str(l.get("id", "")).startswith("gh:")]
+    # Postings read off Instagram stories (igstories.py) — a file on disk,
+    # never a fetch here; the same link on a list above is not listed twice.
+    try:
+        from .igstories import to_listings as _ig_listings
+        have = {(l.get("url") or "").split("?")[0] for l in listings + extra}
+        extra += [l for l in _ig_listings(out_dir) if l["url"].split("?")[0] not in have]
+    except Exception as e:
+        print(f"  instagram links skipped ({str(e)[:60]})", file=sys.stderr, flush=True)
     before = {l.get("id") for l in (cache or [])}
     merged = listings + extra
     changed = changed or any(l["id"] not in before for l in extra)
