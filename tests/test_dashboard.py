@@ -142,6 +142,13 @@ check("calendar: the inbox pass's event wins over the scan's for the same messag
 _ics = write_ics(_tmp, _cal).read_text()
 check("ics: one timed deadline and one all-day applied summary", _ics.count("BEGIN:VEVENT") == 2 and "DTSTART;TZID=America/New_York:20260914T220000" in _ics and "SUMMARY:Applied: 2 (Acme\, Gamma)" in _ics, _ics[:600])
 
+from resume_tailor.calendar import _settled_date
+check("settled_date: a model date equal to the arrival time gives way to the text's later date",
+      _settled_date({"date": "2026-09-28T12:53", "received": "2026-09-28T12:53:00-04:00", "rule_dates": ["2026-10-07T00:00"]}) == "2026-10-07T00:00")
+check("settled_date: a real model date stands", _settled_date({"date": "2026-10-01", "received": "2026-09-28T12:53:00-04:00", "rule_dates": ["2026-10-07T00:00"]}) == "2026-10-01")
+check("settled_date: arrival time with no better date stays (and is later dropped as a same-day mention)",
+      _settled_date({"date": "2026-09-28T12:53", "received": "2026-09-28T12:53:00-04:00", "rule_dates": []}) == "2026-09-28T12:53")
+
 
 width = max(len(n) for n, _, _ in RESULTS)
 failed = 0

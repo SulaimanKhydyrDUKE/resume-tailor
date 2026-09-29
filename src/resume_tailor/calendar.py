@@ -277,6 +277,22 @@ def scan_deadlines(out_dir: str | Path, use_model: bool = True, refresh: bool = 
     return summary
 
 
+def _settled_date(e: dict) -> str:
+    """The event's date, with one correction: a model that answers with the
+    message's own arrival time ("invitation to the event on October 7th",
+    dated when it arrived) has named no date; when the text itself names a
+    later one, that is the date."""
+    date = str(e.get("date") or "")
+    if not date:
+        return ""
+    d, r = _parse_received(date), _parse_received(e.get("received") or "")
+    if d is not None and r is not None and abs((d - r).total_seconds()) < 2 * 3600:
+        later = [x for x in (e.get("rule_dates") or []) if (_parse_received(x) or r) > r + timedelta(hours=2)]
+        if later:
+            return sorted(later)[0]
+    return date
+
+
 # ---------------------------------------------------------------------------
 # The calendars
 
@@ -325,9 +341,10 @@ def build_calendar(out_dir: str | Path) -> dict:
     deadlines_data = load_deadlines(out_dir)
     events: dict[str, dict] = {}
     for uid, e in (deadlines_data.get("events") or {}).items():
-        if e.get("date") and _plausible(str(e["date"]), e.get("received") or ""):
+        date = _settled_date(e)
+        if date and _plausible(date, e.get("received") or ""):
             events[str(uid)] = {"uid": str(uid), "company": e.get("company") or "", "key": e.get("key") or "", "kind": e.get("kind") or "other",
-                                "date": str(e["date"]), "what": e.get("what") or "", "subject": e.get("subject") or "",
+                                "date": date, "what": e.get("what") or "", "subject": e.get("subject") or "",
                                 "received": e.get("received") or "", "source": e.get("source") or "model"}
     for key, co in (results.get("companies") or {}).items():
         for e in co.get("timeline") or []:
