@@ -164,6 +164,20 @@
 <script type="text/babel" data-presets="react">
 const { useState, useEffect, useMemo } = React;
 
+// Every view the server sends carries an ETag; asking again with it costs a
+// 304 and no parsing when nothing changed, which is what makes a tab switch
+// instant while the loop is writing the state file every few seconds.
+const etags = {};
+async function getJson(url) {
+  const headers = {};
+  if (etags[url]) headers["If-None-Match"] = etags[url];
+  const r = await fetch(url, { cache: "no-store", headers });
+  if (r.status === 304) return { unchanged: true };
+  const et = r.headers.get("ETag");
+  if (et) etags[url] = et;
+  return { unchanged: false, json: await r.json() };
+}
+
 const STATUS = {
   applied: ["Applied", "ok"],
   needs_review: ["Needs review", "warn"],
@@ -477,9 +491,8 @@ function FilesTab({ onOpen }) {
     let alive = true;
     const load = async () => {
       try {
-        const r = await fetch("/api/files", { cache: "no-store" });
-        const j = await r.json();
-        if (!alive) return;
+        const { unchanged, json: j } = await getJson("/api/files");
+        if (!alive || unchanged) return;
         if (j.error) { setErr(j.error); return; }
         setFiles(j); setErr(null);
       } catch (e) { if (alive) setErr(String(e)); }
@@ -678,7 +691,18 @@ function Actions({ app }) {
   );
 }
 
-function Detail({ app }) {
+function Detail({ app: row }) {
+  // The list carries the summary; the answers, mail and addresses of the one
+  // open row come from /api/application/<id> when it is opened or changes.
+  const [full, setFull] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    fetch(`/api/application/${encodeURIComponent(row.id)}`, { cache: "no-store" })
+      .then(r => r.json()).then(j => { if (alive && !j.error) setFull(j); }).catch(() => {});
+    return () => { alive = false; };
+  }, [row.id, row.when, row.status, row.stage]);
+  const app = full && full.id === row.id ? full : row;
+  const loading = !(full && full.id === row.id);
   return (
     <div className="detail">
       <h2>{app.company || "?"} <span style={{ fontWeight: 400, color: "#6b7280" }}>· {app.role}</span></h2>
@@ -707,7 +731,7 @@ function Detail({ app }) {
               </li>
             ))}
           </ul>
-        ) : <span className="none">no mail from this company matched yet</span>}
+        ) : <span className="none">{loading ? "loading…" : "no mail from this company matched yet"}</span>}
         {app.addresses?.length ? <div className="sub" style={{ marginTop: 8 }}>recruiting addresses seen: {app.addresses.map(a => a.address).join(", ")}</div> : null}
       </div>
 
@@ -718,7 +742,7 @@ function Detail({ app }) {
 
       <div className="card">
         <h3>Answers given</h3>
-        <Answers answers={app.answers} status={app.status} />
+        {loading ? <span className="none">loading…</span> : <Answers answers={app.answers} status={app.status} />}
       </div>
 
       <div className="card">
@@ -779,9 +803,8 @@ function Calendar({ onOpen }) {
     let alive = true;
     const load = async () => {
       try {
-        const r = await fetch("/api/calendar", { cache: "no-store" });
-        const j = await r.json();
-        if (!alive) return;
+        const { unchanged, json: j } = await getJson("/api/calendar");
+        if (!alive || unchanged) return;
         if (j.error) { setErr(j.error); return; }
         setCal(j); setErr(null);
       } catch (e) { if (alive) setErr(String(e)); }
@@ -883,27 +906,38 @@ function App() {
   const [tab, setTab] = useState(() => { try { return localStorage.getItem("rt-tab") || "applications"; } catch (e) { return "applications"; } });
   useEffect(() => { try { localStorage.setItem("rt-tab", tab); } catch (e) {} }, [tab]);
 
+  const [core, setCore] = useState(null);   // /api/index: the list, counts, flows — cached server-side, 304 when unchanged
+  const [live, setLive] = useState(null);   // /api/now: what the workers are doing right now — small, every 8 s
   useEffect(() => {
     let alive = true;
-    const load = async () => {
+    const loadCore = async () => {
       try {
-        const r = await fetch("/api/index", { cache: "no-store" });
-        const j = await r.json();
-        if (!alive) return;
+        const { unchanged, json: j } = await getJson("/api/index");
+        if (!alive || unchanged) return;
         if (j.error) { setErr(j.error); return; }
-        setData(j); setErr(null);
+        setCore(j); setErr(null);
       } catch (e) { if (alive) setErr(String(e)); }
     };
-    load();
-    const t = setInterval(load, 8000);
-    return () => { alive = false; clearInterval(t); };
+    const loadLive = async () => {
+      try {
+        const r = await fetch("/api/now", { cache: "no-store" });
+        const j = await r.json();
+        if (!alive || j.error) return;
+        setLive(j);
+      } catch (e) { /* the next tick tries again */ }
+    };
+    loadCore(); loadLive();
+    const t1 = setInterval(loadCore, 20000);
+    const t2 = setInterval(loadLive, 8000);
+    return () => { alive = false; clearInterval(t1); clearInterval(t2); };
   }, []);
+  useEffect(() => { setData(core ? { ...core, ...(live || {}) } : null); }, [core, live]);
 
-  const apps = useMemo(() => (data?.applications || []).filter(a =>
+  const apps = useMemo(() => (core?.applications || []).filter(a =>
     (filter === "all" || a.status === filter) &&
     (!q || (a.company + " " + a.role).toLowerCase().includes(q.toLowerCase()))
-  ), [data, filter, q]);
-  const current = (data?.applications || []).find(a => a.id === sel);
+  ), [core, filter, q]);
+  const current = (core?.applications || []).find(a => a.id === sel);
   const open = id => { setSel(id); setTab("applications"); };
 
   return (
