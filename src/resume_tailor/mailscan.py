@@ -34,6 +34,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from .queue import company_key
+from .untrusted import GUARD, scrub
 
 STAGES = ("applied", "oa", "interview", "offer", "rejected")
 RANK = {"applied": 1, "oa": 2, "interview": 3, "offer": 4}
@@ -208,6 +209,9 @@ def company_index(out_dir: Path) -> dict[str, dict]:
     return index
 
 
+from .mailbox import FORWARD_SUBJECT, own_addresses, unforward  # noqa: E402  (forwards from the user's other mailbox)
+
+
 def _match_company(index: dict[str, dict], frm: str, reply_to: str, subject: str, body_head: str) -> str | None:
     sender_domain = _domain(parseaddr(frm)[1]) or _domain(parseaddr(reply_to)[1])
     from_ats = any(sender_domain.endswith(a) for a in ATS_DOMAINS)
@@ -347,7 +351,7 @@ def _model_stage(company: str, frm: str, subject: str, body: str) -> dict:
         prompt = (
             "You sort e-mails received by a college student who applied to internships. "
             f"This message is about the company: {company}.\n\n"
-            f"From: {frm}\nSubject: {subject}\n\n{body[:3500]}\n\n"
+            f"From: {frm}\nSubject: {subject}\n\n{scrub(body)[0][:3500]}\n\n"
             "Reply with JSON: {\"stage\": one of \"applied\" (confirmation or generic status), \"oa\" (an assessment, coding test, "
             "or take-home to complete), \"interview\" (an interview or recruiter call is offered or scheduled), \"offer\", "
             "\"rejected\", or \"other\" (not about this application: marketing, event invite, account notice); "
@@ -363,7 +367,8 @@ def _model_stage(company: str, frm: str, subject: str, body: str) -> dict:
                 time.sleep(gap)
             _last_model_call = time.time()
             try:
-                r = client.chat.completions.create(model=model, messages=[{"role": "user", "content": prompt}],
+                r = client.chat.completions.create(model=model, messages=[{"role": "system", "content": GUARD},
+                                                                         {"role": "user", "content": prompt}],
                                                    response_format={"type": "json_object"}, temperature=0)
                 break
             except RateLimitError as e:
@@ -448,6 +453,7 @@ def scan(out_dir: str | Path, since: str = "03-Sep-2026", mailbox: str = "[Gmail
     results = load_results(out_dir)
     index = company_index(out_dir)
     own = env["user"]
+    mine = own_addresses(own)
     box = imaplib.IMAP4_SSL(env["host"], timeout=90)
     summary = {"new": 0, "matched": 0, "by_model": 0, "stages": {}, "bounces": 0}
     try:
@@ -523,6 +529,14 @@ def scan(out_dir: str | Path, since: str = "03-Sep-2026", mailbox: str = "[Gmail
                 when = parsedate_to_datetime(h.get("Date")).astimezone(timezone.utc).isoformat(timespec="minutes")
             except Exception:
                 when = ""
+            body = ""
+            if FORWARD_SUBJECT.match(subject) or parseaddr(frm)[1].lower() in mine:
+                # A forward from the user's other mailbox: the real sender and
+                # subject are at the top of the body.
+                body = body_of(uid)
+                frm, subject, body, forwarded = unforward(frm, subject, body, mine)
+                if not forwarded:
+                    continue  # the user's own outgoing mail, not a forward
             sender_domain = _domain(parseaddr(frm)[1])
             if BOUNCE.search(subject) or "mailer-daemon" in frm.lower():
                 body = body_of(uid)
@@ -534,10 +548,9 @@ def scan(out_dir: str | Path, since: str = "03-Sep-2026", mailbox: str = "[Gmail
                 continue
             if NOISE.search(sender_domain) and not any(sender_domain.endswith(a) for a in ATS_DOMAINS):
                 continue
-            key = _match_company(index, frm, reply_to, subject, "")
-            body = ""
+            key = _match_company(index, frm, reply_to, subject, body[:600] if body else "")
             if key is None and APPLICATION_WORDS.search(subject):
-                body = body_of(uid)
+                body = body or body_of(uid)
                 key = _match_company(index, frm, reply_to, subject, body)
             if key is None:
                 continue

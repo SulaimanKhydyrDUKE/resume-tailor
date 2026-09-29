@@ -12,7 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from resume_tailor import ats
-from resume_tailor.discover import Prefs, evaluate, is_us, select, title_terms, to_entry
+from resume_tailor.discover import TABLE_SOURCES, Prefs, evaluate, is_us, select, sources_from_profile, title_terms, to_entry
 from resume_tailor.queue import RunState
 
 RESULTS = []
@@ -31,6 +31,13 @@ def L(**kw):
 
 
 P = Prefs(max_posting_age_days=0)  # fixtures use tiny epochs as ordering stubs, not dates
+
+# --- which lists are read: answers.yaml -> search.sources / extra_sources ------------
+check("sources: nothing set reads the feed and every built-in table", sources_from_profile({"search": {}}) == (True, TABLE_SOURCES))
+check("sources: a table switched off by name is left out, an owner's list is added, a bad url ignored",
+      sources_from_profile({"search": {"sources": {"speedyapply": False}, "extra_sources": [["mine", "https://raw.githubusercontent.com/a/b/main/README.md"], ["junk", "not a url"]]}})[1]
+      == [t for t in TABLE_SOURCES if t[0] != "speedyapply"] + [("mine", "https://raw.githubusercontent.com/a/b/main/README.md")])
+check("sources: the feed itself can be switched off", sources_from_profile({"search": {"sources": {"simplify": False}}})[0] is False)
 
 # --- is_us ------------------------------------------------------------------
 check("state suffix -> US", is_us(["Huntsville, AL"]) is True)
@@ -323,6 +330,10 @@ check("retry cap: a hand re-queue lifts it", not _worn(_wall.done["wall"]))
 _once = RunState(path=Path(tempfile.mkdtemp()) / "state.json")
 _once.record("wall1", {"status": "needs_login", "detail": "this site wants an account"})
 check("retry cap: one login wall is still retried", not _worn(_once.done["wall1"]))
+from resume_tailor.discover import _worn_out as _wo
+check("worn out: a 'retry:' detail lifts the cap like a hand re-queue",
+      not _wo({"status": "needs_review", "attempts": 3, "detail": "retry: after a fix · could not answer: x"}) and _wo({"status": "needs_review", "attempts": 3, "detail": "could not answer: x"}))
+
 
 width = max(len(n) for n, _, _ in RESULTS)
 failed = 0

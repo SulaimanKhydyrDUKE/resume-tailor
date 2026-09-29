@@ -235,14 +235,15 @@ def discover_internships(limit: int = 40) -> str:
     ATS hosts first, account-gated hosts last) plus a tally of why the rest were
     left out. Read-only — nothing is applied to.
     """
-    from .discover import Prefs, refresh, select
+    from .discover import Prefs, refresh, select, sources_from_profile
     from .queue import RunState
 
     try:
         profile = _get_profile()
     except ProfileError as e:
         return json.dumps({"error": str(e)})
-    listings, changed = refresh(OUT_DIR)
+    feed, tables = sources_from_profile(profile.answers)
+    listings, changed = refresh(OUT_DIR, table_sources=tables, feed=feed)
     entries, excluded = select(listings, Prefs.from_profile(profile), RunState.load(OUT_DIR / "batch-state.json"), limit=limit)
     return json.dumps({
         "listings_total": len(listings), "source_changed": changed,
@@ -260,14 +261,15 @@ async def apply_new_internships(dry_run: bool = False, max_per_run: int = 25, he
     submitting. Returns the pass summary; batch_report has the per-posting detail.
     """
     from .batch import run_batch
-    from .discover import Prefs, refresh, select
+    from .discover import Prefs, refresh, select, sources_from_profile
     from .queue import RunState
 
     try:
         profile = _get_profile()
     except ProfileError as e:
         return json.dumps({"error": str(e)})
-    listings, changed = refresh(OUT_DIR)
+    feed, tables = sources_from_profile(profile.answers)
+    listings, changed = refresh(OUT_DIR, table_sources=tables, feed=feed)
     entries, excluded = select(listings, Prefs.from_profile(profile), RunState.load(OUT_DIR / "batch-state.json"), limit=max_per_run)
     if not entries:
         return json.dumps({"listings_total": len(listings), "new": 0, "left_out": excluded})

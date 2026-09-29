@@ -45,6 +45,21 @@ check("a draft never sets the company stage",
       _company_stage([{"stage": "draft", "when": "2026-09-09"}, {"stage": "applied", "when": "2026-09-03"}]) == "applied")
 check("a draft alone leaves the company without a stage", _company_stage([{"stage": "draft", "when": "2026-09-09"}]) == "")
 
+from resume_tailor.mailbox import unforward
+_own = {"sulaiman.khydyruulu@duke.edu"}
+_flat = ("________________________________ From: no-reply@us.greenhouse-mail.io <no-reply@us.greenhouse-mail.io> Sent: Tuesday, September 29, 2026 8:02:06 AM "
+         "To: Sulaiman Khydyr uulu <sulaiman.khydyruulu@duke.edu> Subject: Thank you for applying to GITAI Sulaiman, Thank you for your interest in the Field-Deployed role.")
+_f, _s, _b, _w = unforward("Sulaiman Khydyr uulu <sulaiman.khydyruulu@duke.edu>", "FW: Thank you for applying to GITAI", _flat, _own)
+check("forward (Outlook, run-together text): the original sender is read", "greenhouse-mail.io" in _f and _w)
+check("forward: the subject loses its prefix", _s == "Thank you for applying to GITAI")
+_lines = "---------- Forwarded message ---------\nFrom: Waymo Recruiting <no-reply@waymo.com>\nDate: Mon, Sep 28, 2026\nSubject: Thank You for Applying to Waymo!\nTo: <sulaiman.khydyruulu@duke.edu>\n\nHi Sulaiman, we got it."
+_f2, _s2, _b2, _w2 = unforward("Sulaiman <sulaiman.khydyruulu@duke.edu>", "Fwd: Thank You for Applying to Waymo!", _lines, _own)
+check("forward (Gmail, lines): sender and subject from the block, body after it", "waymo.com" in _f2 and _s2 == "Thank You for Applying to Waymo!" and _b2.strip().startswith("Hi Sulaiman"))
+check("not a forward: a company's own mail passes through untouched",
+      unforward("Acme <jobs@acme.com>", "Thank you for applying", "We got it.", _own) == ("Acme <jobs@acme.com>", "Thank you for applying", "We got it.", False))
+check("the user's own outgoing mail is not a forward", unforward("Me <sulaiman.khydyruulu@duke.edu>", "Question about the role", "Hi, I applied last week.", _own)[3] is False)
+check("a forwarded confirmation is classified as one", _rule_stage(_s, _b) == "applied")
+
 width = max(len(n) for n, _, _ in RESULTS)
 failed = 0
 for name, ok, detail in RESULTS:

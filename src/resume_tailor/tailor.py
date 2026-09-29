@@ -37,6 +37,7 @@ from typing import Any
 from . import gates
 from .compose import document
 from .llm import get_llm
+from .untrusted import GUARD
 from .models import (
     Bullet, JobSpec, RoleDraft, RolePlan, Selection, SkillGroup, SkillsDraft,
 )
@@ -97,8 +98,11 @@ def _career_system(profile: Profile) -> list[dict]:
 async def _parse(system: list[dict], prompt: str, schema, effort: str = "high", role: str = "main"):
     """One structured call. Which model answers is the provider layer's decision
     (RESUME_TAILOR_PROVIDER, and RESUME_TAILOR_AUDIT_MODEL for role="audit");
-    the chain is identical either way."""
-    return await get_llm(role).parse(system, prompt, schema, effort)
+    the chain is identical either way. Every call opens with the untrusted-text
+    guard (untrusted.GUARD): posting, form and e-mail text quoted in a prompt
+    is data, and an instruction found inside it is not one to follow. A
+    constant first block keeps the cached career prefix stable."""
+    return await get_llm(role).parse([{"type": "text", "text": GUARD}] + list(system), prompt, schema, effort)
 
 
 # --- stage 1 ---------------------------------------------------------------
