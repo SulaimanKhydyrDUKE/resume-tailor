@@ -965,6 +965,18 @@ check("session on file: a site with no cookie rule takes any live cookie", sessi
 check("session on file: nothing saved reads as nothing", session_on_file({"host": "example.org"}, _ld) == (False, "nothing on file"))
 
 
+# --- availability follows the posting's term ---------------------------------------
+from resume_tailor.profile import Profile as _PT
+_pt = _PT(career={"personal_information": {}}, answers={"availability": {"notice_period": "available May through August 2027", "target_term": "Summer 2027",
+          "by_term": {"Winter 2027": {"notice_period": "available January through April 2027", "earliest_start_date": "January 2027"}}}}, root=Path("."))
+_w = _pt.for_term("Winter 2027")
+check("term: a winter posting gets the winter availability", _w.answers["availability"]["notice_period"] == "available January through April 2027" and _w.answers["availability"]["target_term"] == "Winter 2027")
+check("term: the profile itself is untouched", _pt.answers["availability"]["notice_period"] == "available May through August 2027")
+check("term: a term with no entry keeps the summer answers", _pt.for_term("Fall 2027") is _pt and _pt.for_term("") is _pt)
+check("term: by_term never leaks into the flat bank", not any("by_term" in k for k in _pt.flat_answers()) and _pt.flat_answers()["availability.notice_period"].startswith("available May"))
+check("term: the swapped bank answers a notice-period question with the winter window", _w.flat_answers()["availability.notice_period"].startswith("available January"))
+
+
 # --- résumé lint and the current employer ------------------------------------
 from types import SimpleNamespace as _NS
 from resume_tailor import gates as _gates

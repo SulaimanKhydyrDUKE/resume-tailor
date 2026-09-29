@@ -742,10 +742,12 @@ async def _create_account(session: ApplySession, profile: Profile) -> str:
             asked_at = time.time()
             asked = await click_text(r"resend (account )?verification( e-?mail)?|resend( verification)? e-?mail|"
                                      r"send (the )?(verification )?(e-?mail|link) again")
+            note(f"verification wall for tenant {tenant!r}: resend clicked={asked}; buttons={[(b.get('text') or '')[:24] for b in await session.buttons()][:8]}")
             found = await mailbox.fetch_secret_async(asked_at if asked else started, hints, timeout_s=150, require=require)
             if not (found or {}).get("link"):
                 found = await mailbox.fetch_secret_async(time.time() - 3 * 86400, hints, timeout_s=0, require=require)
             link = (found or {}).get("link")
+            note(f"verification link {'found' if link else 'not found'} for {tenant!r}" + (f": {link[:70]}" if link else ""))
             if link:
                 try:
                     await session.goto(link)
@@ -2288,6 +2290,8 @@ async def _process_one(session: ApplySession, profile: Profile, entry: QueueEntr
     (untrusted.py) ends up in the outcome's flags, for the dashboard and
     the log. The application itself goes on from the scrubbed text."""
     session.injection_notes = []
+    if getattr(entry, "term", "") and not entry.term.lower().startswith("summer"):
+        profile = profile.for_term(entry.term)  # winter / spring availability answers for a winter / spring posting
     o = await _process_one_inner(session, profile, entry, out_dir, shots_dir, apply_once, state, dry_run,
                                  judge_gate=judge_gate, approved=approved)
     notes = list(dict.fromkeys(session.injection_notes))

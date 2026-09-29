@@ -577,7 +577,17 @@ def to_entry(listing: dict) -> QueueEntry:
         company_hint=listing.get("company_name") or "", title=listing.get("title") or "",
         location=", ".join(str(l) for l in (listing.get("locations") or [])),
         source=str(listing.get("source") or ""),
+        term=entry_term(listing),
     )
+
+
+def entry_term(listing: dict) -> str:
+    """The term to apply for: a term the title names, else the list's tag."""
+    named = sorted(title_terms(listing.get("title") or ""))
+    if named:
+        return named[0]
+    terms = [str(t) for t in (listing.get("terms") or []) if t and str(t).upper() != "N/A"]
+    return terms[0] if terms else ""
 
 
 RETRY_CAP = 3

@@ -349,6 +349,13 @@ check("hand links: a story link a feed already lists is not listed twice", "sim-
 check("hand links: a story link no feed has is added", "ig:cccc" in _ids)
 check("hand links: ids stay unique", len(_ids) == len(set(_ids)))
 check("entries: the listing's source travels with the queue entry", _to_entry(_hand[0]).source == "added by hand")
+from resume_tailor.discover import entry_term as _et
+check("entries: the term comes from the list's tag", _et({"title": "Software Engineer Intern", "terms": ["Winter 2027"]}) == "Winter 2027")
+check("entries: a term the title names beats the tag", _et({"title": "SWE Intern - Spring 2027", "terms": ["Winter 2026"]}) == "Spring 2027")
+check("entries: N/A is no term", _et({"title": "Intern", "terms": ["N/A"]}) == "")
+_wp = Prefs(max_posting_age_days=0, positions=["Software Engineer Intern"], terms=["Summer 2027", "Winter 2027", "Spring 2027"])
+check("terms: a Winter 2027 listing passes once winter is asked for", evaluate(L(id="w", title="Software Engineer Intern - Winter 2027", terms=["Winter 2027"]), _wp) == "")
+check("terms: a Fall listing still does not", evaluate(L(id="f", title="Software Engineer Intern - Fall 2026", terms=["Fall 2026"]), _wp).startswith("other term"))
 import datetime as _dt2
 _yday = (_dt2.datetime.now().astimezone() - _dt2.timedelta(days=1)).isoformat()
 _hs = RunState(path=Path(tempfile.mkdtemp()) / "s.json",
