@@ -287,9 +287,13 @@ def _settled_date(e: dict) -> str:
         return ""
     d, r = _parse_received(date), _parse_received(e.get("received") or "")
     if d is not None and r is not None and abs((d - r).total_seconds()) < 2 * 3600:
-        later = [x for x in (e.get("rule_dates") or []) if (_parse_received(x) or r) > r + timedelta(hours=2)]
+        # A date the subject or the model's own summary names comes first
+        # ("invitation to the event on October 7th"); then the earliest the
+        # body names after arrival.
+        named = [x.isoformat(timespec="minutes") for x in _find_dates((e.get("subject") or "") + " " + (e.get("what") or ""), r)]
+        later = [x for x in named + list(e.get("rule_dates") or []) if (_parse_received(x) or r) > r + timedelta(hours=2)]
         if later:
-            return sorted(later)[0]
+            return later[0] if later[0] in named else sorted(later)[0]
     return date
 
 
