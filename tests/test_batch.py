@@ -181,6 +181,19 @@ with tempfile.TemporaryDirectory() as d:
     check("state: an entry re-recorded by the later writer takes its latest status", merged.done["job-2"]["status"] == "applied")
     check("state: applied companies merge", {"acme", "aco"} <= merged.applied_companies)
     check("state: the writer's own view is refreshed after saving", "job-A" in b.done and "job-B" in b.done)
+    # A hand-run retry edits records it did not itself record. save() writes
+    # back only touched entries, so the edit must count as touched or the
+    # re-queue is silently lost and every capped record stays capped.
+    c = RunState.load(spath)
+    c.done["job-B"]["attempts"] = 3
+    c.done["job-B"]["detail"] = "could not answer: x"
+    c._touched.add("job-B"); c.save()
+    d = RunState.load(spath)
+    check("state: mark_retry changes the given records and nothing else", d.mark_retry(["job-B", "job-A"], "fixed x") == 2)
+    again = RunState.load(spath)
+    check("state: a re-queue survives the merge with the file on disk",
+          (again.done["job-B"].get("detail") or "").startswith("retry: fixed x · could not answer: x"))
+    check("state: a re-queue of a re-queued record is not stacked", again.mark_retry(["job-B"], "twice") == 0)
 
 # --- boilerplate autofill: the never-guess-on-a-real-field boundary ------
 
@@ -211,6 +224,8 @@ check("'how you heard about this position' (no 'did') is a source field, answere
 check("a REQUIRED 'who referred you' box gets an honest N/A rather than a name or a stall",
       (_autofill_boilerplate("Who referred you to this position? Enter their first and last name here.",
                              {"type": "text", "tag": "input", "required": True}) or "").startswith("N/A"))
+check("a required 'What is your preferred name?' box is not a referral box (\"preferred\" holds \"referred\")",
+      _autofill_boilerplate("What is your preferred name?", {"type": "text", "required": True}) is None)
 check("an OPTIONAL 'who referred you' box is left blank",
       _autofill_boilerplate("Who referred you to this position?", {"type": "text", "tag": "input", "required": False}) is None)
 check("'How did you first hear about this role?' and 'From what source did you hear of the job opening?' are source fields",
@@ -928,6 +943,28 @@ check("network: a blank page takes the wait-and-retry path",
       bool(_NETWORK_ERROR.search("could not load the application form: the page came up blank or as a browser error")))
 check("network: a real missing form does not", not _NETWORK_ERROR.search("no application form was found on this page"))
 
+# --- hand sign-ins: the site list and what counts as a session on file ---------
+import json as _json, tempfile as _tmp, time as _time
+from types import SimpleNamespace as _NS
+from resume_tailor.batch import hand_login_sites, session_on_file, DEFAULT_HAND_LOGINS
+_hl = hand_login_sites(_NS(answers={"search": {"hand_logins": ["https://app.joinhandshake.com/login", {"name": "Wellfound", "url": "https://wellfound.com/login", "cookie": "^_wellfound_session$"}, "https://jobright.ai/"]}}))
+check("hand logins: the built-in three come first", [x["name"] for x in _hl[:3]] == [x["name"] for x in DEFAULT_HAND_LOGINS])
+check("hand logins: a bare URL becomes a site keyed by its host", any(x["host"] == "app.joinhandshake.com" and x["url"].startswith("https://") for x in _hl))
+check("hand logins: a dict keeps its cookie rule", any(x["name"] == "Wellfound" and x["cookie"] == "^_wellfound_session$" and x["host"] == "wellfound.com" for x in _hl))
+check("hand logins: a duplicate of a built-in host is not listed twice", sum(1 for x in _hl if x["host"] == "jobright.ai") == 1)
+check("hand logins: no profile means the built-in list", [x["host"] for x in hand_login_sites(None)] == [x["host"] for x in DEFAULT_HAND_LOGINS])
+_ld = Path(_tmp.mkdtemp())
+(_ld / "google.com.json").write_text(_json.dumps([{"name": "NID", "domain": ".google.com", "expires": _time.time() + 9e6}, {"name": "SID", "domain": ".google.com", "expires": _time.time() + 9e6}]))
+(_ld / "jobright.ai.json").write_text(_json.dumps([{"name": "SESSION_ID", "domain": "jobright.ai", "expires": _time.time() - 60}]))
+(_ld / "lifeattiktok.com.json").write_text(_json.dumps([{"name": "atsx-portal-session-v1", "domain": "lifeattiktok.com", "expires": -1}]))
+_g, _j, _t = (dict(x) for x in DEFAULT_HAND_LOGINS)
+check("session on file: Google's SID counts", session_on_file(_g, _ld)[0] and "SID" in session_on_file(_g, _ld)[1])
+check("session on file: an expired session says so", session_on_file(_j, _ld)[0] is False and "expired" in session_on_file(_j, _ld)[1])
+check("session on file: a session cookie with no expiry counts", session_on_file(_t, _ld)[0])
+check("session on file: a site with no cookie rule takes any live cookie", session_on_file({"host": "www.google.com"}, _ld)[0])
+check("session on file: nothing saved reads as nothing", session_on_file({"host": "example.org"}, _ld) == (False, "nothing on file"))
+
+
 # --- résumé lint and the current employer ------------------------------------
 from types import SimpleNamespace as _NS
 from resume_tailor import gates as _gates
@@ -1010,6 +1047,184 @@ snap = _snapshot([{"id": "rt-2", "type": "password", "label": "Password", "value
 check("snapshot: a password never reaches the record", [(e["question"], e["answer"]) for e in snap] == [("Password", MASK), ("First Name", "Sam")], str(snap))
 
 
+
+# --- a jobright page resolves to the employer's own posting ---------------------
+from resume_tailor.batch import original_link
+_jr = [["Jobs", "https://jobright.ai/jobs"], ["Original Job Post", "https://ibmglobal.avature.net/en_US/careers/JobDetail?jobId=134486&src=jobright&jr_id=6abadbe0"],
+       ["Share", "https://jobright.ai/share/x"]]
+check("jobright: the Original Job Post link, tracking parameters stripped",
+      original_link(_jr) == "https://ibmglobal.avature.net/en_US/careers/JobDetail?jobId=134486", original_link(_jr))
+_gh = [["Original Job Post", "https://job-boards.greenhouse.io/embed/job_app?for=aquatic&token=8489233002&jr_id=6a3f&utm_source=jobright"]]
+check("jobright: a Greenhouse embed keeps its own parameters", original_link(_gh) == "https://job-boards.greenhouse.io/embed/job_app?for=aquatic&token=8489233002", original_link(_gh))
+check("jobright: one unlabelled external job link still counts",
+      original_link([["Apply", "https://acme.wd5.myworkdayjobs.com/en-US/x/job/1?src=jobright"], ["Company", "https://jobright.ai/company/acme"]]) == "https://acme.wd5.myworkdayjobs.com/en-US/x/job/1")
+check("jobright: two different external links and no label is nothing (never a guess)",
+      original_link([["A", "https://a.com/jobs/1"], ["B", "https://b.com/careers/2"]]) == "")
+check("jobright: no external link is nothing", original_link([["Jobs", "https://jobright.ai/jobs"]]) == "" and original_link([]) == "")
+
+
+# --- the needs-review fixes: disabled controls, entries on demand, wider rules ------
+from resume_tailor.apply import usable
+from resume_tailor.batch import _DECLINE_WORDS, _GENERIC_SOURCE_OPTIONS, _entries_wanted, _not_my_school, _pick_add
+check("usable: a disabled select is not a field (Ashby's end date under 'Still student')",
+      [f["label"] for f in usable([{"label": "School", "type": "select"}, {"label": "End Month", "type": "select", "disabled": True}, {"label": "Degree", "type": "text", "disabled": False}])] == ["School", "Degree"])
+check("entries wanted: education and experience from SmartRecruiters' complaints",
+      _entries_wanted(["Please provide at least one work experience entry", "Please provide at least one education entry"]) == {"education", "experience"})
+check("entries wanted: nothing from an ordinary error", _entries_wanted(["Phone number is required"]) == set())
+_adds = [{"k": "1", "text": "Add", "heading": "Work Experience"}, {"k": "2", "text": "+ Add", "heading": "Education"}]
+check("pick add: the Education section's own Add", _pick_add(_adds, "education")["k"] == "2" and _pick_add(_adds, "experience")["k"] == "1")
+check("pick add: a lone Add counts when nothing names it", _pick_add([{"k": "7", "text": "Add", "heading": ""}], "education")["k"] == "7")
+check("pick add: two unnamed Adds is no pick (never a guess)", _pick_add([{"k": "1", "text": "Add", "heading": ""}, {"k": "2", "text": "Add", "heading": ""}], "education") is None)
+check("regions: the candidate's own region is ticked, the others are not",
+      _autofill_boilerplate("North America", {"type": "checkbox", "required": True}, []) == "yes"
+      and _autofill_boilerplate("Europe", {"type": "checkbox", "required": True}, []) == "no"
+      and _autofill_boilerplate("Asia*", {"type": "checkbox"}, []) == "no"
+      and _autofill_boilerplate("United States", {"type": "checkbox"}, []) == "yes")
+check("regions: a question that merely mentions a region is not a region box",
+      _autofill_boilerplate("Are you authorized to work in Europe?", {"type": "checkbox"}, []) is None)
+check("schools: a listed university that is not the candidate's is a No",
+      _not_my_school("Michigan State University", ["duke university"]) and _not_my_school("Calvin University", ["duke university"]))
+check("schools: the candidate's own school is not", not _not_my_school("Duke University", ["duke university"]))
+check("schools: a question about universities is not a school box", not _not_my_school("Which university do you attend?", ["duke university"]))
+check("schools: no record schools, no rule", not _not_my_school("Calvin University", []))
+check("decline wording: 'I do not wish to answer' and 'Not specified' count",
+      any(w in "i do not wish to answer" for w in _DECLINE_WORDS) and any(w in "not specified" for w in _DECLINE_WORDS))
+check("self-identification select picks a 'not specified' option",
+      _autofill_boilerplate("Gender*", {"type": "select-one", "required": True, "section": "Voluntary Self-Identification"}, ["Male", "Female", "Not Specified"]) == "Not Specified")
+check("source picker: 'Company website' is an honest generic when 'job board' is absent",
+      _autofill_boilerplate("How did you hear about us?*", {"type": "select-one", "required": True}, ["Employee referral", "LinkedIn", "Company website"]) == "Company website")
+check("source picker: named sources alone are still never claimed",
+      _autofill_boilerplate("How did you hear about us?*", {"type": "select-one", "required": True}, ["Employee referral", "LinkedIn", "Career fair"]) is None)
+
+from types import SimpleNamespace as _NS
+from resume_tailor.apply import _relabel_ashby
+from resume_tailor.batch import _education_date_answer, _education_dates
+_ashby = [{"type": "text", "label": "Education History", "placeholder": "Search schools...", "options": []},
+          {"type": "select-one", "label": "Education History", "options": ["Month...", "January", "February", "March", "April", "May", "June", "July"]},
+          {"type": "select-one", "label": "Education History", "options": ["Year...", "2027", "2026", "2025", "2024", "2023", "2022"]},
+          {"type": "select-one", "label": "Education History", "options": ["Month...", "January", "February", "March", "April", "May", "June", "July"]},
+          {"type": "select-one", "label": "Education History", "options": ["Year...", "2027", "2026", "2025", "2024", "2023", "2022"]},
+          {"type": "checkbox", "label": "Education History", "options": []}]
+_relabel_ashby(_ashby)
+check("ashby relabel: school, start month/year, end month/year, still a student, all under Education",
+      [f["label"] for f in _ashby] == ["School", "Start date — Month", "Start date — Year", "End date — Month", "End date — Year", "I am still a student here"]
+      and all(f["section"] == "Education 1" for f in _ashby), str([f["label"] for f in _ashby]))
+_two = [{"type": "text", "label": "Education History", "placeholder": "Search schools...", "options": []}, {"type": "text", "label": "Something else", "options": []}]
+_relabel_ashby(_two)
+check("ashby relabel: fewer than three such controls are left alone", _two[0]["label"] == "Education History")
+_prof = _NS(career={"education_details": [{"institution": "Duke University", "start_date": "08/2024", "year_of_completion": "May 2028"}]})
+check("education dates: parsed from the record", _education_dates(_prof) == {"start_month": "August", "start_year": "2024", "end_month": "May", "end_year": "2028"}, str(_education_dates(_prof)))
+check("education start month answered in the form's words", _education_date_answer(_prof, "Education 1", "Start date — Month", ["Month...", "August", "September"]) == "August")
+check("education start year answered", _education_date_answer(_prof, "Education 1", "Start date — Year", ["Year...", "2025", "2024"]) == "2024")
+check("education end year answered from the completion date", _education_date_answer(_prof, "Education", "End date — Year", ["2028", "2027"]) == "2028")
+check("education month as a number option", _education_date_answer(_prof, "Education", "Start date — Month", ["01", "08", "12"]) == "08")
+check("education dates: nothing outside an Education section", _education_date_answer(_prof, "Work Experience 1", "Start date — Month", ["August"]) is None)
+check("education dates: nothing when the option is absent (never a near miss)", _education_date_answer(_prof, "Education", "Start date — Year", ["2027", "2026"]) is None)
+
+from resume_tailor.apply import _relabel_entry_editors
+_sr = [{"type": "text", "label": "First name*"}, {"type": "text", "label": "Title*"}, {"type": "text", "label": "Company"}, {"type": "text", "label": "From"},
+       {"type": "text", "label": "To"}, {"type": "checkbox", "label": "I currently work here"}, {"type": "text", "label": "Institution*"}, {"type": "text", "label": "Major"},
+       {"type": "text", "label": "From"}, {"type": "checkbox", "label": "I currently attend"}, {"type": "text", "label": "LinkedIn"}]
+_relabel_entry_editors(_sr)
+check("entry editors: Title… is Work Experience 1 with Start/End dates; Institution… is Education 1; the rest untouched",
+      [f.get("section") for f in _sr] == [None, "Work Experience 1", "Work Experience 1", "Work Experience 1", "Work Experience 1", "Work Experience 1",
+                                          "Education 1", "Education 1", "Education 1", "Education 1", None]
+      and _sr[3]["label"] == "Start date" and _sr[4]["label"] == "End date" and _sr[8]["label"] == "Start date", str([(f.get("section"), f["label"]) for f in _sr]))
+check("education whole-date box gets MM/YYYY from the record", _education_date_answer(_prof, "Education 1", "Start date", []) == "08/2024")
+check("education whole-date end box from the completion date", _education_date_answer(_prof, "Education 1", "End date", []) == "05/2028")
+
+
+
+# --- the field scan on a real page: names wired by id, hidden radios named by
+# aria-labelledby, a greyed-out submit, Ant Design's option entries ---------
+_SCAN_HTML = """<!doctype html><html><body><form>
+<div id="loc-label">Location</div><span>*</span>
+<input id="loc" aria-label="textbox" aria-labelledby="loc-label" aria-required="true" aria-autocomplete="list">
+<div id="pr-label">Pronouns</div>
+<input id="pr" aria-label="Search" aria-labelledby="pr-label" role="combobox" placeholder="Search">
+<p>Check Yes or No to indicate your agreement to receive text message updates from Acme regarding your job application.</p>
+<div role="radiogroup">
+  <div role="radio" aria-checked="false"><input type="radio" name="sms" value="true" style="display:none" aria-labelledby="l1"><div id="l1"><p>Yes - I consent to receiving text messages</p></div></div>
+  <div role="radio" aria-checked="false"><input type="radio" name="sms" value="false" style="display:none" aria-labelledby="l2"><div id="l2"><p>No - I do not consent to receiving text messages</p></div></div>
+</div>
+<button type="submit" disabled>Apply</button>
+<div id="g-label">Gender*</div>
+<button aria-haspopup="listbox" aria-labelledby="g-label">Choose not to Disclose</button>
+<div id="h-label">Hispanic or Latino?</div>
+<button aria-haspopup="listbox" aria-labelledby="h-label">Choose One</button>
+</form>
+<div class="ant-select-dropdown"><div class="rc-virtual-list">
+  <div class="ant-select-item ant-select-item-option"><div class="ant-select-item-option-content">Yes</div><span class="ant-select-item-option-state"></span></div>
+  <div class="ant-select-item ant-select-item-option ant-select-item-option-active"><div class="ant-select-item-option-content">No</div></div>
+</div></div>
+</body></html>"""
+
+
+async def _scan_page():
+    import tempfile as _tf
+    from resume_tailor.apply import ApplySession
+    s = ApplySession(headless=True, profile_dir=Path(_tf.mkdtemp()) / "profile")
+    try:
+        await s.start()
+        await s._page.set_content(_SCAN_HTML)
+        fields = await s.describe_form()
+        buttons = await s.buttons()
+        options = [o["t"] for o in await s._visible_options(wait_ms=200)]
+        return fields, buttons, options
+    finally:
+        try:
+            await s.stop()
+        except Exception:
+            pass
+
+
+try:
+    _fields, _buttons, _opts = _aio.run(_scan_page())
+    _by = {f.get("dom_id"): f for f in _fields if f.get("dom_id")}
+    check("scan: a name wired by aria-labelledby beats a generic aria-label (Rippling's 'textbox')",
+          (_by.get("loc") or {}).get("label", "").startswith("Location"), _by.get("loc"))
+    check("scan: a picker whose aria-label is 'Search' is named by its aria-labelledby",
+          (_by.get("pr") or {}).get("label", "") == "Pronouns", _by.get("pr"))
+    _sms = [f for f in _fields if f.get("name") == "sms"]
+    check("scan: display:none radios with visible aria-labelledby labels are listed", len(_sms) == 2, [(f.get("label"), f.get("option_label")) for f in _sms])
+    check("scan: such a group is named by the paragraph before it",
+          all("text message updates" in (f.get("label") or "") for f in _sms), [f.get("label") for f in _sms])
+    check("scan: each radio carries its own option wording",
+          sorted(f.get("option_label") or "" for f in _sms) == ["No - I do not consent to receiving text messages", "Yes - I consent to receiving text messages"],
+          [f.get("option_label") for f in _sms])
+    check("scan: a disabled submit is reported disabled", any(b.get("text") == "Apply" and b.get("disabled") for b in _buttons), _buttons)
+    _lists = {(f.get("label") or ""): f.get("value") for f in _fields if f.get("type") == "listbox"}
+    check("scan: 'Choose not to Disclose' is a chosen value, not an unmade choice", _lists.get("Gender*") == "Choose not to Disclose", _lists)
+    check("scan: 'Choose One' is still an unmade choice", _lists.get("Hispanic or Latino?") == "", _lists)
+    check("scan: Ant Design option entries are read, without their inner content nodes doubling them", _opts == ["Yes", "No"], _opts)
+except Exception as e:  # the browser is part of this check, as in test_untrusted
+    check("scan: the page test ran in a browser", False, f"{type(e).__name__}: {str(e)[:160]}")
+
+from resume_tailor.batch import _greyed_submit, _TEXT_CONSENT
+from resume_tailor.batch import _application_underway, _LANGUAGE_Q, _record_language
+from resume_tailor.batch import _decide as _decide_fn
+check("language: 'Language*' and 'Spoken languages' are the languages question; 'Programming language' is not",
+      bool(_LANGUAGE_Q.match("Language*")) and bool(_LANGUAGE_Q.match("Spoken languages")) and not _LANGUAGE_Q.match("Programming language*"))
+check("language: the record's first language answers it, in the option's words",
+      _aio.run(_decide_fn("Language*", {"type": "listbox"}, ["English", "French", "Spanish"], _P(career={"languages": [{"language": "English", "proficiency": "Native"}]}, answers={}, root=Path(".")), "", {}, {}, None, "listbox")) == "English")
+check("language: a record without languages answers nothing", _record_language(_P(career={}, answers={}, root=Path("."))) == "")
+check("verdict: a questions page after a step that took the name and e-mail is part of the application",
+      _application_underway([{"question": "First name*", "answer": "Ada"}, {"question": "Email*", "answer": "a@b.c"}]))
+check("verdict: nothing answered yet means no application underway", not _application_underway([{"question": "Email*", "answer": ""}]))
+check("submit: the one disabled submit-worded button is the greyed submit",
+      (_greyed_submit([{"text": "Exit to job board"}, {"text": "Apply", "disabled": True, "type": "submit"}]) or {}).get("text") == "Apply")
+check("submit: an enabled Apply is not a greyed submit", _greyed_submit([{"text": "Apply", "type": "submit"}]) is None)
+check("submit: a disabled Withdraw is not a submit", _greyed_submit([{"text": "Withdraw application", "disabled": True}]) is None)
+from resume_tailor.batch import _decide as _decide_fn
+_consenting = _P(career={}, answers={"consents": {"text_message_updates": "Yes"}}, root=Path("."))
+_sms_q = "Check Yes or No to indicate your agreement to receive text message updates from Tive Inc regarding your job application. Frequency may vary. Reply STOP to opt out."
+_sms_opts = ["Yes - I consent to receiving text messages", "No - I do not consent to receiving text messages"]
+_src = {}
+check("consent: the bank's text-message entry answers the paragraph, in the option's words",
+      _aio.run(_decide_fn(_sms_q, {"type": "radio"}, _sms_opts, _consenting, "", {}, _src, None, "radio")) == _sms_opts[0] and "text_message_updates" in str(_src))
+check("consent: a text-message consent paragraph is recognised",
+      bool(_TEXT_CONSENT.search("Check Yes or No to indicate your agreement to receive text message updates from Tive Inc regarding your job application. Frequency may vary."))
+      and bool(_TEXT_CONSENT.search("Do you consent to receive SMS notifications?")) and not _TEXT_CONSENT.search("Do you agree to the terms of service?"))
 
 width = max(len(n) for n, _, _ in RESULTS)
 failed = 0

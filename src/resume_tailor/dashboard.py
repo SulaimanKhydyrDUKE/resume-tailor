@@ -1,13 +1,18 @@
 """A window on the loop: what was attempted, what came of it, and what was sent.
 
 `resume-tailor dashboard` serves a single-page app (React, shipped with the
-package) and a small read-only JSON API over the files the watch already
-writes — batch-state.json, the listings cache, the PDFs and screenshots under
-output/ — so nothing runs twice and nothing is copied. Local only: it binds
-to 127.0.0.1 and never writes.
+package) and a small JSON API over the files the watch already writes —
+batch-state.json, the listings cache, the PDFs and screenshots under output/ —
+so nothing runs twice and nothing is copied. Local only: it binds to
+127.0.0.1. The reads never write; the POSTs do exactly what a button says —
+open a posting in Chrome, record a status by hand — and the Settings tab
+edits the files under ~/.resume-tailor through settings.py, which is the
+one place the tool writes its own configuration.
 """
 from __future__ import annotations
 
+import gzip
+import hashlib
 import json
 import mimetypes
 import os
@@ -21,6 +26,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 from .profile import DEFAULT_PROFILE_DIR
+from .settings import child_env
 
 STATIC = Path(__file__).resolve().parent / "static" / "dashboard.html"
 _SHOT_KINDS = ("post-submit", "pre-submit", "needs-review", "dry-run")
@@ -124,9 +130,79 @@ def pool_status(out_dir: Path) -> dict:
         return {}
 
 
-def build_index(out_dir: str | Path, profile_dir: Path = DEFAULT_PROFILE_DIR) -> dict:
-    """Everything the page shows, from the files on disk right now."""
-    out_dir = Path(out_dir)
+# --- caching -----------------------------------------------------------------
+# Every view is built from files on disk, and the page asks for each one every
+# few seconds. A view is rebuilt only when a file it reads has changed (mtime
+# or size); the JSON it serialises to is kept with it, plain and gzipped, with
+# an ETag — so a poll that finds nothing new costs a few stat calls and a 304,
+# and a tab switch never waits on a 25 MB parse. The state file alone is
+# 15 MB and the index it made was 12 MB, 80 % of it the answers of every
+# attempt, which only one open row ever needs (see application_detail).
+_CACHE: dict[str, dict] = {}
+_CACHE_LOCK = threading.Lock()
+_DETAIL_ONLY = ("answers", "coverage", "mail", "addresses")
+
+
+def _stamp(paths) -> tuple:
+    out = []
+    for p in paths:
+        try:
+            st = Path(p).stat()
+            out.append((str(p), st.st_mtime_ns, st.st_size))
+        except OSError:
+            out.append((str(p), 0, 0))
+    return tuple(out)
+
+
+def _build_view(name: str, stamp: tuple, build, public) -> dict:
+    value = build()
+    body = json.dumps(public(value) if public else value).encode("utf-8")
+    return {"name": name, "stamp": stamp, "value": value, "body": body, "gz": gzip.compress(body, 6),
+            "etag": '"' + hashlib.sha1(body).hexdigest()[:24] + '"', "built": time.time()}
+
+
+def cached_view(name: str, paths, build, public=None, wait: bool = True) -> dict:
+    """The view `name`, rebuilt by `build()` when any of `paths` changed since
+    the last call. Returns {"value", "body", "gz", "etag", "stamp"}; `body`
+    is the JSON of `public(value)` (or of the value itself).
+
+    With `wait` False and a version already on hand, a changed input starts
+    the rebuild on a thread and the caller gets the version on hand at once:
+    while eight workers write the state file every few seconds, the page
+    never waits on a parse, and its next poll picks the new version up."""
+    stamp = _stamp(paths)
+    with _CACHE_LOCK:
+        hit = _CACHE.get(name)
+        if hit is not None and hit["stamp"] == stamp:
+            return hit
+        if hit is not None and not wait:
+            if not _BUILDING.get(name):
+                _BUILDING[name] = True
+
+                def rebuild():
+                    try:
+                        fresh = _build_view(name, stamp, build, public)
+                        with _CACHE_LOCK:
+                            _CACHE[name] = fresh
+                    except Exception:
+                        pass  # the version on hand stands; the next poll tries again
+                    finally:
+                        _BUILDING[name] = False
+
+                threading.Thread(target=rebuild, name=f"rebuild-{name}", daemon=True).start()
+            return hit
+        hit = _build_view(name, stamp, build, public)
+        _CACHE[name] = hit
+        return hit
+
+
+_BUILDING: dict[str, bool] = {}
+
+
+def _index_core(out_dir: Path) -> dict:
+    """The applications and the inbox flows, from the state file, the
+    listings cache, results.json and the screenshots on disk: the heavy
+    part of the page, built once per change of those files (cached_view)."""
     state_path = out_dir / "batch-state.json"
     state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else {"done": {}}
     listings: dict[str, dict] = {}
@@ -142,11 +218,10 @@ def build_index(out_dir: str | Path, profile_dir: Path = DEFAULT_PROFILE_DIR) ->
                 if p.stem.endswith("-" + kind):
                     shots.setdefault(p.stem[: -len(kind) - 1], {})[kind] = _file_url(out_dir, str(p))
     apps = []
-    open_now = reviews_open()
     for eid, rec in (state.get("done") or {}).items():
         l = listings.get(eid, {})
         apps.append({
-            "reviewing": open_now.get(_safe(eid)),
+            "reviewing": None,  # set per request from the review markers (see _with_reviews)
             "id": eid,
             "company": rec.get("company") or l.get("company_name") or "",
             "role": rec.get("role") or l.get("title") or "",
@@ -178,6 +253,46 @@ def build_index(out_dir: str | Path, profile_dir: Path = DEFAULT_PROFILE_DIR) ->
             a["addresses"] = (co or {}).get("addresses") or []
     except Exception as e:
         flow_data, results = {"error": str(e)}, {}
+    full = {a["id"]: a for a in apps}
+    slim = [{k: v for k, v in a.items() if k not in _DETAIL_ONLY} for a in apps]
+    return {"applications": slim, "full": full, "counts": dict(Counter(a["status"] for a in apps)),
+            "applied_companies": state.get("applied_companies") or [], "flows": flow_data,
+            "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+
+
+def index_inputs(out_dir: Path) -> list[Path]:
+    return [out_dir / "batch-state.json", out_dir / "listings-cache.json", out_dir / "results.json", out_dir / "screenshots"]
+
+
+def index_view(out_dir: str | Path, wait: bool = True) -> dict:
+    """The cached core of the page (cached_view): its body is the list
+    without the per-attempt details."""
+    out_dir = Path(out_dir)
+    return cached_view("index", index_inputs(out_dir), lambda: _index_core(out_dir),
+                       public=lambda v: {k: v[k] for k in ("applications", "counts", "applied_companies", "flows", "generated_at")}, wait=wait)
+
+
+def _with_reviews(rows: list[dict]) -> list[dict]:
+    """The rows with `reviewing` set from the review-window markers, which
+    change without any state file changing."""
+    open_now = reviews_open()
+    if not open_now:
+        return rows
+    return [dict(r, reviewing=open_now.get(_safe(r["id"]))) for r in rows]
+
+
+def application_detail(out_dir: str | Path, eid: str) -> dict | None:
+    """One application with everything the list leaves out: the answers
+    given, the coverage, the mail timeline and the addresses seen."""
+    row = index_view(out_dir)["value"]["full"].get(eid)
+    return _with_reviews([row])[0] if row is not None else None
+
+
+def live_status(out_dir: str | Path, profile_dir: Path = DEFAULT_PROFILE_DIR) -> dict:
+    """What changes by the second — each worker's current stage, the loop's
+    status and log tail, the pool. Small; polled often; never cached except
+    the pool, which is a selection over the whole listings cache."""
+    out_dir = Path(out_dir)
     # What each live process is doing: current.json for a lone loop or a
     # retry pass, current-w<k>.json per worker. `now` is the freshest of them.
     workers_now: list[dict] = []
@@ -197,20 +312,110 @@ def build_index(out_dir: str | Path, profile_dir: Path = DEFAULT_PROFILE_DIR) ->
     for info in workers_now:
         info.pop("_mtime", None)
     now = workers_now[0] if workers_now else None
-    return {
-        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "now": now,
-        "workers_now": workers_now,
-        "watch": watch_status(profile_dir),
-        "pool": pool_status(out_dir),
-        "counts": dict(Counter(a["status"] for a in apps)),
-        "applied_companies": state.get("applied_companies") or [],
-        "applications": apps,
-        "flows": flow_data,
-    }
+    pool = cached_view("pool", [out_dir / "listings-cache.json", out_dir / "batch-state.json", out_dir / "fresh-seen.json"],
+                       lambda: pool_status(out_dir), wait=False)["value"]
+    return {"generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "now": now, "workers_now": workers_now,
+            "watch": watch_status(profile_dir), "pool": pool}
+
+
+def build_index(out_dir: str | Path, profile_dir: Path = DEFAULT_PROFILE_DIR) -> dict:
+    """Everything the page shows: the cached core plus the live status. The
+    page itself fetches the two separately (/api/index, /api/now)."""
+    out_dir = Path(out_dir)
+    core = index_view(out_dir)["value"]
+    return {**live_status(out_dir, profile_dir), "counts": core["counts"], "applied_companies": core["applied_companies"],
+            "applications": _with_reviews(core["applications"]), "flows": core["flows"]}
 
 
 REVIEWS_DIR = DEFAULT_PROFILE_DIR / "reviews"
+
+
+_PORTAL_HOST = re.compile(r"jobright|careers?|jobs?|recruit|apply|talent|hire|workday|icims|greenhouse|lever|ashby|oracle|taleo|"
+                          r"successfactors|smartrecruiters|avature|jibeapply|yello|workatastartup|bytedance|tiktok|ycombinator", re.I)
+
+
+def portal_hosts(names: list[str], allowed: list[str] | None = None) -> list[str]:
+    """The saved-login hosts that are job portals: an ATS the tool knows, a
+    host the owner allows accounts on, or one whose name says careers.
+    Ad-tech and analytics cookies (most of the directory) are left out."""
+    from . import ats
+
+    allowed = [str(a).strip().lower() for a in (allowed or []) if str(a).strip()]
+    out = []
+    for name in names:
+        host = name[:-5] if name.endswith(".json") else name
+        host = host.lower().strip(".")
+        if not host or "." not in host:
+            continue
+        if ats.host_kind("https://" + host + "/") not in ("", "other") or any(host == a or host.endswith("." + a) or a in host for a in allowed) \
+                or _PORTAL_HOST.search(host):
+            if not re.search(r"doubleclick|googlesyndication|adsrvr|adnxs|criteo|taboola|outbrain|quantserve|scorecardresearch|"
+                             r"demdex|bluekai|rubiconproject|pubmatic|openx|casalemedia|linkedin\.com$|facebook|twitter|youtube|google\.com$", host):
+                out.append(host)
+    return sorted(dict.fromkeys(out))
+
+
+def build_files(out_dir: str | Path, logins_dir: Path | None = None, answers: dict | None = None) -> dict:
+    """Every tailored résumé and generated document on disk, from the state
+    file, newest first, and the portals with a saved sign-in. The site
+    password is never in this response."""
+    from .apply import ApplySession
+
+    out_dir = Path(out_dir)
+    state_path = out_dir / "batch-state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else {"done": {}}
+    listings: dict[str, dict] = {}
+    cache = out_dir / "listings-cache.json"
+    if cache.is_file():
+        try:
+            for l in json.loads(cache.read_text(encoding="utf-8")):
+                listings[l.get("id") or ""] = l
+        except Exception:
+            pass
+    resumes: list[dict] = []
+    seen: set[str] = set()
+    for eid, rec in (state.get("done") or {}).items():
+        pdf = rec.get("pdf") or ""
+        if not pdf or pdf in seen or not Path(pdf).is_file():
+            continue
+        seen.add(pdf)
+        docs_dir = Path(pdf).parent / "documents"
+        documents = [{"name": d.name, "url": _file_url(out_dir, str(d))} for d in sorted(docs_dir.iterdir())] if docs_dir.is_dir() else []
+        l = listings.get(eid, {})
+        resumes.append({"id": eid, "company": rec.get("company") or l.get("company_name") or "", "role": rec.get("role") or l.get("title") or "",
+                        "status": rec.get("status") or "?", "when": rec.get("when") or "", "fit": rec.get("fit") or "",
+                        "url": l.get("url") or rec.get("url") or "", "pdf": _file_url(out_dir, pdf), "name": Path(pdf).name,
+                        "folder": Path(pdf).parent.name, "documents": documents, "resume_version": rec.get("resume_version") or 0})
+    resumes.sort(key=lambda r: r["when"], reverse=True)
+    if answers is None:
+        try:
+            from .profile import Profile
+            answers = Profile.load().answers
+        except Exception:
+            answers = {}
+    allowed = list((answers.get("search") or {}).get("create_accounts_on") or [])
+    ldir = logins_dir if logins_dir is not None else ApplySession.LOGINS_DIR
+    names = [p.name for p in ldir.glob("*.json")] if ldir.is_dir() else []
+    return {"resumes": resumes, "counts": {"resumes": len(resumes), "documents": sum(len(r["documents"]) for r in resumes)},
+            "logins": {"hosts": portal_hosts(names, allowed), "saved_sites": len(names), "allowed": allowed}}
+
+
+def reveal_logins() -> dict:
+    """The site account's e-mail(s) and password, for signing in by hand.
+    Read at the moment the page's Reveal button asks."""
+    import os
+
+    from .llm import _load_env_file
+    from .profile import Profile
+
+    _load_env_file()
+    profile = Profile.load()
+    email = str(profile.career.get("personal_information", {}).get("email") or "")
+    flat = profile.flat_answers()
+    others = sorted({str(v) for k, v in flat.items() if "email" in k.lower() and "@" in str(v)} - {email})
+    return {"email": email, "other_emails": others, "site_password": os.environ.get("RESUME_TAILOR_SITE_PASSWORD") or "",
+            "mailbox_user": os.environ.get("RESUME_TAILOR_IMAP_USER") or "",
+            "note": "The site password is the one the tool used for every portal account it created; older accounts were made with the earlier e-mail."}
 
 
 def open_for_review(out_dir: Path, entry_id: str) -> int:
@@ -225,7 +430,7 @@ def open_for_review(out_dir: Path, entry_id: str) -> int:
     log = open(DEFAULT_PROFILE_DIR / "review.log", "a", buffering=1)
     proc = subprocess.Popen(
         [sys.executable, "-m", "resume_tailor.cli", "review", entry_id, "--out", str(out_dir)],
-        cwd=out_dir.parent, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
+        cwd=out_dir.parent, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True, env=child_env())
     (REVIEWS_DIR / f"{_safe(entry_id)}.json").write_text(
         json.dumps({"pid": proc.pid, "since": time.strftime("%Y-%m-%dT%H:%M:%S")}), encoding="utf-8")
     return proc.pid
@@ -243,7 +448,7 @@ def open_for_login(out_dir: Path, entry_id: str) -> int:
     log = open(DEFAULT_PROFILE_DIR / "login.log", "a", buffering=1)
     proc = subprocess.Popen(
         [sys.executable, "-m", "resume_tailor.cli", "login", entry_id, "--out", str(out_dir)],
-        cwd=out_dir.parent, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
+        cwd=out_dir.parent, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True, env=child_env())
     (REVIEWS_DIR / f"{_safe(entry_id)}.json").write_text(
         json.dumps({"pid": proc.pid, "since": time.strftime("%Y-%m-%dT%H:%M:%S"), "mode": "login"}), encoding="utf-8")
     return proc.pid
@@ -259,7 +464,7 @@ def open_for_submit(out_dir: Path, entry_id: str) -> int:
     log = open(DEFAULT_PROFILE_DIR / "approve.log", "a", buffering=1)
     proc = subprocess.Popen(
         [sys.executable, "-m", "resume_tailor.cli", "submit", entry_id, "--out", str(out_dir)],
-        cwd=out_dir.parent, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
+        cwd=out_dir.parent, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True, env=child_env())
     return proc.pid
 
 
@@ -319,9 +524,44 @@ class _Handler(BaseHTTPRequestHandler):
             if path.startswith("/api/mark/"):
                 rec = mark(self.out_dir, path[len("/api/mark/"):], str(body.get("status", "")))
                 return self._send(json.dumps({"ok": True, "status": rec["status"]}).encode("utf-8"), "application/json")
+            if path.startswith("/api/settings/"):
+                return self._send(json.dumps(self._settings_post(path[len("/api/settings/"):], body)).encode("utf-8"), "application/json")
         except Exception as e:
             return self._send(json.dumps({"error": str(e)}).encode("utf-8"), "application/json", 400)
         self._send(b"not found", "text/plain", 404)
+
+    def _settings_post(self, action: str, body: dict) -> dict:
+        """The Settings tab's writes, each to the file it names (settings.py).
+        Every one answers with what was saved, or raises for a 400."""
+        from . import settings
+
+        if action == "env":
+            updates = body.get("updates") or {}
+            if not isinstance(updates, dict) or not updates:
+                raise ValueError("nothing to save")
+            settings.write_env({str(k): (None if v is None else str(v)) for k, v in updates.items()})
+            return {"ok": True, "saved": sorted(updates)}
+        if action == "answers":
+            return {"ok": True, **settings.save_answers_section(str(body.get("section") or ""), body.get("data") or {},
+                                                                  [str(x) for x in (body.get("removed") or [])])}
+        if action == "basics":
+            return {"ok": True, **settings.save_basics(body)}
+        if action == "resume":
+            return {"ok": True, **settings.save_skeleton(body.get("skeleton") or {})}
+        if action == "resume/upload":
+            import base64
+
+            try:
+                data = base64.b64decode(str(body.get("data") or ""), validate=True)
+            except Exception as e:
+                raise ValueError("the upload did not arrive whole") from e
+            dest = settings.save_upload(str(body.get("name") or ""), data)
+            result = settings.run_intake(dest, self.out_dir)
+            result["upload"] = dest.name
+            return {"ok": True, **result}
+        if action == "restart":
+            return {"ok": True, **settings.restart_workers(self.out_dir)}
+        raise ValueError(f"unknown settings action {action!r}")
 
     def do_GET(self):
         path = unquote(urlsplit(self.path).path)
@@ -329,10 +569,66 @@ class _Handler(BaseHTTPRequestHandler):
             return self._send(STATIC.read_bytes(), "text/html; charset=utf-8")
         if path == "/api/index":
             try:
-                body = json.dumps(build_index(self.out_dir)).encode("utf-8")
+                hit = index_view(self.out_dir, wait=False)
             except Exception as e:  # a half-written state file mid-save, most likely
                 return self._send(json.dumps({"error": str(e)}).encode("utf-8"), "application/json", 500)
+            return self._send_view(hit)
+        if path == "/api/now":
+            try:
+                body = json.dumps(live_status(self.out_dir)).encode("utf-8")
+            except Exception as e:
+                return self._send(json.dumps({"error": str(e)}).encode("utf-8"), "application/json", 500)
             return self._send(body, "application/json")
+        if path.startswith("/api/application/"):
+            try:
+                row = application_detail(self.out_dir, path[len("/api/application/"):])
+            except Exception as e:
+                return self._send(json.dumps({"error": str(e)}).encode("utf-8"), "application/json", 500)
+            if row is None:
+                return self._send(json.dumps({"error": "no such application"}).encode("utf-8"), "application/json", 404)
+            return self._send(json.dumps(row).encode("utf-8"), "application/json")
+        if path == "/api/files":
+            # Every tailored résumé and generated document, plus which portals
+            # hold a saved sign-in. No secret in this response (see /api/logins/reveal).
+            try:
+                from .apply import ApplySession
+                hit = cached_view("files", [self.out_dir / "batch-state.json", self.out_dir / "listings-cache.json",
+                                            self.out_dir / "resumes", ApplySession.LOGINS_DIR, DEFAULT_PROFILE_DIR.parent / "answers.yaml"],
+                                  lambda: build_files(self.out_dir), wait=False)
+            except Exception as e:
+                return self._send(json.dumps({"error": str(e)}).encode("utf-8"), "application/json", 500)
+            return self._send_view(hit)
+        if path == "/api/logins/reveal":
+            # The site account's e-mail and password, only when the page's
+            # Reveal button asks: never part of the index or the files list.
+            try:
+                body = json.dumps(reveal_logins()).encode("utf-8")
+            except Exception as e:
+                return self._send(json.dumps({"error": str(e)}).encode("utf-8"), "application/json", 500)
+            return self._send(body, "application/json")
+        if path == "/api/settings":
+            # Everything the Settings tab edits, read fresh from the files;
+            # secrets come back as set/unset with their last four characters.
+            try:
+                from .settings import settings_view
+                home = DEFAULT_PROFILE_DIR.parent
+                hit = cached_view("settings", [home / "career.yaml", home / "answers.yaml", home / "env", home / "resume" / "base.yaml",
+                                               self.out_dir / "listings-cache.json", self.out_dir / "discover-state.json"],
+                                  lambda: settings_view(self.out_dir), wait=False)
+            except Exception as e:
+                return self._send(json.dumps({"error": str(e)}).encode("utf-8"), "application/json", 500)
+            return self._send_view(hit)
+        if path == "/api/calendar":
+            # Both calendars (calendar.py): applications by the day they went
+            # out, and the dates the inbox set. Read from disk; nothing scanned here.
+            try:
+                from .calendar import DEADLINES_NAME, build_calendar
+                hit = cached_view("calendar", [self.out_dir / "batch-state.json", self.out_dir / "listings-cache.json",
+                                               self.out_dir / "results.json", self.out_dir / DEADLINES_NAME, self.out_dir / "screenshots"],
+                                  lambda: build_calendar(self.out_dir), wait=False)
+            except Exception as e:
+                return self._send(json.dumps({"error": str(e)}).encode("utf-8"), "application/json", 500)
+            return self._send_view(hit)
         if path.startswith("/files/"):
             root = self.out_dir.resolve()
             target = (root / path[len("/files/"):]).resolve()
@@ -342,13 +638,30 @@ class _Handler(BaseHTTPRequestHandler):
             return self._send(target.read_bytes(), ctype)
         self._send(b"not found", "text/plain", 404)
 
-    def _send(self, body: bytes, ctype: str, code: int = 200) -> None:
+    def _send(self, body: bytes, ctype: str, code: int = 200, extra: dict | None = None) -> None:
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
+
+    def _send_view(self, hit: dict) -> None:
+        """A cached view: 304 when the page already holds this version
+        (If-None-Match), gzipped when the page accepts it."""
+        if self.headers.get("If-None-Match") == hit["etag"]:
+            self.send_response(304)
+            self.send_header("ETag", hit["etag"])
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            return
+        extra = {"ETag": hit["etag"], "Vary": "Accept-Encoding"}
+        if "gzip" in (self.headers.get("Accept-Encoding") or ""):
+            extra["Content-Encoding"] = "gzip"
+            return self._send(hit["gz"], "application/json", 200, extra)
+        return self._send(hit["body"], "application/json", 200, extra)
 
 
 def serve(out_dir: str | Path, port: int = 8765, open_browser: bool = False) -> None:
