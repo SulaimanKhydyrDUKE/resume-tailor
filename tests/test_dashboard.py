@@ -98,6 +98,51 @@ with tempfile.TemporaryDirectory() as d:
     except ValueError:
         check("mark: only applied/skipped/needs_review can be set by hand", True)
 
+# --- the calendars: applications by day, dates from the inbox, the .ics ---------
+import json as _json
+import tempfile as _tempfile
+from datetime import datetime as _dt
+from resume_tailor.calendar import TZ, _find_dates, _local_date, _plausible, build_calendar, candidate_messages, write_ics
+
+_r = _dt(2026, 9, 10, 9, 0, tzinfo=TZ)
+_found = [d.isoformat()[:16] for d in _find_dates("Complete the assessment by September 14 at 11:59 PM. Interview on 10/03/2026. Reply within 7 days. Founded in 2023.", _r)]
+check("find_dates: month-day with a time, a slash date, and a 'within N days' window", _found == ["2026-09-14T23:59", "2026-09-17T09:00", "2026-10-03T00:00"], str(_found))
+check("find_dates: a bare past year is not a date", not _find_dates("We were founded in 2023 and grew in 2024.", _r))
+check("find_dates: a month-day already passed this year rolls to next year", [d.year for d in _find_dates("Applications open January 5.", _r)] == [2027])
+check("find_dates: nothing beyond half a year", not _find_dates("The program runs until 2027-06-01.", _r))
+check("plausible: a date before the message is not a deadline", not _plausible("2020-10-05", "2026-09-25T10:00:00-04:00"))
+check("plausible: a date the next week is", _plausible("2026-10-01", "2026-09-25T10:00:00-04:00"))
+check("local_date: an ISO stamp with offset gives the local day", _local_date("2026-09-14T23:59:00-04:00") == "2026-09-14")
+check("local_date: a UTC stamp late at night lands on the local day", _local_date("2026-09-15T02:30:00Z") == "2026-09-14")
+
+_cands = candidate_messages({"companies": {
+    "acme": {"company": "Acme", "timeline": [{"uid": 1, "stage": "oa", "subject": "Your assessment", "when": "2026-09-10T09:00:00-04:00"},
+                                             {"uid": 2, "stage": "applied", "subject": "Thanks for applying", "when": "2026-09-10T09:00:00-04:00"},
+                                             {"uid": 3, "stage": "other", "subject": "Reminder: complete your profile by Friday", "when": "2026-09-11T09:00:00-04:00"}]}}})
+check("candidates: assessments and deadline-worded subjects, not a plain confirmation", sorted(c["uid"] for c in _cands) == [1, 3], str(_cands))
+
+_tmp = Path(_tempfile.mkdtemp())
+(_tmp / "batch-state.json").write_text(_json.dumps({"done": {
+    "id-1": {"company": "Acme", "role": "SWE Intern", "status": "applied", "when": "2026-09-11T19:02:44-04:00", "pdf": str(_tmp / "acme.pdf")},
+    "id-2": {"company": "Beta", "role": "Data Intern", "status": "needs_review", "when": "2026-09-11T21:10:00-04:00"},
+    "id-3": {"company": "Gamma", "role": "Intern", "status": "applied", "when": "2026-09-12T03:30:00Z"},
+}}))
+(_tmp / "results.json").write_text(_json.dumps({"companies": {
+    "acme": {"company": "Acme", "stage": "oa", "timeline": [{"uid": 11, "when": "2026-09-12T10:00:00-04:00", "subject": "Assessment invite", "stage": "oa", "date": "2026-09-14T23:59:00-04:00", "note": "finish by deadline"},
+                                                            {"uid": 12, "when": "2026-09-12T10:00:00-04:00", "subject": "old", "stage": "other", "date": "2023-09-18", "note": "credit card offer"}]}}}))
+(_tmp / "deadlines.json").write_text(_json.dumps({"events": {"11": {"uid": "11", "key": "acme", "company": "Acme", "subject": "Assessment invite", "received": "2026-09-12T10:00:00-04:00",
+                                                                     "stage": "oa", "date": "2026-09-14T22:00", "kind": "assessment", "what": "finish the HackerRank", "source": "model"}}}))
+(_tmp / "acme.pdf").write_bytes(b"%PDF-1.4")
+_cal = build_calendar(_tmp)
+check("calendar: attempts grouped by local day, the UTC one on its local evening", sorted(_cal["applied"]) == ["2026-09-11"] and [a["company"] for a in _cal["applied"]["2026-09-11"]] == ["Acme", "Beta", "Gamma"], str({k: [a["company"] for a in v] for k, v in _cal["applied"].items()}))
+check("calendar: every attempt carries its status so the page can filter", [a["status"] for a in _cal["applied"]["2026-09-11"]] == ["applied", "needs_review", "applied"])
+check("calendar: the PDF is served as a /files/ link", str(_cal["applied"]["2026-09-11"][0]["pdf"]).startswith("/files/"), str(_cal["applied"]["2026-09-11"][0]["pdf"]))
+check("calendar: the inbox pass's event wins over the scan's for the same message, and the stale 2023 mention is dropped",
+      list(_cal["deadlines"]) == ["2026-09-14"] and _cal["deadlines"]["2026-09-14"][0]["what"] == "finish the HackerRank" and _cal["counts"]["events"] == 1, str(_cal["deadlines"]))
+_ics = write_ics(_tmp, _cal).read_text()
+check("ics: one timed deadline and one all-day applied summary", _ics.count("BEGIN:VEVENT") == 2 and "DTSTART;TZID=America/New_York:20260914T220000" in _ics and "SUMMARY:Applied: 2 (Acme\, Gamma)" in _ics, _ics[:600])
+
+
 width = max(len(n) for n, _, _ in RESULTS)
 failed = 0
 for name, ok, detail in RESULTS:

@@ -789,6 +789,15 @@ def main() -> int:
     pm.add_argument("--no-model", action="store_true", help="rules only; do not ask the model about unplaced mail")
     pm.set_defaults(func=lambda a: __import__("resume_tailor.mailscan", fromlist=["run_cli"]).run_cli(a))
 
+    pc = sub.add_parser("calendar", help="deadlines read from the inbox, and the days applications went out; also on the dashboard's Calendar tab")
+    pc.add_argument("action", choices=["show", "scan", "ics"],
+                    help="show = upcoming dates and applications by day; scan = read the inbox for dates (output/deadlines.json); ics = write output/calendar.ics")
+    pc.add_argument("--out", default="output")
+    pc.add_argument("--no-model", action="store_true", help="scan: patterns only; do not ask the model to read each message")
+    pc.add_argument("--refresh", action="store_true", help="scan: re-read messages already read")
+    pc.add_argument("--limit", type=int, default=None, help="scan: at most this many messages")
+    pc.set_defaults(func=lambda a: __import__("resume_tailor.calendar", fromlist=["run_cli"]).run_cli(a))
+
     po = sub.add_parser("outreach", help="e-mail the recruiting team of each company applied to: a short note, the résumé attached")
     po.add_argument("action", choices=["lookup", "plan", "send", "log"],
                     help="lookup = fill the address cache for every company, plan = show what would be sent, send = send it, log = what was sent")
