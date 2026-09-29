@@ -14,6 +14,14 @@ The specification and the architecture are in [SPEC.md](SPEC.md); the
 requirement numbers there (R1–R20) are the ones the tests and the gaps
 section below refer to.
 
+> **Course submission (CompSci 390.05, Fall 2026).** This repository is the
+> project submission. It lives at `sk930/mass-apply-submission` rather than
+> in the course group's `mass-apply` project because that project's default
+> branch is fully protected and rejected every push from a Developer; the
+> code, history and CI here are the same. Development continues on GitHub
+> (`SulaimanKhydyrDUKE/resume-tailor`), where later work is proposed as pull
+> requests against `main`.
+
 ## Quick start
 
 ```bash
@@ -57,14 +65,17 @@ export OPENAI_API_KEY=sk-...          # or OpenAI — also set RESUME_TAILOR_PRO
 
 Dev environment, in the repo: `pyproject.toml` (the package and its
 dependencies), `uv.lock` (pinned resolution, `uv sync` recreates it exactly),
-`.python-version` (3.11), `.env.example` (every environment key the code
-reads, to copy into `~/.resume-tailor/env`), and a `Dockerfile` plus
-`.devcontainer/devcontainer.json` on Playwright's Python image with Chromium
-installed:
+`.python-version` (3.11 for a local venv), `.env.example` (every environment
+key the code reads, to copy into `~/.resume-tailor/env`), and a `Dockerfile`
+plus `.devcontainer/devcontainer.json` on Playwright's Python image (Ubuntu
+24.04, Python 3.12, Chromium installed; the Playwright package is pinned to
+the image's release, and the package itself is installed at build time, so
+the dev container is ready as soon as it opens):
 
 ```bash
 docker build -t resume-tailor .
-docker run --rm -v ~/.resume-tailor:/root/.resume-tailor -v "$PWD/output:/app/output" resume-tailor resume-tailor tailor --text posting.txt
+docker run --rm resume-tailor sh -c 'for t in tests/test_*.py; do python "$t" | tail -1; done'   # the test suites, in the container
+docker run --rm -v ~/.resume-tailor:/root/.resume-tailor -v "$PWD:/work" resume-tailor resume-tailor tailor /work/posting.txt
 ```
 
 ## Test

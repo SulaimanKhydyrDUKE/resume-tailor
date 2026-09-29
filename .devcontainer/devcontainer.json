@@ -5,7 +5,7 @@
   "mounts": [
     "source=${localEnv:HOME}/.resume-tailor,target=/root/.resume-tailor,type=bind,consistency=cached"
   ],
-  "postCreateCommand": "pip install -e . && for t in tests/test_*.py; do python \"$t\" | tail -1; done",
+  "postCreateCommand": "for t in tests/test_*.py; do python \"$t\" | tail -1; done",
   "customizations": {
     "vscode": {
       "extensions": ["ms-python.python"],
