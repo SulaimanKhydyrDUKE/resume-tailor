@@ -865,6 +865,59 @@ async def _write_document(profile: Profile, label: str, kind: str, posting_text:
     return out
 
 
+_MONTH_NAMES = ("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+
+
+def _education_dates(profile: Profile) -> dict:
+    """The first degree's start and end, as month names and years, from the
+    record ("start_date: 08/2024", "year_of_completion: May 2028")."""
+    eds = (profile.career.get("education_details") or []) if isinstance(profile.career, dict) else []
+    if not eds:
+        return {}
+    ed = eds[0]
+    out: dict[str, str] = {}
+    for key, raw in (("start", ed.get("start_date")), ("end", ed.get("year_of_completion") or ed.get("end_date") or ed.get("graduation_date"))):
+        s = str(raw or "").strip()
+        m = re.search(r"(\d{1,2})[/-](\d{4})", s)
+        if m:
+            out[key + "_month"], out[key + "_year"] = _MONTH_NAMES[int(m.group(1)) - 1], m.group(2)
+            continue
+        m = re.search(r"(" + "|".join(_MONTH_NAMES) + r")[a-z]*\.?\s+(\d{4})", s, re.I)
+        if m:
+            out[key + "_month"], out[key + "_year"] = m.group(1).capitalize()[:3], m.group(2)
+            out[key + "_month"] = next(n for n in _MONTH_NAMES if n.startswith(out[key + "_month"]))
+            continue
+        m = re.search(r"\b(\d{4})\b", s)
+        if m:
+            out[key + "_year"] = m.group(1)
+    return out
+
+
+def _education_date_answer(profile: Profile, section: str, question: str, options: list[str]) -> str | None:
+    """A Start/End month or year box in an Education section, answered from
+    the record's degree in the form's own option words. Nothing for any
+    other question."""
+    if not re.search(r"education|school|academic|degree", section or "", re.I):
+        return None
+    q = (question or "").lower()
+    which = "start" if re.search(r"\b(start|from|begin)", q) else "end" if re.search(r"\b(end|to|graduat|complet|finish)", q) else None
+    part = "month" if "month" in q else "year" if "year" in q else None
+    if not which or not part:
+        return None
+    want = _education_dates(profile).get(f"{which}_{part}")
+    if not want:
+        return None
+    if options:
+        for o in options:
+            if part == "year" and str(o).strip() == want:
+                return str(o)
+            if part == "month" and (str(o).strip().lower() == want.lower() or str(o).strip().lower()[:3] == want.lower()[:3]
+                                    or re.fullmatch(r"0?%d" % (_MONTH_NAMES.index(want) + 1), str(o).strip())):
+                return str(o)
+        return None
+    return want
+
+
 def _school_names(profile: Profile) -> list[str]:
     """The candidate's institutions, lowercased, from the record."""
     names = []
@@ -932,6 +985,19 @@ def _pick_add(adds: list[dict], want: str) -> dict | None:
     return adds[0] if len(adds) == 1 else None
 
 
+_ADD_JS_DEEP = None
+
+
+def _add_js() -> str:
+    """_ADD_JS wrapped to pierce shadow roots — SmartRecruiters draws its
+    form from web components, and a plain query sees no Add at all."""
+    global _ADD_JS_DEEP
+    if _ADD_JS_DEEP is None:
+        from .apply import _deep
+        _ADD_JS_DEEP = _deep(_ADD_JS.strip())
+    return _ADD_JS_DEEP
+
+
 async def _add_entries_for(session: ApplySession, errors: list[str]) -> int:
     """Press the Add of every section the page says must hold an entry —
     SmartRecruiters' Education and Work Experience blocks come empty, and
@@ -941,7 +1007,7 @@ async def _add_entries_for(session: ApplySession, errors: list[str]) -> int:
     if not wanted:
         return 0
     try:
-        adds = await session._doc.evaluate(_ADD_JS)
+        adds = await session._doc.evaluate(_add_js())
     except Exception:
         return 0
     pressed = 0
@@ -1430,6 +1496,11 @@ async def _decide(question: str, field: dict, options: list[str], profile: Profi
             sources[(section, question)] = "record: the ongoing role's employer"
             decided[key] = emp
             return emp
+    edu_date = _education_date_answer(profile, section, question, options)
+    if edu_date is not None:
+        sources[(section, question)] = "record: the degree's dates"
+        decided[key] = edu_date
+        return edu_date
     if _GRAD_YEAR_Q.search(question) and not options and not field.get("combobox") and field.get("type") in ("text", "number", ""):
         year = _graduation_year(profile)
         if year:
@@ -2798,6 +2869,7 @@ def session_on_file(site: dict, logins_dir: Path | None = None) -> tuple[bool, s
     candidates = [".".join(parts[i:]) for i in range(len(parts) - 1)]
     now = time.time()
     seen: list[str] = []
+    expired: list[str] = []
     for h in candidates:
         p = d / (re.sub(r"[^a-z0-9.-]", "_", h) + ".json")
         if not p.is_file():
@@ -2807,12 +2879,18 @@ def session_on_file(site: dict, logins_dir: Path | None = None) -> tuple[bool, s
         except Exception:
             continue
         for c in cookies:
+            name = c.get("name") or ""
+            matches = not site.get("cookie") or bool(re.search(site["cookie"], name))
             exp = c.get("expires")
             if exp and exp > 0 and exp < now:
+                if matches:
+                    expired.append(name)
                 continue
-            seen.append(c.get("name") or "")
-            if not site.get("cookie") or re.search(site["cookie"], c.get("name") or ""):
-                return True, f"{c.get('name')} on {h}"
+            seen.append(name)
+            if matches:
+                return True, f"{name} on {h}"
+    if expired:
+        return False, f"session expired ({expired[0]}) — sign in again"
     return False, (f"{len(seen)} cookies on file, none a session" if seen else "nothing on file")
 
 

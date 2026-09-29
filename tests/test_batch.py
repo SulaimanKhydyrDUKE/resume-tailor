@@ -944,7 +944,7 @@ _ld = Path(_tmp.mkdtemp())
 (_ld / "lifeattiktok.com.json").write_text(_json.dumps([{"name": "atsx-portal-session-v1", "domain": "lifeattiktok.com", "expires": -1}]))
 _g, _j, _t = (dict(x) for x in DEFAULT_HAND_LOGINS)
 check("session on file: Google's SID counts", session_on_file(_g, _ld)[0] and "SID" in session_on_file(_g, _ld)[1])
-check("session on file: an expired session does not", session_on_file(_j, _ld) == (False, "0 cookies on file, none a session"))
+check("session on file: an expired session says so", session_on_file(_j, _ld)[0] is False and "expired" in session_on_file(_j, _ld)[1])
 check("session on file: a session cookie with no expiry counts", session_on_file(_t, _ld)[0])
 check("session on file: a site with no cookie rule takes any live cookie", session_on_file({"host": "www.google.com"}, _ld)[0])
 check("session on file: nothing saved reads as nothing", session_on_file({"host": "example.org"}, _ld) == (False, "nothing on file"))
@@ -1080,6 +1080,31 @@ check("source picker: 'Company website' is an honest generic when 'job board' is
       _autofill_boilerplate("How did you hear about us?*", {"type": "select-one", "required": True}, ["Employee referral", "LinkedIn", "Company website"]) == "Company website")
 check("source picker: named sources alone are still never claimed",
       _autofill_boilerplate("How did you hear about us?*", {"type": "select-one", "required": True}, ["Employee referral", "LinkedIn", "Career fair"]) is None)
+
+from types import SimpleNamespace as _NS
+from resume_tailor.apply import _relabel_ashby
+from resume_tailor.batch import _education_date_answer, _education_dates
+_ashby = [{"type": "text", "label": "Education History", "placeholder": "Search schools...", "options": []},
+          {"type": "select-one", "label": "Education History", "options": ["Month...", "January", "February", "March", "April", "May", "June", "July"]},
+          {"type": "select-one", "label": "Education History", "options": ["Year...", "2027", "2026", "2025", "2024", "2023", "2022"]},
+          {"type": "select-one", "label": "Education History", "options": ["Month...", "January", "February", "March", "April", "May", "June", "July"]},
+          {"type": "select-one", "label": "Education History", "options": ["Year...", "2027", "2026", "2025", "2024", "2023", "2022"]},
+          {"type": "checkbox", "label": "Education History", "options": []}]
+_relabel_ashby(_ashby)
+check("ashby relabel: school, start month/year, end month/year, still a student, all under Education",
+      [f["label"] for f in _ashby] == ["School", "Start date — Month", "Start date — Year", "End date — Month", "End date — Year", "I am still a student here"]
+      and all(f["section"] == "Education 1" for f in _ashby), str([f["label"] for f in _ashby]))
+_two = [{"type": "text", "label": "Education History", "placeholder": "Search schools...", "options": []}, {"type": "text", "label": "Something else", "options": []}]
+_relabel_ashby(_two)
+check("ashby relabel: fewer than three such controls are left alone", _two[0]["label"] == "Education History")
+_prof = _NS(career={"education_details": [{"institution": "Duke University", "start_date": "08/2024", "year_of_completion": "May 2028"}]})
+check("education dates: parsed from the record", _education_dates(_prof) == {"start_month": "August", "start_year": "2024", "end_month": "May", "end_year": "2028"}, str(_education_dates(_prof)))
+check("education start month answered in the form's words", _education_date_answer(_prof, "Education 1", "Start date — Month", ["Month...", "August", "September"]) == "August")
+check("education start year answered", _education_date_answer(_prof, "Education 1", "Start date — Year", ["Year...", "2025", "2024"]) == "2024")
+check("education end year answered from the completion date", _education_date_answer(_prof, "Education", "End date — Year", ["2028", "2027"]) == "2028")
+check("education month as a number option", _education_date_answer(_prof, "Education", "Start date — Month", ["01", "08", "12"]) == "08")
+check("education dates: nothing outside an Education section", _education_date_answer(_prof, "Work Experience 1", "Start date — Month", ["August"]) is None)
+check("education dates: nothing when the option is absent (never a near miss)", _education_date_answer(_prof, "Education", "Start date — Year", ["2027", "2026"]) is None)
 
 
 width = max(len(n) for n, _, _ in RESULTS)
