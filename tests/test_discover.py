@@ -349,6 +349,29 @@ check("hand links: a story link a feed already lists is not listed twice", "sim-
 check("hand links: a story link no feed has is added", "ig:cccc" in _ids)
 check("hand links: ids stay unique", len(_ids) == len(set(_ids)))
 check("entries: the listing's source travels with the queue entry", _to_entry(_hand[0]).source == "added by hand")
+import datetime as _dt2
+_yday = (_dt2.datetime.now().astimezone() - _dt2.timedelta(days=1)).isoformat()
+_hs = RunState(path=Path(tempfile.mkdtemp()) / "s.json",
+               done={"gh:old": {"status": "applied", "company": "GITAI", "when": _yday, "attempts": 1},
+                     "sim-9": {"status": "applied", "company": "Zeta", "when": _yday, "attempts": 1}})
+_hl = [L(id="gh:old", company_name="GITAI", url="https://job-boards.greenhouse.io/gitai/jobs/1", date_posted=100),
+       L(id="ig:new", company_name="GITAI", url="https://job-boards.greenhouse.io/gitai/jobs/5", source="added by hand", date_posted=100),
+       L(id="sim-9", company_name="Zeta", url="https://jobs.lever.co/zeta/1", date_posted=100),
+       L(id="ig:dup", company_name="Zeta", url="https://jobs.lever.co/zeta/1?gh_src=ig", source="added by hand", date_posted=100),
+       L(id="feed-2", company_name="GITAI", url="https://job-boards.greenhouse.io/gitai/jobs/7", source="Simplify", title="Software Engineer Intern", date_posted=100)]
+_hsel, _hwhy = select(_hl, Prefs(max_posting_age_days=0, positions=["Software Engineer Intern"], apply_once_at_company=False, company_cooldown_days=7), _hs)
+_hids = {e.id for e in _hsel}
+check("by hand: the company cooldown does not hold the user's own pick", "ig:new" in _hids)
+check("by hand: a link already applied to is not applied to again", "ig:dup" not in _hids and _hwhy.get("this link was already applied to") == 1)
+check("by hand: a feed posting at the same company still rests", "feed-2" not in _hids)
+_rs = RunState(path=Path(tempfile.mkdtemp()) / "s.json",
+               done={"gh:gone": {"status": "applied", "company": "GITAI", "role": "Field-Deployed Software Engineering Intern", "when": _yday, "attempts": 1}})
+_rl = [L(id="ig:same", company_name="GITAI", title="Field-Deployed Software Engineering Intern", url="https://job-boards.greenhouse.io/gitai/jobs/5437128008", source="added by hand", date_posted=100),
+       L(id="ig:other", company_name="GITAI", title="Robotics Software Intern", url="https://job-boards.greenhouse.io/gitai/jobs/9", source="added by hand", date_posted=100)]
+_rsel, _rwhy = select(_rl, Prefs(max_posting_age_days=0, positions=["Software Engineer Intern"], apply_once_at_company=False), _rs)
+check("by hand: the same role at the same company, applied to under a listing no longer cached, is not applied to again",
+      "ig:same" not in {e.id for e in _rsel} and any(k.startswith("this role was already applied to") for k in _rwhy))
+check("by hand: a different role there still goes", "ig:other" in {e.id for e in _rsel})
 
 
 width = max(len(n) for n, _, _ in RESULTS)

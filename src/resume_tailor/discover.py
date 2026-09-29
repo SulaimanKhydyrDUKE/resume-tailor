@@ -696,8 +696,36 @@ def select(listings: list[dict], prefs: Prefs, state: RunState | None = None,
                 holds_at[company_key(company)] = holds_at.get(company_key(company), 0) + 1
     max_age = int(getattr(prefs, "max_posting_age_days", 21) or 0)
     stale_before = int(time.time()) - max_age * 86400 if max_age else 0
+    applied_urls: set[str] = set()
+    applied_roles: dict[tuple[str, str], str] = {}
+    if state is not None:
+        for rid, rec in state.done.items():
+            if rec.get("status") not in ("applied", "awaiting_approval", "by_hand"):
+                continue
+            applied_urls.add(url_key((by_listing_id.get(rid) or {}).get("url") or ""))
+            if rec.get("company") and rec.get("role"):
+                # The listing behind an older record may have left the cache;
+                # the record's own company and role still say what was sent.
+                applied_roles[role_key_of(rec["company"], rec["role"])] = (rec.get("when") or "")[:10]
+        applied_urls.discard("")
     for l in listings:
         reason = evaluate(l, prefs)
+        if not reason and l.get("source") == "added by hand" and state is not None:
+            # The user's own pick: the company cooldown, the judges' holds on
+            # the company and the retry caps are for the feeds. Only a link
+            # already applied to is not applied to again.
+            rk = role_key_of(l.get("company_name") or "", l.get("title") or "")
+            if url_key(l.get("url") or "") in applied_urls:
+                reason = "this link was already applied to"
+            elif rk in applied_roles and rk[1]:
+                reason = f"this role was already applied to at this company ({applied_roles[rk]})"
+            elif state.already_attempted(l.get("id") or l.get("url", ""), RETRYABLE):
+                reason = "already attempted"
+            if reason:
+                excluded[reason] = excluded.get(reason, 0) + 1
+            else:
+                kept.append(l)
+            continue
         attempted_before = state is not None and (l.get("id") or l.get("url")) in state.done
         if not reason and stale_before and not attempted_before and 0 < int(l.get("date_posted") or 0) < stale_before:
             # Never attempted and past the cap: a retry of something already
