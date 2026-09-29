@@ -5,7 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Applications</title>
 <style>
-  :root { --bg: #f6f7f9; --panel: #fff; --line: #e5e7eb; --ink: #111827; --muted: #6b7280; --accent: #2563eb; }
+  /* One accent for the whole page — the green of the job boards the loop applies through — with a soft tint for selected rows and a darker ink for text on it. */
+  :root { --bg: #f6f7f9; --panel: #fff; --line: #e5e7eb; --ink: #111827; --muted: #6b7280; --accent: #0f9d6e; --accent-soft: #e6f6ef; --accent-ink: #0b7a55; }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
     font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
@@ -28,7 +29,7 @@
   .secret { border: 1px dashed var(--line); border-radius: 10px; padding: 12px 16px; margin-top: 12px; background: #fafafa; }
   .secret .kv { display: grid; grid-template-columns: 170px 1fr; gap: 6px 12px; font-size: 13px; align-items: baseline; }
   .secret .kv b { color: var(--muted); font-weight: 600; }
-  .secret code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; background: #eef2ff; padding: 2px 6px; border-radius: 6px; }
+  .secret code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; background: var(--accent-soft); padding: 2px 6px; border-radius: 6px; }
   .secret button { font: inherit; font-size: 13px; padding: 5px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); cursor: pointer; margin-right: 8px; }
   .secret button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   .hosts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
@@ -50,7 +51,7 @@
   main { overflow-y: auto; padding: 20px 28px 60px; }
   .row { padding: 10px 16px; border-bottom: 1px solid var(--line); cursor: pointer; display: grid; gap: 3px; }
   .row:hover { background: #f3f4f6; }
-  .row.active { background: #eff6ff; box-shadow: inset 3px 0 0 var(--accent); }
+  .row.active { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
   .row .top { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
   .row .co { font-weight: 600; }
   .row .role { color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -73,7 +74,7 @@
   .cal .cell { min-height: 60px; border: 1px solid var(--line); border-radius: 6px; padding: 4px 5px; cursor: pointer; font-size: 12px; background: #fff; }
   .cal .cell.blank { border-color: transparent; background: transparent; cursor: default; }
   .cal .cell:hover { background: #f3f4f6; }
-  .cal .cell.sel { background: #eff6ff; border-color: var(--accent); }
+  .cal .cell.sel { background: var(--accent-soft); border-color: var(--accent); }
   .cal .cell.today .n { color: var(--accent); font-weight: 700; }
   .cal .cell .n { color: var(--muted); }
   .cal .pill { display: block; max-width: 100%; border-radius: 999px; padding: 0 7px; color: #fff; font-size: 11px; font-weight: 600; margin: 4px 0 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -154,6 +155,123 @@
   ul.mail { list-style: none; margin: 0; padding: 0; }
   ul.mail li { display: grid; grid-template-columns: 90px 110px 1fr; gap: 10px; padding: 6px 0; border-top: 1px solid var(--line); font-size: 13px; }
   ul.mail li .t { color: var(--muted); white-space: nowrap; }
+  /* --- Settings tab: a section rail on the left, cards on the right --- */
+  .settings { display: grid; grid-template-columns: 236px minmax(0, 1fr); gap: 26px; max-width: 1180px; }
+  .snav { position: sticky; top: 0; align-self: start; display: grid; gap: 4px; }
+  .snav .item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 10px; color: var(--muted); cursor: pointer; font-weight: 500; font-size: 13.5px; user-select: none; }
+  .snav .item:hover { background: #f3f4f6; color: var(--ink); }
+  .snav .item.active { background: var(--accent-soft); color: var(--accent-ink); font-weight: 600; }
+  .snav .item svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .snav .item small { display: block; font-weight: 400; color: var(--muted); font-size: 11.5px; }
+  .snav .procs { margin-top: 14px; padding: 12px 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); font-size: 12.5px; color: var(--muted); display: grid; gap: 8px; }
+  .snav .procs b { color: var(--ink); }
+  .spage h2 { margin: 0 0 2px; font-size: 21px; }
+  .spage .lede { color: var(--muted); font-size: 13.5px; margin: 0 0 18px; }
+  .scard { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 20px 22px; margin: 0 0 16px; box-shadow: 0 1px 2px rgba(16, 24, 40, .04); }
+  .scard > h3 { margin: 0; font-size: 15.5px; text-transform: none; letter-spacing: 0; color: var(--ink); display: flex; align-items: center; gap: 10px; }
+  .scard > h3 .pill { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--accent-ink); background: var(--accent-soft); border-radius: 999px; padding: 2px 8px; }
+  .scard .desc { color: var(--muted); font-size: 13px; margin: 4px 0 16px; }
+  .fgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 14px 18px; }
+  .fgrid .wide { grid-column: 1 / -1; }
+  .f label { display: block; font-size: 12.5px; font-weight: 600; color: #374151; margin-bottom: 5px; }
+  .f label code { font-weight: 400; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; margin-left: 6px; }
+  .f input[type=text], .f input[type=number], .f input[type=password], .f input[type=url], .f input[type=email], .f select, .f textarea, .chipsin, .gen-row .val > input, .gen-row .val > textarea, .gen-row .val > select {
+    width: 100%; border: 1px solid #d1d5db; border-radius: 10px; padding: 9px 12px; font: inherit; background: #fff; color: var(--ink); }
+  .f textarea, .gen-row .val > textarea { resize: vertical; min-height: 40px; line-height: 1.4; }
+  .f input:focus, .f select:focus, .f textarea:focus, .chipsin:focus-within, .gen-row .val > input:focus, .gen-row .val > textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .f .help { color: var(--muted); font-size: 12px; margin-top: 5px; line-height: 1.4; }
+  .btn { font: inherit; font-size: 13.5px; font-weight: 600; padding: 9px 18px; border-radius: 999px; border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; white-space: nowrap; }
+  .btn:hover { background: var(--accent-ink); border-color: var(--accent-ink); }
+  .btn.quiet { background: #fff; color: var(--ink); border-color: #d1d5db; }
+  .btn.quiet:hover { background: #f9fafb; border-color: #9ca3af; }
+  .btn.small { padding: 5px 12px; font-size: 12.5px; }
+  .btn.warn { background: #f97316; border-color: #f97316; }
+  .btn.warn:hover { background: #ea580c; border-color: #ea580c; }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .sfoot { display: flex; align-items: center; gap: 12px; margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); flex-wrap: wrap; }
+  .sfoot .note { color: var(--muted); font-size: 12.5px; }
+  .sfoot .ok { color: var(--accent-ink); font-size: 13px; font-weight: 600; }
+  .sfoot .bad { color: #b91c1c; font-size: 13px; }
+  .switch, .f label.switch { display: inline-flex; align-items: center; gap: 9px; cursor: pointer; font-size: 13.5px; font-weight: 500; color: var(--ink); margin: 6px 0 0; position: relative; user-select: none; }
+  .switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .switch .track { display: inline-block; width: 38px; height: 22px; border-radius: 999px; background: #d1d5db; position: relative; transition: background .15s; flex: none; }
+  .switch .track .knob { position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: left .15s; box-shadow: 0 1px 2px rgba(0,0,0,.2); }
+  .switch input:checked + .track { background: var(--accent); }
+  .switch input:checked + .track .knob { left: 19px; }
+  .switch input:focus-visible + .track { box-shadow: 0 0 0 3px var(--accent-soft); }
+  .chipsin { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 8px; min-height: 42px; cursor: text; }
+  .chipsin .c { background: var(--accent-soft); color: var(--accent-ink); border-radius: 999px; padding: 3px 4px 3px 10px; font-size: 12.5px; display: inline-flex; gap: 4px; align-items: center; font-weight: 500; }
+  .chipsin .c button { border: none; background: transparent; color: inherit; cursor: pointer; font: inherit; font-size: 14px; line-height: 1; padding: 0 5px; border-radius: 999px; opacity: .7; }
+  .chipsin .c button:hover { opacity: 1; background: rgba(0,0,0,.08); }
+  .chipsin input { border: none; outline: none; flex: 1; min-width: 140px; font: inherit; padding: 4px 2px; background: transparent; }
+  .segment { display: inline-flex; border: 1px solid #d1d5db; border-radius: 10px; overflow: hidden; background: #fff; }
+  .segment span { padding: 7px 14px; cursor: pointer; font-size: 13px; color: var(--muted); border-right: 1px solid #e5e7eb; }
+  .segment span:last-child { border-right: none; }
+  .segment span.on { background: var(--accent); color: #fff; font-weight: 600; }
+  .segment span:hover:not(.on) { background: #f3f4f6; }
+  .pcards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+  .pcard { border: 1.5px solid var(--line); border-radius: 12px; padding: 14px 16px; cursor: pointer; display: grid; gap: 4px; background: #fff; }
+  .pcard:hover { border-color: #9ca3af; }
+  .pcard.on { border-color: var(--accent); background: var(--accent-soft); }
+  .pcard b { font-size: 14px; }
+  .pcard span { color: var(--muted); font-size: 12.5px; }
+  .pcard .mark { float: right; width: 18px; height: 18px; border-radius: 50%; border: 1.5px solid #d1d5db; display: inline-grid; place-items: center; font-size: 11px; color: #fff; }
+  .pcard.on .mark { background: var(--accent); border-color: var(--accent); }
+  .secret-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .secret-row .set { display: inline-flex; align-items: center; gap: 8px; background: #f3f4f6; border-radius: 10px; padding: 8px 12px; font-size: 13px; }
+  .secret-row .set code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .secret-row .set .dot { margin: 0; }
+  .secret-row input { flex: 1; min-width: 220px; }
+  .linkish { color: var(--accent-ink); cursor: pointer; font-size: 12.5px; text-decoration: underline; text-underline-offset: 2px; }
+  .banner { background: #fff7ed; border: 1px solid #fed7aa; color: #9a3412; border-radius: 12px; padding: 12px 16px; display: flex; gap: 14px; align-items: center; margin: 0 0 16px; font-size: 13.5px; flex-wrap: wrap; }
+  .banner b { color: #7c2d12; }
+  .banner .grow { flex: 1; min-width: 240px; }
+  .srcrow { display: grid; grid-template-columns: auto 1fr auto auto; gap: 14px; align-items: center; padding: 11px 0; border-top: 1px solid var(--line); }
+  .srcrow:first-of-type { border-top: none; }
+  .srcrow .name { font-weight: 600; font-size: 13.5px; }
+  .srcrow .name small { display: block; font-weight: 400; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 520px; }
+  .srcrow .kind { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); background: #f3f4f6; border-radius: 999px; padding: 2px 8px; }
+  .srcrow .n { color: var(--muted); font-size: 12.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .srcrow.off .name { color: var(--muted); }
+  .addrow { display: grid; grid-template-columns: 180px 1fr auto; gap: 10px; align-items: end; margin-top: 12px; }
+  .gen { display: grid; gap: 12px; }
+  .gen-row { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 8px 16px; align-items: start; }
+  .gen-row.nested { grid-template-columns: 1fr; border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; background: #fafbfc; }
+  .gen-row .gen-label { font-size: 13px; font-weight: 600; color: #374151; padding-top: 9px; display: grid; gap: 2px; }
+  .gen-row.nested .gen-label { padding-top: 0; }
+  .gen-row .gen-label code { font-weight: 400; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+  .gen-row .gen-label .rm { color: var(--muted); font-size: 11.5px; cursor: pointer; text-decoration: none; opacity: 0; transition: opacity .1s; }
+  .gen-row:hover .gen-label .rm { opacity: 1; }
+  .gen-row .gen-label .rm:hover { color: #b91c1c; text-decoration: underline; }
+  .gen-row .val { min-width: 0; }
+  .gen-row .val .segment { margin-right: 10px; }
+  .gen-row .val .customize { font-size: 12px; color: var(--muted); cursor: pointer; }
+  .gen-row .val .customize:hover { color: var(--accent-ink); }
+  .gen-row .val .help { color: var(--muted); font-size: 12px; margin-top: 5px; }
+  .addkey { display: grid; grid-template-columns: 240px 1fr auto; gap: 10px; align-items: center; margin-top: 4px; padding-top: 12px; border-top: 1px dashed var(--line); }
+  .addkey input { border: 1px solid #d1d5db; border-radius: 10px; padding: 8px 12px; font: inherit; }
+  .listmaps { display: grid; gap: 10px; }
+  .listmaps .item { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; background: #fff; position: relative; }
+  .listmaps .item .rmitem { position: absolute; top: 10px; right: 12px; }
+  .avatar { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; }
+  .avatar .circle { width: 52px; height: 52px; border-radius: 50%; background: var(--accent); color: #fff; display: grid; place-items: center; font-weight: 700; font-size: 18px; letter-spacing: .02em; }
+  .avatar .who b { display: block; font-size: 16px; }
+  .avatar .who span { color: var(--muted); font-size: 13px; }
+  .dropzone { border: 2px dashed #cbd5e1; border-radius: 14px; padding: 30px 20px; text-align: center; background: #fafafa; cursor: pointer; transition: border-color .15s, background .15s; }
+  .dropzone:hover, .dropzone.over { border-color: var(--accent); background: var(--accent-soft); }
+  .dropzone b { display: block; font-size: 14.5px; margin-bottom: 4px; }
+  .dropzone span { color: var(--muted); font-size: 12.5px; }
+  .dropzone svg { width: 34px; height: 34px; stroke: var(--accent-ink); fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; margin-bottom: 8px; }
+  .flags { background: #fffbeb; border: 1px solid #fde68a; color: #92400e; border-radius: 12px; padding: 10px 14px; font-size: 12.5px; margin-top: 12px; }
+  .flags ul { margin: 6px 0 0; padding-left: 18px; }
+  .rolecard { border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin-bottom: 12px; background: #fafbfc; }
+  .rolecard .rhead { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .rolecard .rhead b { font-size: 13.5px; }
+  .rolecard .rhead .tools { display: flex; gap: 6px; }
+  .rolecard .rhead .tools button { border: 1px solid #d1d5db; background: #fff; border-radius: 8px; padding: 3px 9px; cursor: pointer; font: inherit; font-size: 12px; color: var(--muted); }
+  .rolecard .rhead .tools button:hover { color: var(--ink); border-color: #9ca3af; }
+  .stat { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); }
+  @media (max-width: 900px) { .settings { grid-template-columns: 1fr; } .snav { position: static; } .gen-row { grid-template-columns: 1fr; } .gen-row .gen-label { padding-top: 0; } .srcrow { grid-template-columns: auto 1fr; } .addrow, .addkey { grid-template-columns: 1fr; } }
 </style>
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
@@ -163,6 +281,20 @@
 <div id="root"></div>
 <script type="text/babel" data-presets="react">
 const { useState, useEffect, useMemo } = React;
+
+// Every view the server sends carries an ETag; asking again with it costs a
+// 304 and no parsing when nothing changed, which is what makes a tab switch
+// instant while the loop is writing the state file every few seconds.
+const etags = {};
+async function getJson(url) {
+  const headers = {};
+  if (etags[url]) headers["If-None-Match"] = etags[url];
+  const r = await fetch(url, { cache: "no-store", headers });
+  if (r.status === 304) return { unchanged: true };
+  const et = r.headers.get("ETag");
+  if (et) etags[url] = et;
+  return { unchanged: false, json: await r.json() };
+}
 
 const STATUS = {
   applied: ["Applied", "ok"],
@@ -435,7 +567,7 @@ function Header({ data, err }) {
 function Tabs({ tab, setTab, data }) {
   const total = Object.values(data?.counts || {}).reduce((a, b) => a + b, 0);
   const procs = ((data?.watch || {}).processes || []).filter(p => p.alive).length;
-  const items = [["applications", "Applications", total], ["calendar", "Calendar", null], ["workers", "Workers", procs], ["files", "Files", null]];
+  const items = [["applications", "Applications", total], ["calendar", "Calendar", null], ["workers", "Workers", procs], ["files", "Files", null], ["settings", "Settings", null]];
   return (
     <div className="tabs">
       {items.map(([id, label, n]) => (
@@ -477,9 +609,8 @@ function FilesTab({ onOpen }) {
     let alive = true;
     const load = async () => {
       try {
-        const r = await fetch("/api/files", { cache: "no-store" });
-        const j = await r.json();
-        if (!alive) return;
+        const { unchanged, json: j } = await getJson("/api/files");
+        if (!alive || unchanged) return;
         if (j.error) { setErr(j.error); return; }
         setFiles(j); setErr(null);
       } catch (e) { if (alive) setErr(String(e)); }
@@ -678,7 +809,18 @@ function Actions({ app }) {
   );
 }
 
-function Detail({ app }) {
+function Detail({ app: row }) {
+  // The list carries the summary; the answers, mail and addresses of the one
+  // open row come from /api/application/<id> when it is opened or changes.
+  const [full, setFull] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    fetch(`/api/application/${encodeURIComponent(row.id)}`, { cache: "no-store" })
+      .then(r => r.json()).then(j => { if (alive && !j.error) setFull(j); }).catch(() => {});
+    return () => { alive = false; };
+  }, [row.id, row.when, row.status, row.stage]);
+  const app = full && full.id === row.id ? full : row;
+  const loading = !(full && full.id === row.id);
   return (
     <div className="detail">
       <h2>{app.company || "?"} <span style={{ fontWeight: 400, color: "#6b7280" }}>· {app.role}</span></h2>
@@ -707,7 +849,7 @@ function Detail({ app }) {
               </li>
             ))}
           </ul>
-        ) : <span className="none">no mail from this company matched yet</span>}
+        ) : <span className="none">{loading ? "loading…" : "no mail from this company matched yet"}</span>}
         {app.addresses?.length ? <div className="sub" style={{ marginTop: 8 }}>recruiting addresses seen: {app.addresses.map(a => a.address).join(", ")}</div> : null}
       </div>
 
@@ -718,7 +860,7 @@ function Detail({ app }) {
 
       <div className="card">
         <h3>Answers given</h3>
-        <Answers answers={app.answers} status={app.status} />
+        {loading ? <span className="none">loading…</span> : <Answers answers={app.answers} status={app.status} />}
       </div>
 
       <div className="card">
@@ -779,9 +921,8 @@ function Calendar({ onOpen }) {
     let alive = true;
     const load = async () => {
       try {
-        const r = await fetch("/api/calendar", { cache: "no-store" });
-        const j = await r.json();
-        if (!alive) return;
+        const { unchanged, json: j } = await getJson("/api/calendar");
+        if (!alive || unchanged) return;
         if (j.error) { setErr(j.error); return; }
         setCal(j); setErr(null);
       } catch (e) { if (alive) setErr(String(e)); }
@@ -874,6 +1015,617 @@ function Calendar({ onOpen }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Settings: the files under ~/.resume-tailor, edited from the page. Every
+// card saves one file (or one section of one) and says so; nothing reaches a
+// running worker until it restarts, which the rail's button does on purpose.
+// ---------------------------------------------------------------------------
+const SETTINGS_SECTIONS = [
+  ["ai", "AI & keys", "Provider, API keys, models"],
+  ["sources", "Job sources", "The lists discovery reads"],
+  ["search", "Search rules", "Filters, judges, approvals"],
+  ["profile", "Profile", "Name, school, graduation, GPA"],
+  ["answers", "Form answers", "What every form is answered with"],
+  ["resume", "Résumé", "Upload one; edit the skeleton"],
+];
+const SECTION_ICON = {
+  ai: <svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3" /><path d="M9 9h6v6H9zM12 2v2M12 20v2M2 12h2M20 12h2" /></svg>,
+  sources: <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10" /></svg>,
+  search: <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>,
+  profile: <svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4" /><path d="M4 21c0-4 4-6 8-6s8 2 8 6" /></svg>,
+  answers: <svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3" /><path d="m8 12 3 3 5-6" /></svg>,
+  resume: <svg viewBox="0 0 24 24"><path d="M7 3h7l5 5v13H7z" /><path d="M14 3v5h5M10 13h6M10 17h6" /></svg>,
+};
+const ACRONYMS = /\b(us|uk|eu|gpa|sat|act|itar|i140|url|ai|it|sms|usd|edu|imap)\b/gi;
+const NICE = { linkedin: "LinkedIn", github: "GitHub", gpa: "GPA" };
+const pretty = k => NICE[k] || String(k).replace(/_/g, " ").replace(ACRONYMS, m => m.toUpperCase()).replace(/^./, c => c.toUpperCase());
+
+async function postJson(url, body) {
+  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+  const j = await r.json();
+  if (j.error) throw new Error(j.error);
+  return j;
+}
+// One save button's state: busy, the last outcome, and a runner that clears it.
+function useSave() {
+  const [st, setSt] = useState({ busy: false, ok: "", err: "" });
+  const run = async (fn, okText) => {
+    setSt({ busy: true, ok: "", err: "" });
+    try { const res = await fn(); setSt({ busy: false, ok: typeof okText === "function" ? okText(res) : (okText || "Saved"), err: "" }); return res; }
+    catch (e) { setSt({ busy: false, ok: "", err: String(e.message || e) }); }
+  };
+  return [st, run];
+}
+
+function Field({ label, help, code, wide, children }) {
+  return <div className={"f" + (wide ? " wide" : "")}><label>{label}{code ? <code>{code}</code> : null}</label>{children}{help ? <div className="help">{help}</div> : null}</div>;
+}
+function Text({ value, onChange, placeholder, type, list, mono }) {
+  return <input type={type || "text"} value={value == null ? "" : value} onChange={e => onChange(e.target.value)} placeholder={placeholder} list={list} style={mono ? { fontFamily: "ui-monospace, Menlo, monospace" } : undefined} />;
+}
+function Num({ value, onChange, min }) {
+  return <input type="number" min={min} value={value == null || value === "" ? "" : value} onChange={e => onChange(e.target.value === "" ? "" : Number(e.target.value))} />;
+}
+function Switch({ on, onChange, label }) {
+  return <label className="switch"><input type="checkbox" checked={!!on} onChange={e => onChange(e.target.checked)} /><span className="track"><span className="knob" /></span>{label ? <span>{label}</span> : null}</label>;
+}
+function Lines({ value, onChange, rows, placeholder }) {
+  // A list edited as one item per line; blank lines are dropped on save.
+  return <textarea rows={rows || Math.max(2, (value || []).length + 1)} value={(value || []).join("\n")} placeholder={placeholder} onChange={e => onChange(e.target.value.split("\n"))} />;
+}
+function Chips({ items, onChange, placeholder, suggestions }) {
+  const [draft, setDraft] = useState("");
+  const list = items || [];
+  const add = () => { const v = draft.trim().replace(/,$/, ""); if (v && !list.includes(v)) onChange([...list, v]); setDraft(""); };
+  const id = useMemo(() => "dl" + Math.random().toString(36).slice(2), []);
+  return (
+    <div className="chipsin" onClick={e => e.currentTarget.querySelector("input")?.focus()}>
+      {list.map((it, i) => <span className="c" key={i}>{String(it)}<button type="button" aria-label="remove" onClick={e => { e.stopPropagation(); onChange(list.filter((_, j) => j !== i)); }}>×</button></span>)}
+      <input value={draft} list={suggestions ? id : undefined} placeholder={list.length ? "" : (placeholder || "type, then Enter")}
+        onChange={e => setDraft(e.target.value)} onBlur={add}
+        onKeyDown={e => { if (e.key === "Enter" || e.key === ",") { e.preventDefault(); add(); } else if (e.key === "Backspace" && !draft && list.length) onChange(list.slice(0, -1)); }} />
+      {suggestions ? <datalist id={id}>{suggestions.map(s => <option key={s} value={s} />)}</datalist> : null}
+    </div>
+  );
+}
+function YesNo({ value, onChange }) {
+  const [custom, setCustom] = useState(!/^(yes|no)$/i.test(String(value || "")));
+  if (custom) return <span style={{ display: "flex", gap: 10, alignItems: "center" }}><input type="text" value={value || ""} onChange={e => onChange(e.target.value)} style={{ flex: 1 }} /><span className="customize" onClick={() => { setCustom(false); onChange("Yes"); }}>Yes / No</span></span>;
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center" }}>
+      <span className="segment">
+        <span className={/^yes$/i.test(value) ? "on" : ""} onClick={() => onChange("Yes")}>Yes</span>
+        <span className={/^no$/i.test(value) ? "on" : ""} onClick={() => onChange("No")}>No</span>
+      </span>
+      <span className="customize" onClick={() => setCustom(true)}>other wording…</span>
+    </span>
+  );
+}
+function SaveBar({ st, onClick, label, note }) {
+  return (
+    <div className="sfoot">
+      <button className="btn" disabled={st.busy} onClick={onClick}>{st.busy ? "Saving…" : (label || "Save changes")}</button>
+      {st.ok ? <span className="ok">✓ {st.ok}</span> : null}
+      {st.err ? <span className="bad">{st.err}</span> : null}
+      {note ? <span className="note">{note}</span> : null}
+    </div>
+  );
+}
+const RESTART_NOTE = "Workers read this file when they start — restart them (left rail) for a change to reach the loop.";
+
+// --- AI & keys: the env file ----------------------------------------------------
+function SecretField({ f, value, cleared, onChange, onClear }) {
+  const [editing, setEditing] = useState(!f.set);
+  if (f.set && !editing && !cleared) {
+    return <div className="secret-row"><span className="set"><span className="dot on" />set{f.hint ? <span>· ends in <code>{f.hint}</code></span> : null}</span>
+      <span className="linkish" onClick={() => setEditing(true)}>Replace</span><span className="linkish" onClick={onClear}>Clear</span></div>;
+  }
+  if (cleared) return <div className="secret-row"><span className="set">will be cleared on save</span><span className="linkish" onClick={() => { onClear(false); setEditing(false); }}>Keep it</span></div>;
+  return <div className="secret-row"><input type="password" autoComplete="off" value={value || ""} placeholder={f.set ? "paste the new value" : "paste it here"} onChange={e => onChange(e.target.value)} />
+    {f.set ? <span className="linkish" onClick={() => { setEditing(false); onChange(""); }}>Keep the current one</span> : null}</div>;
+}
+
+function AiSection({ env, reload }) {
+  const byKey = useMemo(() => Object.fromEntries(env.fields.map(f => [f.key, f])), [env]);
+  const [vals, setVals] = useState({});
+  const [cleared, setCleared] = useState({});
+  const [st, run] = useSave();
+  const cur = k => (k in vals ? vals[k] : (byKey[k]?.value || ""));
+  const set = (k, v) => setVals(p => ({ ...p, [k]: v }));
+  const clear = (k, on = true) => setCleared(p => ({ ...p, [k]: on }));
+  const provider = cur("RESUME_TAILOR_PROVIDER") || "anthropic";
+  const other = provider === "anthropic" ? "openai" : "anthropic";
+  const keyOf = { anthropic: "ANTHROPIC_API_KEY", openai: "OPENAI_API_KEY" };
+  const sugg = env.suggestions[provider] || [];
+  const save = () => run(async () => {
+    const updates = {};
+    for (const [k, v] of Object.entries(vals)) if (v !== "" || byKey[k]?.set) updates[k] = v;
+    for (const [k, on] of Object.entries(cleared)) if (on) updates[k] = null;
+    if (!Object.keys(updates).length) throw new Error("nothing changed");
+    await postJson("/api/settings/env", { updates });
+    setVals({}); setCleared({}); await reload();
+  }, "Saved to " + env.path.replace(/^\/Users\/[^/]+/, "~"));
+  const F = (k, wide, type) => { const f = byKey[k]; if (!f) return null; return (
+    <Field key={k} label={f.label} code={k} help={f.help} wide={wide}>
+      {f.secret ? <SecretField f={f} value={vals[k]} cleared={!!cleared[k]} onChange={v => set(k, v)} onClear={(on = true) => clear(k, on)} />
+        : f.kind === "bool01" ? <Switch on={cur(k) === "1"} onChange={on => set(k, on ? "1" : "")} label={cur(k) === "1" ? "Hidden" : "Visible"} />
+        : f.kind === "number" ? <Num value={cur(k)} onChange={v => set(k, v === "" ? "" : String(v))} min={1} />
+        : <Text value={cur(k)} onChange={v => set(k, v)} list={type === "model" ? "models-" + provider : undefined} placeholder={type === "model" ? "default: " + env.defaults[provider] : (type === "omodel" ? "default: gpt-4o" : "")} mono={type === "model" || type === "omodel"} />}
+    </Field>); };
+  return (
+    <div>
+      <h2>AI &amp; keys</h2>
+      <p className="lede">Which model family does the work, the key it signs in with, and which model handles each job. Saved to the env file; a shell export still wins over it.</p>
+      <div className="scard">
+        <h3>Provider</h3>
+        <div className="desc">Reads the posting, drafts and audits bullets, judges the fit, answers form questions. Inbox scanning and recruiter search always use OpenAI.</div>
+        <div className="pcards">
+          {[["anthropic", "Anthropic", "Claude models. Key, or an `ant auth login` profile."], ["openai", "OpenAI", "GPT models. Structured output; reasoning effort on gpt-5 / o-series."]].map(([id, name, sub]) => (
+            <div key={id} className={"pcard" + (provider === id ? " on" : "")} onClick={() => set("RESUME_TAILOR_PROVIDER", id)}>
+              <b>{name}<span className="mark">{provider === id ? "✓" : ""}</span></b><span>{sub}</span>
+            </div>
+          ))}
+        </div>
+        <div className="fgrid" style={{ marginTop: 16 }}>
+          {F(keyOf[provider], true)}
+          {F(keyOf[other], true)}
+        </div>
+      </div>
+      <div className="scard">
+        <h3>Models <span className="pill">{provider}</span></h3>
+        <div className="desc">Blank means the provider's default. Any model id your account can use works; the list only suggests.</div>
+        <datalist id={"models-" + provider}>{sugg.map(s => <option key={s} value={s} />)}</datalist>
+        <div className="fgrid">
+          {F("RESUME_TAILOR_MODEL", false, "model")}{F("RESUME_TAILOR_AUDIT_MODEL", false, "model")}{F("RESUME_TAILOR_JUDGE_MODEL", false, "model")}
+          {F("RESUME_TAILOR_CONCURRENCY")}
+          {F("RESUME_TAILOR_MAIL_MODEL", false, "omodel")}{F("RESUME_TAILOR_SEARCH_MODEL", false, "omodel")}
+        </div>
+      </div>
+      <div className="scard">
+        <h3>Mailbox, accounts, browser</h3>
+        <div className="desc">The inbox the tool reads for one-time codes and replies; the one password for portal accounts it creates; whether its Chrome windows show.</div>
+        <div className="fgrid">
+          {F("RESUME_TAILOR_IMAP_USER")}{F("RESUME_TAILOR_IMAP_PASSWORD")}{F("RESUME_TAILOR_IMAP_HOST")}
+          {F("RESUME_TAILOR_SITE_PASSWORD")}{F("RESUME_TAILOR_HEADLESS")}
+          {env.fields.filter(f => f.group === "other").map(f => F(f.key))}
+        </div>
+        <SaveBar st={st} onClick={save} note={RESTART_NOTE} />
+      </div>
+    </div>
+  );
+}
+
+// --- Job sources and search rules: the `search` block of answers.yaml ------------------
+function SourcesSection({ sources, search, setSearch, saveSearch, st }) {
+  const [name, setName] = useState(""); const [url, setUrl] = useState("");
+  const flags = search.sources || {};
+  const toggle = (n, on) => setSearch({ ...search, sources: { ...flags, [n]: on } });
+  const extras = (search.extra_sources || []).map(x => Array.isArray(x) ? x : [x.name || x.url, x.url]);
+  const setExtras = list => setSearch({ ...search, extra_sources: list });
+  const addExtra = () => { const n = name.trim(), u = url.trim(); if (!n || !/^https?:\/\//.test(u)) return; setExtras([...extras, [n, u]]); setName(""); setUrl(""); };
+  const on = sources.filter(s => s.builtin ? flags[s.name] !== false : true).length;
+  return (
+    <div>
+      <h2>Job sources</h2>
+      <p className="lede">The GitHub internship lists the loop reads every pass. Switch a list off and its postings leave the pool on the next refresh; add your own README-table list below.</p>
+      <div className="scard">
+        <h3>Lists <span className="pill">{on} of {sources.length} on</span></h3>
+        <div className="desc">Counts are from the last fetch. The JSON feed is the main list; the others are README tables merged in (a posting already in the feed keeps that record).</div>
+        {sources.map(s => {
+          const enabled = s.builtin ? flags[s.name] !== false : true;
+          return (
+            <div key={s.name} className={"srcrow" + (enabled ? "" : " off")}>
+              {s.builtin ? <Switch on={enabled} onChange={v => toggle(s.name, v)} /> : <button className="btn quiet small" onClick={() => setExtras(extras.filter(([n]) => n !== s.name))}>Remove</button>}
+              <div className="name">{s.label}<small><a href={s.url} target="_blank" rel="noreferrer">{s.url.replace(/^https?:\/\/(raw\.)?/, "")}</a></small></div>
+              <span className="kind">{s.kind === "json" ? "JSON feed" : "README table"}</span>
+              <span className="n">{s.count ? s.count.toLocaleString() + " postings" : (enabled ? "not fetched yet" : "off")}</span>
+            </div>
+          );
+        })}
+        <div className="addrow">
+          <Field label="Name"><Text value={name} onChange={setName} placeholder="my-list" /></Field>
+          <Field label="Raw README URL" help="A GitHub list kept as a table: Company | Role | Location | Link. Use the raw.githubusercontent.com address."><Text value={url} onChange={setUrl} placeholder="https://raw.githubusercontent.com/…/README.md" type="url" /></Field>
+          <button className="btn quiet" onClick={addExtra} disabled={!name.trim() || !/^https?:\/\//.test(url.trim())}>Add list</button>
+        </div>
+        <SaveBar st={st} onClick={saveSearch} note={RESTART_NOTE} />
+      </div>
+    </div>
+  );
+}
+
+const SEARCH_CURATED = ["terms", "positions", "categories", "require_us", "exclude_phd_only", "max_posting_age_days", "company_blacklist", "title_blacklist",
+  "location_blacklist", "min_judge_score", "max_revisions", "apply_below_bar", "approve_before_submit", "create_accounts_on", "apply_once_at_company",
+  "company_cooldown_days", "jobright_account", "sources", "extra_sources"];
+function SearchSection({ search, setSearch, help, saveSearch, st }) {
+  const s = search;
+  const set = (k, v) => setSearch({ ...s, [k]: v });
+  const score = typeof s.min_judge_score === "object" && s.min_judge_score ? s.min_judge_score : { "hiring manager": s.min_judge_score ?? 90, screener: s.min_judge_score ?? 90 };
+  const setScore = (who, v) => set("min_judge_score", { ...score, [who]: v === "" ? "" : Number(v) });
+  const others = Object.fromEntries(Object.entries(s).filter(([k]) => !SEARCH_CURATED.includes(k)));
+  const H = k => help[k] || "";
+  return (
+    <div>
+      <h2>Search rules</h2>
+      <p className="lede">Which postings the loop reads, which it leaves alone, and what has to be true before it presses Submit. Saved to the <code>search</code> block of answers.yaml.</p>
+      <div className="scard">
+        <h3>What to apply to</h3>
+        <div className="fgrid">
+          <Field label="Terms" help={H("terms")}><Chips items={s.terms || []} onChange={v => set("terms", v)} suggestions={["Summer 2027", "Fall 2027", "Spring 2027", "Summer 2028"]} /></Field>
+          <Field label="Categories" help={H("categories")}><Chips items={s.categories || ["software", "analyst", "ai/ml", "data", "product"]} onChange={v => set("categories", v)} suggestions={["software", "analyst", "ai/ml", "data", "product"]} /></Field>
+          <Field label="Positions" help={H("positions")} wide><Chips items={s.positions || []} onChange={v => set("positions", v)} placeholder="Software Engineer Intern, Backend Engineer Intern, …" /></Field>
+          <Field label="US only" help={H("require_us")}><Switch on={s.require_us !== false} onChange={v => set("require_us", v)} label={s.require_us !== false ? "On" : "Off"} /></Field>
+          <Field label="Skip PhD-only postings" help={H("exclude_phd_only")}><Switch on={s.exclude_phd_only !== false} onChange={v => set("exclude_phd_only", v)} label={s.exclude_phd_only !== false ? "On" : "Off"} /></Field>
+          <Field label="Oldest posting, in days" help={H("max_posting_age_days")}><Num value={s.max_posting_age_days ?? 21} onChange={v => set("max_posting_age_days", v)} min={0} /></Field>
+        </div>
+      </div>
+      <div className="scard">
+        <h3>Never</h3>
+        <div className="fgrid">
+          <Field label="Companies" help={H("company_blacklist")}><Chips items={s.company_blacklist || []} onChange={v => set("company_blacklist", v)} /></Field>
+          <Field label="Title words" help={H("title_blacklist")}><Chips items={s.title_blacklist || []} onChange={v => set("title_blacklist", v)} /></Field>
+          <Field label="Locations" help={H("location_blacklist")}><Chips items={s.location_blacklist || []} onChange={v => set("location_blacklist", v)} /></Field>
+        </div>
+      </div>
+      <div className="scard">
+        <h3>Before a submission</h3>
+        <div className="desc">Two judges read the finished PDF against the posting — a hiring-manager lens and a screener lens. Both must reach their bar.</div>
+        <div className="fgrid">
+          <Field label="Hiring-manager bar" help="Out of 100."><Num value={score["hiring manager"]} onChange={v => setScore("hiring manager", v)} min={0} /></Field>
+          <Field label="Screener bar" help="Out of 100."><Num value={score.screener} onChange={v => setScore("screener", v)} min={0} /></Field>
+          <Field label="Revisions" help={H("max_revisions")}><Num value={s.max_revisions ?? 2} onChange={v => set("max_revisions", v)} min={0} /></Field>
+          <Field label="Apply below the bar" help={H("apply_below_bar")}><Switch on={!!s.apply_below_bar} onChange={v => set("apply_below_bar", v)} label={s.apply_below_bar ? "Yes, after the revisions" : "No — hold as fit_rejected"} /></Field>
+          <Field label="Hold for my approval" help={H("approve_before_submit")} wide><Chips items={s.approve_before_submit || []} onChange={v => set("approve_before_submit", v)} placeholder="Google, Microsoft, …" /></Field>
+          <Field label="One application per company" help={H("apply_once_at_company")}><Switch on={s.apply_once_at_company !== false} onChange={v => set("apply_once_at_company", v)} label={s.apply_once_at_company !== false ? "On" : "Off"} /></Field>
+          <Field label="Company cooldown, days" help={H("company_cooldown_days")}><Num value={s.company_cooldown_days ?? 7} onChange={v => set("company_cooldown_days", v)} min={0} /></Field>
+        </div>
+      </div>
+      <div className="scard">
+        <h3>Accounts the tool may create</h3>
+        <div className="fgrid">
+          <Field label="Hosts" help={H("create_accounts_on")} wide><Chips items={s.create_accounts_on || []} onChange={v => set("create_accounts_on", v)} placeholder="myworkdayjobs.com, icims.com, …" /></Field>
+          <Field label="Signed in to jobright.ai" help={H("jobright_account")}><Switch on={!!s.jobright_account} onChange={v => set("jobright_account", v)} label={s.jobright_account ? "Yes" : "No"} /></Field>
+        </div>
+      </div>
+      {Object.keys(others).length ? (
+        <div className="scard">
+          <h3>Other search keys</h3>
+          <div className="desc">Everything else in the block, as written. Keys here are kept for other tools; the loop reads the cards above.</div>
+          <GenericEditor data={others} onChange={d => setSearch({ ...Object.fromEntries(Object.entries(s).filter(([k]) => SEARCH_CURATED.includes(k))), ...d })} />
+        </div>
+      ) : null}
+      <div className="scard"><SaveBar st={st} onClick={saveSearch} label="Save search rules" note={RESTART_NOTE} /></div>
+    </div>
+  );
+}
+
+// --- the generic editor: any section of answers.yaml, shape preserved ---------------
+function AddKey({ onAdd }) {
+  const [k, setK] = useState(""); const [v, setV] = useState("");
+  const key = k.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+  return (
+    <div className="addkey">
+      <input placeholder="new key, e.g. github_profile" value={k} onChange={e => setK(e.target.value)} />
+      <input placeholder="its answer" value={v} onChange={e => setV(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && key) { onAdd(key, v); setK(""); setV(""); } }} />
+      <button className="btn quiet small" disabled={!key} onClick={() => { onAdd(key, v); setK(""); setV(""); }}>Add field</button>
+    </div>
+  );
+}
+function ListOfMaps({ items, onChange }) {
+  const blank = () => Object.fromEntries(Object.keys(items[0] || {}).map(k => [k, Array.isArray(items[0][k]) ? [] : ""]));
+  return (
+    <div className="listmaps">
+      {items.map((it, i) => (
+        <div className="item" key={i}>
+          <span className="linkish rmitem" onClick={() => onChange(items.filter((_, j) => j !== i))}>remove</span>
+          <GenericEditor data={it} onChange={d => onChange(items.map((x, j) => j === i ? d : x))} />
+        </div>
+      ))}
+      <div><button className="btn quiet small" onClick={() => onChange([...items, blank()])}>Add another</button></div>
+    </div>
+  );
+}
+function ValueEditor({ value, onChange }) {
+  if (typeof value === "boolean") return <Switch on={value} onChange={onChange} label={value ? "On" : "Off"} />;
+  if (typeof value === "number") return <Num value={value} onChange={onChange} />;
+  if (Array.isArray(value)) {
+    if (value.every(x => x === null || typeof x !== "object")) return <Chips items={value.map(String)} onChange={onChange} />;
+    return <ListOfMaps items={value} onChange={onChange} />;
+  }
+  if (value && typeof value === "object") return <GenericEditor data={value} onChange={onChange} />;
+  const s = value == null ? "" : String(value);
+  if (/^(yes|no)$/i.test(s)) return <YesNo value={s} onChange={onChange} />;
+  return s.length > 60 ? <textarea rows={2} value={s} onChange={e => onChange(e.target.value)} /> : <input type="text" value={s} onChange={e => onChange(e.target.value)} />;
+}
+function GenericEditor({ data, onChange, help }) {
+  const entries = Object.entries(data || {});
+  const remove = k => { const d = { ...data }; delete d[k]; onChange(d); };
+  return (
+    <div className="gen">
+      {entries.map(([k, v]) => {
+        const nested = v && typeof v === "object" && !Array.isArray(v) || (Array.isArray(v) && v.some(x => x && typeof x === "object"));
+        return (
+          <div key={k} className={"gen-row" + (nested ? " nested" : "")}>
+            <div className="gen-label"><span>{pretty(k)}</span><code>{k}</code><a className="rm" onClick={() => remove(k)}>remove</a></div>
+            <div className="val"><ValueEditor value={v} onChange={nv => onChange({ ...data, [k]: nv })} />{help && help[k] ? <div className="help">{help[k]}</div> : null}</div>
+          </div>
+        );
+      })}
+      <AddKey onAdd={(k, v) => onChange({ ...data, [k]: v })} />
+    </div>
+  );
+}
+function AnswersSection({ sections, reload }) {
+  return (
+    <div>
+      <h2>Form answers</h2>
+      <p className="lede">The answer bank: looked up, never generated. A field on a form is matched by the words in a key's name, so add keys freely — <code>github_profile</code> makes "GitHub profile" questions answerable. Blank means "not provided", and a required field with no answer sends the posting to review instead of a guess.</p>
+      {sections.filter(sec => sec.key !== "search").map(sec => <AnswerCard key={sec.key} sec={sec} reload={reload} />)}
+    </div>
+  );
+}
+function AnswerCard({ sec, reload }) {
+  const [data, setData] = useState(sec.data);
+  const [st, run] = useSave();
+  useEffect(() => { setData(sec.data); }, [JSON.stringify(sec.data)]);
+  const save = () => run(async () => { await postJson("/api/settings/answers", { section: sec.key, data }); await reload(); }, "Saved");
+  return (
+    <div className="scard">
+      <h3>{sec.label} <span className="pill">{Object.keys(data || {}).length} keys</span></h3>
+      {sec.help ? <div className="desc">{sec.help}</div> : <div style={{ height: 10 }} />}
+      <GenericEditor data={data} onChange={setData} />
+      <SaveBar st={st} onClick={save} note={RESTART_NOTE} />
+    </div>
+  );
+}
+
+// --- Profile: the basics on every résumé and form -------------------------------------
+function ProfileSection({ basics, reload }) {
+  const [b, setB] = useState(basics);
+  const [st, run] = useSave();
+  useEffect(() => { setB(basics); }, [JSON.stringify(basics)]);
+  const P = (k, v) => setB({ ...b, personal: { ...b.personal, [k]: v } });
+  const E = (k, v) => setB({ ...b, education: { ...b.education, [k]: v } });
+  const initials = ((b.personal.name || "?")[0] + (b.personal.surname || "")[0]).toUpperCase();
+  const save = () => run(async () => { const r = await postJson("/api/settings/basics", b); await reload(); return r; },
+    r => (r.saved || []).length ? "Saved: " + r.saved.join(", ") : "Nothing changed");
+  return (
+    <div>
+      <h2>Profile</h2>
+      <p className="lede">Copied straight onto every résumé header and into every form's name, e-mail, school and degree fields — never through a model.</p>
+      <div className="scard">
+        <div className="avatar"><div className="circle">{initials}</div><div className="who"><b>{b.personal.name} {b.personal.surname}</b><span>{b.personal.email || "no e-mail yet"}</span></div></div>
+        <div className="fgrid">
+          <Field label="First name"><Text value={b.personal.name} onChange={v => P("name", v)} /></Field>
+          <Field label="Last name"><Text value={b.personal.surname} onChange={v => P("surname", v)} /></Field>
+          <Field label="E-mail" help="On the résumé header and every application form."><Text value={b.personal.email} onChange={v => P("email", v)} type="email" /></Field>
+          <Field label="Phone prefix"><Text value={b.personal.phone_prefix} onChange={v => P("phone_prefix", v)} placeholder="+1" /></Field>
+          <Field label="Phone"><Text value={b.personal.phone} onChange={v => P("phone", v)} /></Field>
+          <Field label="City" help="Printed on the header; recruiters filter on it."><Text value={b.personal.city} onChange={v => P("city", v)} /></Field>
+          <Field label="Country"><Text value={b.personal.country} onChange={v => P("country", v)} /></Field>
+          <Field label="LinkedIn"><Text value={b.personal.linkedin} onChange={v => P("linkedin", v)} type="url" /></Field>
+          <Field label="GitHub"><Text value={b.personal.github} onChange={v => P("github", v)} type="url" /></Field>
+          <Field label="Website"><Text value={b.personal.website} onChange={v => P("website", v)} type="url" /></Field>
+          <Field label="Work authorization line" help="Printed under the header so a screener does not read the résumé as 'needs sponsorship'. Blank hides it." wide><Text value={b.personal.work_authorization} onChange={v => P("work_authorization", v)} /></Field>
+        </div>
+      </div>
+      <div className="scard">
+        <h3>School</h3>
+        <div className="desc">The first education entry of the record. School, degree and major answer themselves on forms; the graduation month and year also fills every spelling a form asks for (year, month, "expected graduation").</div>
+        <div className="fgrid">
+          <Field label="School"><Text value={b.education.institution} onChange={v => E("institution", v)} /></Field>
+          <Field label="Degree" help="e.g. B.S."><Text value={b.education.education_level} onChange={v => E("education_level", v)} /></Field>
+          <Field label="Field of study"><Text value={b.education.field_of_study} onChange={v => E("field_of_study", v)} /></Field>
+          <Field label="Location"><Text value={b.education.location} onChange={v => E("location", v)} /></Field>
+          <Field label="Started" help="MM/YYYY"><Text value={b.education.start_date} onChange={v => E("start_date", v)} placeholder="08/2024" /></Field>
+          <Field label="Graduation" help="Month and year, e.g. May 2028. No '(expected)' — forms and the résumé both take it as is."><Text value={b.education.year_of_completion} onChange={v => E("year_of_completion", v)} placeholder="May 2028" /></Field>
+          <Field label="Coursework" help="Each course becomes something a bullet may cite." wide><Chips items={b.education.coursework || []} onChange={v => E("coursework", v)} /></Field>
+        </div>
+      </div>
+      <div className="scard">
+        <h3>GPA</h3>
+        <div className="desc">Forms take the number exactly as written here (never rounded up); on a list of bands, the band it falls in. Whether it prints on the résumé is a separate choice.</div>
+        <div className="fgrid">
+          <Field label="GPA" help="Blank: GPA questions go unanswered and a form that requires one goes to review."><Text value={b.gpa} onChange={v => setB({ ...b, gpa: v })} placeholder="3.42" /></Field>
+          <Field label="Print it on the résumé"><Switch on={b.show_gpa_on_resume} onChange={v => setB({ ...b, show_gpa_on_resume: v })} label={b.show_gpa_on_resume ? "Yes, on the education line" : "No — forms still answer it"} /></Field>
+        </div>
+        <SaveBar st={st} onClick={save} label="Save profile" note={RESTART_NOTE} />
+      </div>
+    </div>
+  );
+}
+
+// --- Résumé: upload one; edit the skeleton every tailored résumé keeps -----------------
+function readAsBase64(file) {
+  return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(",")[1] || ""); r.onerror = () => rej(new Error("could not read the file")); r.readAsDataURL(file); });
+}
+function ResumeSection({ resume, reload }) {
+  const [sk, setSk] = useState(resume.skeleton);
+  const [over, setOver] = useState(false);
+  const [intake, setIntake] = useState({ busy: false, err: "", flags: null, from: "", model: "" });
+  const [st, run] = useSave();
+  useEffect(() => { setSk(resume.skeleton); }, [JSON.stringify(resume.skeleton)]);
+  const set = (k, v) => setSk({ ...sk, [k]: v });
+  const setH = (k, v) => set("header", { ...sk.header, [k]: v });
+  const setE = (k, v) => set("education", { ...sk.education, [k]: v });
+  const upd = (list, i, patch) => set(list, sk[list].map((x, j) => j === i ? { ...x, ...patch } : x));
+  const move = (list, i, d) => { const a = [...sk[list]]; const j = i + d; if (j < 0 || j >= a.length) return; [a[i], a[j]] = [a[j], a[i]]; set(list, a); };
+  const drop = (list, i) => set(list, sk[list].filter((_, j) => j !== i));
+  const roleLabel = id => (resume.career_roles.find(r => r.id === id) || {}).label;
+  const onFile = async file => {
+    if (!file) return;
+    setIntake({ busy: true, err: "", flags: null, from: file.name, model: "" });
+    try {
+      const data = await readAsBase64(file);
+      const r = await postJson("/api/settings/resume/upload", { name: file.name, data });
+      const d = r.skeleton;
+      setSk({ ...d, file_name: sk.file_name || d.file_name, style: sk.style || d.style, header: { ...sk.header, ...Object.fromEntries(Object.entries(d.header).filter(([, v]) => v)) } });
+      setIntake({ busy: false, err: "", flags: r.flags || [], from: file.name, model: r.model || "", name: d.name, school: d.school });
+    } catch (e) { setIntake({ busy: false, err: String(e.message || e), flags: null, from: file.name, model: "" }); }
+  };
+  const save = () => run(async () => { const r = await postJson("/api/settings/resume", { skeleton: sk }); await reload(); return r; },
+    r => "Saved " + ((r.saved || []).join(", ") || "(nothing changed)") + ((r.added_roles || []).length ? ` · ${r.added_roles.length} new role${r.added_roles.length > 1 ? "s" : ""} added to career.yaml` : ""));
+  return (
+    <div>
+      <h2>Résumé</h2>
+      <p className="lede">Every tailored résumé keeps this skeleton: the same roles in the same order with the same number of bullets, each bullet reworded toward the posting and checked against your record; projects, skills and honors printed exactly as written here.</p>
+      <div className="scard">
+        <h3>Start from a résumé you already have</h3>
+        <div className="desc">Drop a PDF, Word, LaTeX or text résumé. It is transcribed into the skeleton below — one model call — and every number is checked against the file's own text. Nothing is saved until you press Save.</div>
+        <div className={"dropzone" + (over ? " over" : "")} onClick={() => document.getElementById("resume-file").click()}
+          onDragOver={e => { e.preventDefault(); setOver(true); }} onDragLeave={() => setOver(false)} onDrop={e => { e.preventDefault(); setOver(false); onFile(e.dataTransfer.files[0]); }}>
+          <svg viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5M4 17v3h16v-3" /></svg>
+          <b>{intake.busy ? "Reading and transcribing " + intake.from + "…" : "Drop your résumé here, or click to choose"}</b>
+          <span>{intake.busy ? "one model call, usually under a minute" : ".pdf, .docx, .tex, .txt · up to 15 MB · kept under ~/.resume-tailor/resume/uploads"}</span>
+          <input id="resume-file" type="file" accept=".pdf,.docx,.tex,.txt,.md" style={{ display: "none" }} onChange={e => { onFile(e.target.files[0]); e.target.value = ""; }} />
+        </div>
+        {intake.err ? <div className="flags" style={{ background: "#fef2f2", borderColor: "#fecaca", color: "#991b1b" }}>{intake.err}</div> : null}
+        {intake.flags ? (
+          <div className="flags">
+            <b>Draft loaded below from {intake.from}{intake.model ? " (" + intake.model + ")" : ""}.</b> Check every line, match each role to its record entry, then Save.
+            {intake.name ? <div style={{ marginTop: 4 }}>Name on the file: {intake.name}{intake.school ? " · " + intake.school : ""} — the Profile section holds the name and school the tool prints.</div> : null}
+            {intake.flags.length ? <div style={{ marginTop: 6 }}><b>{intake.flags.length} line{intake.flags.length > 1 ? "s carry" : " carries"} a number the file does not:</b><ul>{intake.flags.map((f, i) => <li key={i}>{f}</li>)}</ul></div> : <div style={{ marginTop: 4 }}>Every number in the draft appears in the file.</div>}
+          </div>
+        ) : null}
+        {resume.uploads?.length ? <div className="stat" style={{ marginTop: 10 }}>Earlier uploads: {resume.uploads.map(u => u.name).join(", ")}</div> : null}
+      </div>
+      <div className="scard">
+        <h3>Header &amp; file</h3>
+        <div className="desc">What the contact line prints in place of the record's values (blank = the record's), and how the PDF is named and styled.</div>
+        <div className="fgrid">
+          <Field label="File name" help="What the PDF is uploaded as — never the company or role."><Text value={sk.file_name} onChange={v => set("file_name", v)} placeholder="First_Last_resume.pdf" /></Field>
+          <Field label="Style"><select value={sk.style || "jake"} onChange={e => set("style", e.target.value)}>{(resume.styles.length ? resume.styles : ["jake", "clean"]).map(s => <option key={s} value={s}>{s}</option>)}</select></Field>
+          <Field label="Pages"><Num value={sk.max_pages || 1} onChange={v => set("max_pages", v)} min={1} /></Field>
+          {["phone", "email", "location", "linkedin", "github", "website"].map(k => <Field key={k} label={pretty(k)}><Text value={sk.header[k]} onChange={v => setH(k, v)} /></Field>)}
+          <Field label="Work authorization line" wide><Text value={sk.header.work_authorization} onChange={v => setH("work_authorization", v)} /></Field>
+        </div>
+      </div>
+      <div className="scard">
+        <h3>Education</h3>
+        <div className="desc">The school itself comes from Profile; this is how the line reads.</div>
+        <div className="fgrid">
+          <Field label="Degree" help="As printed, e.g. B.S. in Computer Science and Mathematics"><Text value={sk.education.degree} onChange={v => setE("degree", v)} /></Field>
+          <Field label="Graduation"><Text value={sk.education.graduation} onChange={v => setE("graduation", v)} placeholder="May 2028" /></Field>
+          <Field label="GPA on the résumé" help="Blank hides it (forms still answer from Profile)."><Text value={sk.education.gpa} onChange={v => setE("gpa", v)} /></Field>
+          <Field label="Coursework line" wide><textarea rows={2} value={sk.education.coursework || ""} onChange={e => setE("coursework", e.target.value)} /></Field>
+          <Field label="Other lines under education" help="One per line: teaching, awards listed there." wide><Lines value={sk.education.lines || []} onChange={v => setE("lines", v)} /></Field>
+        </div>
+      </div>
+      <div className="scard">
+        <h3>Experience <span className="pill">{sk.roles.length} roles</span></h3>
+        <div className="desc">Each role points at an entry of your career record, which is what its bullets may cite. The number of bullets here is the number every tailored résumé gets for that role.</div>
+        {sk.roles.map((r, i) => (
+          <div className="rolecard" key={i}>
+            <div className="rhead"><b>{r.title || "Untitled role"}{r.org ? " · " + r.org : ""}</b>
+              <div className="tools"><button onClick={() => move("roles", i, -1)}>↑</button><button onClick={() => move("roles", i, 1)}>↓</button><button onClick={() => drop("roles", i)}>remove</button></div></div>
+            <div className="fgrid">
+              <Field label="Record entry" help={r.id && roleLabel(r.id) ? "" : "No entry yet: saving adds this role to career.yaml with these bullets."} wide>
+                <select value={r.id && roleLabel(r.id) ? r.id : ""} onChange={e => upd("roles", i, { id: e.target.value })}>
+                  <option value="">New entry in career.yaml (added on save)</option>
+                  {resume.career_roles.map(cr => <option key={cr.id} value={cr.id}>{cr.label}</option>)}
+                </select>
+              </Field>
+              <Field label="Title"><Text value={r.title} onChange={v => upd("roles", i, { title: v })} /></Field>
+              <Field label="Organization"><Text value={r.org} onChange={v => upd("roles", i, { org: v })} /></Field>
+              <Field label="Organization link"><Text value={r.org_link} onChange={v => upd("roles", i, { org_link: v })} type="url" /></Field>
+              <Field label="Location"><Text value={r.location} onChange={v => upd("roles", i, { location: v })} /></Field>
+              <Field label="Dates"><Text value={r.dates} onChange={v => upd("roles", i, { dates: v })} placeholder="May 2026 – Aug. 2026" /></Field>
+              <Field label={`Bullets (${(r.base || []).filter(x => x.trim()).length})`} help="One per line. Keep the numbers you can stand behind; the tailorer rewords around them and never adds one." wide><Lines value={r.base || []} onChange={v => upd("roles", i, { base: v })} /></Field>
+            </div>
+          </div>
+        ))}
+        <button className="btn quiet small" onClick={() => set("roles", [...sk.roles, { id: "", title: "", org: "", org_link: "", location: "", dates: "", base: [] }])}>Add a role</button>
+      </div>
+      <div className="scard">
+        <h3>Projects <span className="pill">{sk.projects.length}</span></h3>
+        <div className="desc">Printed exactly as written.</div>
+        {sk.projects.map((p, i) => (
+          <div className="rolecard" key={i}>
+            <div className="rhead"><b>{p.name || "Untitled project"}</b>
+              <div className="tools"><button onClick={() => move("projects", i, -1)}>↑</button><button onClick={() => move("projects", i, 1)}>↓</button><button onClick={() => drop("projects", i)}>remove</button></div></div>
+            <div className="fgrid">
+              <Field label="Name"><Text value={p.name} onChange={v => upd("projects", i, { name: v })} /></Field>
+              <Field label="Technologies"><Text value={p.tech} onChange={v => upd("projects", i, { tech: v })} /></Field>
+              <Field label="Dates"><Text value={p.dates} onChange={v => upd("projects", i, { dates: v })} /></Field>
+              <Field label="Link"><Text value={p.link} onChange={v => upd("projects", i, { link: v })} type="url" /></Field>
+              <Field label="Bullets" wide><Lines value={p.bullets || []} onChange={v => upd("projects", i, { bullets: v })} /></Field>
+            </div>
+          </div>
+        ))}
+        <button className="btn quiet small" onClick={() => set("projects", [...sk.projects, { name: "", tech: "", dates: "", link: "", bullets: [] }])}>Add a project</button>
+      </div>
+      <div className="scard">
+        <h3>Skills &amp; honors</h3>
+        <div className="fgrid">
+          {sk.skills.map((s, i) => (
+            <React.Fragment key={i}>
+              <Field label={i === 0 ? "Label" : ""}><Text value={s.label} onChange={v => upd("skills", i, { label: v })} placeholder="Languages" /></Field>
+              <Field label={i === 0 ? "Terms" : ""}><span style={{ display: "flex", gap: 8 }}><Text value={s.terms} onChange={v => upd("skills", i, { terms: v })} placeholder="Python, Java, …" /><button className="btn quiet small" onClick={() => drop("skills", i)}>×</button></span></Field>
+            </React.Fragment>
+          ))}
+          <div className="wide"><button className="btn quiet small" onClick={() => set("skills", [...sk.skills, { label: "", terms: "" }])}>Add a skills line</button></div>
+          <Field label="Honors & awards" help="One per line." wide><Lines value={sk.honors || []} onChange={v => set("honors", v)} /></Field>
+        </div>
+        <SaveBar st={st} onClick={save} label="Save skeleton" note={RESTART_NOTE} />
+      </div>
+    </div>
+  );
+}
+
+// --- the tab -----------------------------------------------------------------------
+function SettingsTab() {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState(null);
+  const [section, setSection] = useState(() => { try { return localStorage.getItem("rt-settings") || "ai"; } catch (e) { return "ai"; } });
+  useEffect(() => { try { localStorage.setItem("rt-settings", section); } catch (e) {} }, [section]);
+  const [search, setSearch] = useState(null);
+  const fileSearch = React.useRef(null);   // the search block as last read, to tell unsaved edits from stale state
+  const [searchSt, runSearch] = useSave();
+  const [restart, runRestart] = useSave();
+  const load = async () => {
+    try {
+      delete etags["/api/settings"];  // a save just happened, or the tab opened: read it fresh
+      const { json: j } = await getJson("/api/settings");
+      if (j.error) { setErr(j.error); return; }
+      setData(j); setErr(null);
+      const fresh = (j.answers.sections.find(s => s.key === "search") || {}).data || {};
+      setSearch(prev => (prev === null || JSON.stringify(prev) === fileSearch.current) ? fresh : prev);
+      fileSearch.current = JSON.stringify(fresh);
+    } catch (e) { setErr(String(e)); }
+  };
+  useEffect(() => { load(); }, []);
+  if (err) return <div className="empty">settings: {err}</div>;
+  if (!data || !search) return <div className="empty">loading…</div>;
+  const saveSearch = () => runSearch(async () => { await postJson("/api/settings/answers", { section: "search", data: search }); await load(); }, "Saved");
+  const doRestart = () => { if (window.confirm("Stop every worker now (an application in progress is abandoned and retried later) and start them again on the saved settings?")) runRestart(() => postJson("/api/settings/restart"), r => r.note || "Restarting"); };
+  const w = data.workers;
+  return (
+    <div className="settings">
+      <nav className="snav">
+        {SETTINGS_SECTIONS.map(([id, label, sub]) => (
+          <div key={id} className={"item" + (section === id ? " active" : "")} onClick={() => setSection(id)}>{SECTION_ICON[id]}<span>{label}<small>{sub}</small></span></div>
+        ))}
+        <div className="procs">
+          <div><b>{w.alive} of {w.workers}</b> worker{w.workers === 1 ? "" : "s"} running{w.fresh ? " + fresh lane" : ""}{w.started ? <div>since {new Date(w.started).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</div> : null}</div>
+          {w.stale.length ? <div style={{ color: "#9a3412" }}>Changed since then: {w.stale.join(", ")}</div> : <div>Running on the saved settings.</div>}
+          {w.supervisor_pid ? <div>Supervisor on: it relaunches what stops.</div> : null}
+          <button className={"btn small" + (w.stale.length ? " warn" : " quiet")} disabled={restart.busy} onClick={doRestart}>{restart.busy ? "Restarting…" : "Restart workers"}</button>
+          {restart.ok ? <div className="ok" style={{ color: "var(--accent-ink)" }}>{restart.ok}</div> : null}
+          {restart.err ? <div className="bad" style={{ color: "#b91c1c" }}>{restart.err}</div> : null}
+        </div>
+      </nav>
+      <div className="spage">
+        {w.stale.length ? <div className="banner"><span className="grow"><b>Saved, not yet live.</b> {w.stale.join(", ")} changed after the workers started; they keep the old values until they restart.</span><button className="btn warn small" disabled={restart.busy} onClick={doRestart}>Restart workers</button></div> : null}
+        <div style={{ display: section === "ai" ? "block" : "none" }}><AiSection env={data.env} reload={load} /></div>
+        <div style={{ display: section === "sources" ? "block" : "none" }}><SourcesSection sources={data.sources} search={search} setSearch={setSearch} saveSearch={saveSearch} st={searchSt} /></div>
+        <div style={{ display: section === "search" ? "block" : "none" }}><SearchSection search={search} setSearch={setSearch} help={data.answers.search_help} saveSearch={saveSearch} st={searchSt} /></div>
+        <div style={{ display: section === "profile" ? "block" : "none" }}><ProfileSection basics={data.basics} reload={load} /></div>
+        <div style={{ display: section === "answers" ? "block" : "none" }}><AnswersSection sections={data.answers.sections} reload={load} /></div>
+        <div style={{ display: section === "resume" ? "block" : "none" }}><ResumeSection resume={data.resume} reload={load} /></div>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [data, setData] = useState(null);
   const [err, setErr] = useState(null);
@@ -883,27 +1635,38 @@ function App() {
   const [tab, setTab] = useState(() => { try { return localStorage.getItem("rt-tab") || "applications"; } catch (e) { return "applications"; } });
   useEffect(() => { try { localStorage.setItem("rt-tab", tab); } catch (e) {} }, [tab]);
 
+  const [core, setCore] = useState(null);   // /api/index: the list, counts, flows — cached server-side, 304 when unchanged
+  const [live, setLive] = useState(null);   // /api/now: what the workers are doing right now — small, every 8 s
   useEffect(() => {
     let alive = true;
-    const load = async () => {
+    const loadCore = async () => {
       try {
-        const r = await fetch("/api/index", { cache: "no-store" });
-        const j = await r.json();
-        if (!alive) return;
+        const { unchanged, json: j } = await getJson("/api/index");
+        if (!alive || unchanged) return;
         if (j.error) { setErr(j.error); return; }
-        setData(j); setErr(null);
+        setCore(j); setErr(null);
       } catch (e) { if (alive) setErr(String(e)); }
     };
-    load();
-    const t = setInterval(load, 8000);
-    return () => { alive = false; clearInterval(t); };
+    const loadLive = async () => {
+      try {
+        const r = await fetch("/api/now", { cache: "no-store" });
+        const j = await r.json();
+        if (!alive || j.error) return;
+        setLive(j);
+      } catch (e) { /* the next tick tries again */ }
+    };
+    loadCore(); loadLive();
+    const t1 = setInterval(loadCore, 20000);
+    const t2 = setInterval(loadLive, 8000);
+    return () => { alive = false; clearInterval(t1); clearInterval(t2); };
   }, []);
+  useEffect(() => { setData(core ? { ...core, ...(live || {}) } : null); }, [core, live]);
 
-  const apps = useMemo(() => (data?.applications || []).filter(a =>
+  const apps = useMemo(() => (core?.applications || []).filter(a =>
     (filter === "all" || a.status === filter) &&
     (!q || (a.company + " " + a.role).toLowerCase().includes(q.toLowerCase()))
-  ), [data, filter, q]);
-  const current = (data?.applications || []).find(a => a.id === sel);
+  ), [core, filter, q]);
+  const current = (core?.applications || []).find(a => a.id === sel);
   const open = id => { setSel(id); setTab("applications"); };
 
   return (
@@ -941,6 +1704,7 @@ function App() {
             {tab === "calendar" ? <Calendar onOpen={open} /> : null}
             {tab === "workers" ? <Workers data={data} onPick={open} /> : null}
             {tab === "files" ? <FilesTab onOpen={open} /> : null}
+            {tab === "settings" ? <SettingsTab /> : null}
           </main>
         </div>
       )}

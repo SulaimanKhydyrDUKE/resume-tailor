@@ -11,6 +11,8 @@ one place the tool writes its own configuration.
 """
 from __future__ import annotations
 
+import gzip
+import hashlib
 import json
 import mimetypes
 import os
@@ -128,9 +130,79 @@ def pool_status(out_dir: Path) -> dict:
         return {}
 
 
-def build_index(out_dir: str | Path, profile_dir: Path = DEFAULT_PROFILE_DIR) -> dict:
-    """Everything the page shows, from the files on disk right now."""
-    out_dir = Path(out_dir)
+# --- caching -----------------------------------------------------------------
+# Every view is built from files on disk, and the page asks for each one every
+# few seconds. A view is rebuilt only when a file it reads has changed (mtime
+# or size); the JSON it serialises to is kept with it, plain and gzipped, with
+# an ETag — so a poll that finds nothing new costs a few stat calls and a 304,
+# and a tab switch never waits on a 25 MB parse. The state file alone is
+# 15 MB and the index it made was 12 MB, 80 % of it the answers of every
+# attempt, which only one open row ever needs (see application_detail).
+_CACHE: dict[str, dict] = {}
+_CACHE_LOCK = threading.Lock()
+_DETAIL_ONLY = ("answers", "coverage", "mail", "addresses")
+
+
+def _stamp(paths) -> tuple:
+    out = []
+    for p in paths:
+        try:
+            st = Path(p).stat()
+            out.append((str(p), st.st_mtime_ns, st.st_size))
+        except OSError:
+            out.append((str(p), 0, 0))
+    return tuple(out)
+
+
+def _build_view(name: str, stamp: tuple, build, public) -> dict:
+    value = build()
+    body = json.dumps(public(value) if public else value).encode("utf-8")
+    return {"name": name, "stamp": stamp, "value": value, "body": body, "gz": gzip.compress(body, 6),
+            "etag": '"' + hashlib.sha1(body).hexdigest()[:24] + '"', "built": time.time()}
+
+
+def cached_view(name: str, paths, build, public=None, wait: bool = True) -> dict:
+    """The view `name`, rebuilt by `build()` when any of `paths` changed since
+    the last call. Returns {"value", "body", "gz", "etag", "stamp"}; `body`
+    is the JSON of `public(value)` (or of the value itself).
+
+    With `wait` False and a version already on hand, a changed input starts
+    the rebuild on a thread and the caller gets the version on hand at once:
+    while eight workers write the state file every few seconds, the page
+    never waits on a parse, and its next poll picks the new version up."""
+    stamp = _stamp(paths)
+    with _CACHE_LOCK:
+        hit = _CACHE.get(name)
+        if hit is not None and hit["stamp"] == stamp:
+            return hit
+        if hit is not None and not wait:
+            if not _BUILDING.get(name):
+                _BUILDING[name] = True
+
+                def rebuild():
+                    try:
+                        fresh = _build_view(name, stamp, build, public)
+                        with _CACHE_LOCK:
+                            _CACHE[name] = fresh
+                    except Exception:
+                        pass  # the version on hand stands; the next poll tries again
+                    finally:
+                        _BUILDING[name] = False
+
+                threading.Thread(target=rebuild, name=f"rebuild-{name}", daemon=True).start()
+            return hit
+        hit = _build_view(name, stamp, build, public)
+        _CACHE[name] = hit
+        return hit
+
+
+_BUILDING: dict[str, bool] = {}
+
+
+def _index_core(out_dir: Path) -> dict:
+    """The applications and the inbox flows, from the state file, the
+    listings cache, results.json and the screenshots on disk: the heavy
+    part of the page, built once per change of those files (cached_view)."""
     state_path = out_dir / "batch-state.json"
     state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else {"done": {}}
     listings: dict[str, dict] = {}
@@ -146,11 +218,10 @@ def build_index(out_dir: str | Path, profile_dir: Path = DEFAULT_PROFILE_DIR) ->
                 if p.stem.endswith("-" + kind):
                     shots.setdefault(p.stem[: -len(kind) - 1], {})[kind] = _file_url(out_dir, str(p))
     apps = []
-    open_now = reviews_open()
     for eid, rec in (state.get("done") or {}).items():
         l = listings.get(eid, {})
         apps.append({
-            "reviewing": open_now.get(_safe(eid)),
+            "reviewing": None,  # set per request from the review markers (see _with_reviews)
             "id": eid,
             "company": rec.get("company") or l.get("company_name") or "",
             "role": rec.get("role") or l.get("title") or "",
@@ -182,6 +253,46 @@ def build_index(out_dir: str | Path, profile_dir: Path = DEFAULT_PROFILE_DIR) ->
             a["addresses"] = (co or {}).get("addresses") or []
     except Exception as e:
         flow_data, results = {"error": str(e)}, {}
+    full = {a["id"]: a for a in apps}
+    slim = [{k: v for k, v in a.items() if k not in _DETAIL_ONLY} for a in apps]
+    return {"applications": slim, "full": full, "counts": dict(Counter(a["status"] for a in apps)),
+            "applied_companies": state.get("applied_companies") or [], "flows": flow_data,
+            "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+
+
+def index_inputs(out_dir: Path) -> list[Path]:
+    return [out_dir / "batch-state.json", out_dir / "listings-cache.json", out_dir / "results.json", out_dir / "screenshots"]
+
+
+def index_view(out_dir: str | Path, wait: bool = True) -> dict:
+    """The cached core of the page (cached_view): its body is the list
+    without the per-attempt details."""
+    out_dir = Path(out_dir)
+    return cached_view("index", index_inputs(out_dir), lambda: _index_core(out_dir),
+                       public=lambda v: {k: v[k] for k in ("applications", "counts", "applied_companies", "flows", "generated_at")}, wait=wait)
+
+
+def _with_reviews(rows: list[dict]) -> list[dict]:
+    """The rows with `reviewing` set from the review-window markers, which
+    change without any state file changing."""
+    open_now = reviews_open()
+    if not open_now:
+        return rows
+    return [dict(r, reviewing=open_now.get(_safe(r["id"]))) for r in rows]
+
+
+def application_detail(out_dir: str | Path, eid: str) -> dict | None:
+    """One application with everything the list leaves out: the answers
+    given, the coverage, the mail timeline and the addresses seen."""
+    row = index_view(out_dir)["value"]["full"].get(eid)
+    return _with_reviews([row])[0] if row is not None else None
+
+
+def live_status(out_dir: str | Path, profile_dir: Path = DEFAULT_PROFILE_DIR) -> dict:
+    """What changes by the second — each worker's current stage, the loop's
+    status and log tail, the pool. Small; polled often; never cached except
+    the pool, which is a selection over the whole listings cache."""
+    out_dir = Path(out_dir)
     # What each live process is doing: current.json for a lone loop or a
     # retry pass, current-w<k>.json per worker. `now` is the freshest of them.
     workers_now: list[dict] = []
@@ -201,17 +312,19 @@ def build_index(out_dir: str | Path, profile_dir: Path = DEFAULT_PROFILE_DIR) ->
     for info in workers_now:
         info.pop("_mtime", None)
     now = workers_now[0] if workers_now else None
-    return {
-        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "now": now,
-        "workers_now": workers_now,
-        "watch": watch_status(profile_dir),
-        "pool": pool_status(out_dir),
-        "counts": dict(Counter(a["status"] for a in apps)),
-        "applied_companies": state.get("applied_companies") or [],
-        "applications": apps,
-        "flows": flow_data,
-    }
+    pool = cached_view("pool", [out_dir / "listings-cache.json", out_dir / "batch-state.json", out_dir / "fresh-seen.json"],
+                       lambda: pool_status(out_dir), wait=False)["value"]
+    return {"generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "now": now, "workers_now": workers_now,
+            "watch": watch_status(profile_dir), "pool": pool}
+
+
+def build_index(out_dir: str | Path, profile_dir: Path = DEFAULT_PROFILE_DIR) -> dict:
+    """Everything the page shows: the cached core plus the live status. The
+    page itself fetches the two separately (/api/index, /api/now)."""
+    out_dir = Path(out_dir)
+    core = index_view(out_dir)["value"]
+    return {**live_status(out_dir, profile_dir), "counts": core["counts"], "applied_companies": core["applied_companies"],
+            "applications": _with_reviews(core["applications"]), "flows": core["flows"]}
 
 
 REVIEWS_DIR = DEFAULT_PROFILE_DIR / "reviews"
@@ -456,18 +569,35 @@ class _Handler(BaseHTTPRequestHandler):
             return self._send(STATIC.read_bytes(), "text/html; charset=utf-8")
         if path == "/api/index":
             try:
-                body = json.dumps(build_index(self.out_dir)).encode("utf-8")
+                hit = index_view(self.out_dir, wait=False)
             except Exception as e:  # a half-written state file mid-save, most likely
                 return self._send(json.dumps({"error": str(e)}).encode("utf-8"), "application/json", 500)
+            return self._send_view(hit)
+        if path == "/api/now":
+            try:
+                body = json.dumps(live_status(self.out_dir)).encode("utf-8")
+            except Exception as e:
+                return self._send(json.dumps({"error": str(e)}).encode("utf-8"), "application/json", 500)
             return self._send(body, "application/json")
+        if path.startswith("/api/application/"):
+            try:
+                row = application_detail(self.out_dir, path[len("/api/application/"):])
+            except Exception as e:
+                return self._send(json.dumps({"error": str(e)}).encode("utf-8"), "application/json", 500)
+            if row is None:
+                return self._send(json.dumps({"error": "no such application"}).encode("utf-8"), "application/json", 404)
+            return self._send(json.dumps(row).encode("utf-8"), "application/json")
         if path == "/api/files":
             # Every tailored résumé and generated document, plus which portals
             # hold a saved sign-in. No secret in this response (see /api/logins/reveal).
             try:
-                body = json.dumps(build_files(self.out_dir)).encode("utf-8")
+                from .apply import ApplySession
+                hit = cached_view("files", [self.out_dir / "batch-state.json", self.out_dir / "listings-cache.json",
+                                            self.out_dir / "resumes", ApplySession.LOGINS_DIR, DEFAULT_PROFILE_DIR.parent / "answers.yaml"],
+                                  lambda: build_files(self.out_dir), wait=False)
             except Exception as e:
                 return self._send(json.dumps({"error": str(e)}).encode("utf-8"), "application/json", 500)
-            return self._send(body, "application/json")
+            return self._send_view(hit)
         if path == "/api/logins/reveal":
             # The site account's e-mail and password, only when the page's
             # Reveal button asks: never part of the index or the files list.
@@ -481,19 +611,24 @@ class _Handler(BaseHTTPRequestHandler):
             # secrets come back as set/unset with their last four characters.
             try:
                 from .settings import settings_view
-                body = json.dumps(settings_view(self.out_dir)).encode("utf-8")
+                home = DEFAULT_PROFILE_DIR.parent
+                hit = cached_view("settings", [home / "career.yaml", home / "answers.yaml", home / "env", home / "resume" / "base.yaml",
+                                               self.out_dir / "listings-cache.json", self.out_dir / "discover-state.json"],
+                                  lambda: settings_view(self.out_dir), wait=False)
             except Exception as e:
                 return self._send(json.dumps({"error": str(e)}).encode("utf-8"), "application/json", 500)
-            return self._send(body, "application/json")
+            return self._send_view(hit)
         if path == "/api/calendar":
             # Both calendars (calendar.py): applications by the day they went
             # out, and the dates the inbox set. Read from disk; nothing scanned here.
             try:
-                from .calendar import build_calendar
-                body = json.dumps(build_calendar(self.out_dir)).encode("utf-8")
+                from .calendar import DEADLINES_NAME, build_calendar
+                hit = cached_view("calendar", [self.out_dir / "batch-state.json", self.out_dir / "listings-cache.json",
+                                               self.out_dir / "results.json", self.out_dir / DEADLINES_NAME, self.out_dir / "screenshots"],
+                                  lambda: build_calendar(self.out_dir), wait=False)
             except Exception as e:
                 return self._send(json.dumps({"error": str(e)}).encode("utf-8"), "application/json", 500)
-            return self._send(body, "application/json")
+            return self._send_view(hit)
         if path.startswith("/files/"):
             root = self.out_dir.resolve()
             target = (root / path[len("/files/"):]).resolve()
@@ -503,13 +638,30 @@ class _Handler(BaseHTTPRequestHandler):
             return self._send(target.read_bytes(), ctype)
         self._send(b"not found", "text/plain", 404)
 
-    def _send(self, body: bytes, ctype: str, code: int = 200) -> None:
+    def _send(self, body: bytes, ctype: str, code: int = 200, extra: dict | None = None) -> None:
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
+
+    def _send_view(self, hit: dict) -> None:
+        """A cached view: 304 when the page already holds this version
+        (If-None-Match), gzipped when the page accepts it."""
+        if self.headers.get("If-None-Match") == hit["etag"]:
+            self.send_response(304)
+            self.send_header("ETag", hit["etag"])
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            return
+        extra = {"ETag": hit["etag"], "Vary": "Accept-Encoding"}
+        if "gzip" in (self.headers.get("Accept-Encoding") or ""):
+            extra["Content-Encoding"] = "gzip"
+            return self._send(hit["gz"], "application/json", 200, extra)
+        return self._send(hit["body"], "application/json", 200, extra)
 
 
 def serve(out_dir: str | Path, port: int = 8765, open_browser: bool = False) -> None:

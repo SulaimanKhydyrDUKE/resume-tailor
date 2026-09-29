@@ -65,6 +65,21 @@ def _is_search_picker(field: dict) -> bool:
 # decide, with the entry in view: never the bank ("currently enrolled: Yes"
 # once ticked "I currently work here"), never an acknowledgement rule.
 _NO_BANK = re.compile(r"currently work here|currently (employed|attend)|i am fluent", re.I)
+_LANGUAGE_Q = re.compile(r"^\s*(spoken |native |primary |first |preferred )?languages?\s*(spoken|known)?\s*[*✱:]?\s*$", re.I)
+
+
+def _record_language(profile: Profile) -> str:
+    """The first language in career.yaml → languages, or ''."""
+    for entry in profile.career.get("languages") or []:
+        name = str((entry or {}).get("language") or "").strip() if isinstance(entry, dict) else str(entry or "").strip()
+        if name:
+            return name
+    return ""
+
+
+# A consent to text messages, however long the paragraph around it.
+_TEXT_CONSENT = re.compile(r"(text messag|\bsms\b)[\s\S]{0,160}?(consent|agree|opt[- ]?in|updates?|notif)|"
+                           r"(consent|agree|opt[- ]?in)[\s\S]{0,160}?(text messag|\bsms\b)", re.I)
 _CURRENT_ROLE = re.compile(r"currently work here|current(ly)? (role|position|employ)|i still work here|present position", re.I)
 _LEAVE_BLANK = re.compile(r"middle (name|initial)|phone extension|\bext(ension)?\.?\b|name suffix|\bsuffix\b|address line ?2|apartment|apt\.?\b|unit number|suite", re.I)
 _SELF_ID = re.compile(r"self-?identif|eeo|equal employment|diversity|transgender|sexual orientation|hispanic|latino|ethnicity|"
@@ -185,6 +200,22 @@ def _pick_submit_button(buttons: list[dict]) -> dict | None:
                 return inside[0]
             return None  # several equally plausible buttons: refuse
     return None
+
+
+def _application_underway(answers: list[dict]) -> bool:
+    """Earlier steps of this attempt already took the applicant's name,
+    e-mail or résumé: a later page of questions is part of the application,
+    however little it looks like one on its own."""
+    return any(a.get("answer") and re.search(r"\b(first name|last name|full name|e-?mail|resume|résumé|cv)\b", a.get("question") or "", re.I)
+               for a in answers)
+
+
+def _greyed_submit(buttons: list[dict]) -> dict | None:
+    """The one submit-worded button the page has disabled — a form that is
+    not ready to send, which the page usually explains beside a field."""
+    greyed = [b for b in buttons if b.get("disabled") and _SUBMIT_WORDS.search(b.get("text", ""))
+              and not _NOT_SUBMIT.search(b.get("text", ""))]
+    return greyed[0] if len(greyed) == 1 else None
 
 
 async def _ask_button(buttons: list[dict], purpose: str) -> dict | None:
@@ -397,19 +428,7 @@ async def _click_hard(session: ApplySession, selector: str) -> bool:
     """Click a control that an overlay may be covering (Workday floats a
     click-filter div over its Create Account button): a normal click, then a
     forced one, then the element's own click handler."""
-    loc = session._doc.locator(selector).first
-    for attempt in ("normal", "force", "js"):
-        try:
-            if attempt == "normal":
-                await loc.click(timeout=5000)
-            elif attempt == "force":
-                await loc.click(force=True, timeout=5000)
-            else:
-                await loc.evaluate("e => e.click()")
-            return True
-        except Exception:
-            continue
-    return False
+    return await session.click_hard(selector)
 
 
 async def _create_account(session: ApplySession, profile: Profile) -> str:
@@ -723,10 +742,12 @@ async def _create_account(session: ApplySession, profile: Profile) -> str:
             asked_at = time.time()
             asked = await click_text(r"resend (account )?verification( e-?mail)?|resend( verification)? e-?mail|"
                                      r"send (the )?(verification )?(e-?mail|link) again")
+            note(f"verification wall for tenant {tenant!r}: resend clicked={asked}; buttons={[(b.get('text') or '')[:24] for b in await session.buttons()][:8]}")
             found = await mailbox.fetch_secret_async(asked_at if asked else started, hints, timeout_s=150, require=require)
             if not (found or {}).get("link"):
                 found = await mailbox.fetch_secret_async(time.time() - 3 * 86400, hints, timeout_s=0, require=require)
             link = (found or {}).get("link")
+            note(f"verification link {'found' if link else 'not found'} for {tenant!r}" + (f": {link[:70]}" if link else ""))
             if link:
                 try:
                     await session.goto(link)
@@ -902,9 +923,16 @@ def _education_date_answer(profile: Profile, section: str, question: str, option
     q = (question or "").lower()
     which = "start" if re.search(r"\b(start|from|begin)", q) else "end" if re.search(r"\b(end|to|graduat|complet|finish)", q) else None
     part = "month" if "month" in q else "year" if "year" in q else None
-    if not which or not part:
+    if not which:
         return None
-    want = _education_dates(profile).get(f"{which}_{part}")
+    dates = _education_dates(profile)
+    if not part:
+        # A whole-date box ("Start date", "Pick a date"): month and year as MM/YYYY.
+        if options or not dates.get(f"{which}_year"):
+            return None
+        m = dates.get(f"{which}_month")
+        return (f"{_MONTH_NAMES.index(m) + 1:02d}/{dates[which + '_year']}" if m else dates[which + "_year"])
+    want = dates.get(f"{which}_{part}")
     if not want:
         return None
     if options:
@@ -944,23 +972,34 @@ _ENTRY_NEEDED = re.compile(r"at least one (?:work |prior |previous )?(?:experien
 _ADD_JS = r"""
 () => {
   const out = []; let k = 0;
-  for (const b of document.querySelectorAll('button, a, [role=button]')) {
-    const t = (b.innerText || b.textContent || '').replace(/\s+/g, ' ').trim();
-    if (!/^\+?\s*add(\s+(another|new|an?|entry|education|experience|employment|position|job|school|work(\s+experience)?|history))*\s*$/i.test(t)) continue;
-    const r = b.getBoundingClientRect(); if (r.width === 0 || r.height === 0) continue;
+  const s = v => (typeof v === 'string' ? v : '');
+  // The same candidates as the button scan: real buttons, links styled as
+  // buttons, and custom elements whose tag ends in -button (SmartRecruiters).
+  const btnLike = el => !!el.matches && (el.matches('button, input[type=submit], input[type=button], [role=button], a.btn, a[class*="btn-"], a[class*="button"]') || /-button$/i.test(el.tagName));
+  const vis = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  const textOf = el => (s(el.innerText) || s(el.value) || el.getAttribute('aria-label') || s(el.textContent) || '').replace(/\s+/g, ' ').trim();
+  const isAdd = t => /^\+?\s*add(\s+(another|new|an?|entry|education|experience|employment|position|job|school|work(\s+experience)?|history|more))*\s*$/i.test(t);
+  const cands = document.querySelectorAll('*').filter(el => btnLike(el) && vis(el) && isAdd(textOf(el)));
+  const within = (outer, inner) => { let n = inner.parentNode || inner.host; while (n) { if (n === outer) return true; n = n.parentNode || n.host; } return false; };
+  const list = cands.filter(b => !cands.some(c => c !== b && within(b, c)));
+  const headingText = h => (s(h.innerText) || s(h.textContent) || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+  for (const b of list) {
+    // The section the Add belongs to: the nearest enclosing block whose own
+    // text is short — a header row like "Education * Please provide at
+    // least one education entry Add" — rather than a distant page heading.
     let heading = '';
-    for (let el = b.parentElement; el && el !== document.body && !heading; el = el.parentElement) {
-      for (let p = el.previousElementSibling; p && !heading; p = p.previousElementSibling) {
-        const h = p.matches && p.matches('h1,h2,h3,h4,h5,legend,[role=heading]') ? p : (p.querySelector ? p.querySelector('h1,h2,h3,h4,h5,legend,[role=heading]') : null);
-        if (h && (h.innerText || '').trim()) heading = (h.innerText || '').trim().slice(0, 60);
-      }
-      if (!heading) {
-        const hh = el.querySelector && el.querySelector('h1,h2,h3,h4,h5,legend,[role=heading]');
-        if (hh && (hh.innerText || '').trim() && hh.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) heading = (hh.innerText || '').trim().slice(0, 60);
-      }
+    let el = b.parentNode || b.host;
+    for (let depth = 0; el && depth < 10 && !heading; depth++) {
+      if (el.nodeType !== 1) { el = el.host || null; continue; }
+      const t = textOf(el).replace(textOf(b), ' ').replace(/\s+/g, ' ').trim();
+      if (t && t.length <= 200) heading = t.slice(0, 80);
+      el = el.parentNode || el.host;
+    }
+    if (!heading) {
+      for (let p = b.previousElementSibling; p && !heading; p = p.previousElementSibling) heading = headingText(p);
     }
     b.dataset.rtAdd = String(++k);
-    out.push({ k: String(k), text: t.slice(0, 40), heading });
+    out.push({ k: String(k), text: textOf(b).slice(0, 40), heading });
   }
   return out;
 }
@@ -996,6 +1035,23 @@ def _add_js() -> str:
         from .apply import _deep
         _ADD_JS_DEEP = _deep(_ADD_JS.strip())
     return _ADD_JS_DEEP
+
+
+async def _save_entry_editors(session: ApplySession) -> int:
+    """Press the Save of every open entry editor (SmartRecruiters draws each
+    added Experience or Education as an editor with Cancel and Save; Next
+    refuses while one is open). A plain "Save" only — never "Save and
+    Continue", which is a step control."""
+    pressed = 0
+    for _ in range(4):
+        btn = next((b for b in await session.buttons() if not b.get("disabled") and re.fullmatch(r"\s*save\s*", b.get("text") or "", re.I)), None)
+        if btn is None:
+            break
+        if not await _click_hard(session, btn["selector"]):
+            break
+        pressed += 1
+        await session._page.wait_for_timeout(1200)
+    return pressed
 
 
 async def _add_entries_for(session: ApplySession, errors: list[str]) -> int:
@@ -1090,7 +1146,9 @@ def _autofill_boilerplate(label: str, field: dict, options: list[str] | None = N
         # only") whose every option is a form of yes: the only answer there is.
         return next(o for o in opts_now if o.strip())
     if (field.get("required") and not opts_now and field.get("type") in ("text", "textarea", "")
-            and re.search(r"who referred you|referred you\b.*\bname|referr(ed|al) (name|by)|name of (the )?(person|employee) who referred|referrer'?s? name", label, re.I)):
+            and re.search(r"who referred you|\breferred you\b.*\bname|\breferr(ed|al) (name|by)|name of (the )?(person|employee) who referred|\breferrer'?s? name", label, re.I)):
+        # (word-bounded: "preferred name" holds "referred name" inside it,
+        # and once got the no-referral line as the applicant's name)
         # A required "who referred you" box with no referral to name: the
         # honest answer, rather than a stalled application or someone's name.
         return "N/A — no referral; found the posting on a job board"
@@ -1186,6 +1244,28 @@ async def _resolve(question: str, field: dict, options: list[str], profile: Prof
 _MISSING_FIELD = re.compile(
     r"(?:missing entry for required field|required field|is required|please (?:select|enter|choose|complete|fill in|answer))"
     r"[:\s]*(.+?)\s*$", re.I)
+
+
+
+
+async def _demanded_by_page(session: ApplySession) -> set[str]:
+    """The fields the page itself is asking for right now: those its
+    validation names ("Missing entry for required field: X"), those it flags
+    invalid (by rt id, or by the browser's own constraint check), and those
+    whose label appears in a complaint. They are treated as required, and
+    decided again with the complaint in view."""
+    errors = await session.errors()
+    demanded = set(_missing_labels(errors))
+    invalid_ids = {m.group(1) for e in errors for m in [re.match(r"(rt-\d+): ", e)] if m}
+    for f in await session.describe_form():
+        label = (f.get("label") or "").strip()
+        if not label:
+            continue
+        if f.get("id") in invalid_ids:
+            demanded.add(label)
+        elif any(label[:30].lower() in e.lower() for e in errors if not re.match(r"rt-\d+: ", e)):
+            demanded.add(label)
+    return demanded
 
 
 def _missing_labels(errors: list[str]) -> set[str]:
@@ -1458,6 +1538,22 @@ async def _decide(question: str, field: dict, options: list[str], profile: Profi
     key = (section, question, tuple(options))
     if key in decided:
         return decided[key]
+    if _TEXT_CONSENT.search(question):
+        # "Check Yes or No to indicate your agreement to receive text message
+        # updates from … Reply STOP to opt out" (Rippling): a paragraph the
+        # bank's word match cannot see through. The bank's own consent entry
+        # answers it, in the option's words; without one, nothing is assumed.
+        hit, src = profile.lookup("text message updates")
+        if hit is None:
+            hit, src = profile.lookup("sms updates")
+        if hit is not None:
+            picked = str(hit)
+            i = closest_option(picked, options) if options else None
+            if not options or i is not None:
+                picked = options[i] if options else picked
+                sources[(section, question)] = f"answer bank: {src}"
+                decided[key] = picked
+                return picked
     if field.get("type") == "checkbox" and not options and _not_my_school(question, _school_names(profile)):
         # A list of universities as checkboxes ("Which school do you attend?"
         # on a regional employer's form): every school that is not the
@@ -1496,6 +1592,18 @@ async def _decide(question: str, field: dict, options: list[str], profile: Profi
             sources[(section, question)] = "record: the ongoing role's employer"
             decided[key] = emp
             return emp
+    if _LANGUAGE_Q.match(question):
+        # Workday's Languages block ("Language*", then "I am fluent in this
+        # language"): the record's first language, in the option's words.
+        # Without one in career.yaml → languages, nothing is assumed — the
+        # planner once read "Language" as a programming language.
+        lang = _record_language(profile)
+        if lang:
+            i = closest_option(lang, options) if options else None
+            if not options or i is not None:
+                sources[(section, question)] = "record: languages"
+                decided[key] = options[i] if options else lang
+                return decided[key]
     edu_date = _education_date_answer(profile, section, question, options)
     if edu_date is not None:
         sources[(section, question)] = "record: the degree's dates"
@@ -2182,6 +2290,8 @@ async def _process_one(session: ApplySession, profile: Profile, entry: QueueEntr
     (untrusted.py) ends up in the outcome's flags, for the dashboard and
     the log. The application itself goes on from the scrubbed text."""
     session.injection_notes = []
+    if getattr(entry, "term", "") and not entry.term.lower().startswith("summer"):
+        profile = profile.for_term(entry.term)  # winter / spring availability answers for a winter / spring posting
     o = await _process_one_inner(session, profile, entry, out_dir, shots_dir, apply_once, state, dry_run,
                                  judge_gate=judge_gate, approved=approved)
     notes = list(dict.fromkeys(session.injection_notes))
@@ -2292,6 +2402,12 @@ async def _process_one_inner(session: ApplySession, profile: Profile, entry: Que
     apply_below_bar = bool(search.get("apply_below_bar", True))
     if os.environ.get("RESUME_TAILOR_APPLY_BELOW_BAR", "").strip().lower() in ("0", "false", "no"):
         apply_below_bar = False  # the launch script's word: every judge at the bar, or the posting is held
+    if getattr(entry, "source", "") == "added by hand":
+        # The user put this posting in the pool themselves: the judges' notes
+        # are recorded, the application goes in — unless an eligibility
+        # barrier (degree level, citizenship, clearance) stands, which the
+        # user is told about in the record.
+        apply_below_bar = True
 
     prev = state.done.get(entry.id) or {}
     # A cached resume and verdict stand only when the verdict was a pass at
@@ -2551,6 +2667,7 @@ async def _process_one_inner(session: ApplySession, profile: Profile, entry: Que
                         _now(f"adding the entr{'y' if added == 1 else 'ies'} the page asked for", entry, url=apply_url)
                         unresolved, more = await _fill_form(session, profile, pdf_path, jd_text)
                         o.answers = o.answers + more
+                        await _save_entry_editors(session)
                         buttons = await session.buttons()
                         again = _pick_next_button(buttons) or await _ask_button(buttons, "next")
                         if again is not None and not _NOT_SUBMIT.search(again.get("text", "")):
@@ -2684,9 +2801,12 @@ async def _process_one_inner(session: ApplySession, profile: Profile, entry: Que
     if not any(a.get("answer") for a in o.answers):
         o.status, o.detail = "needs_review", "nothing was filled on this page; not submitted"
         return o
-    if not review_page and not _looks_like_application(await session.describe_form()):
+    if not review_page and not _looks_like_application(await session.describe_form()) and not _application_underway(o.answers):
         # A posting page's "Apply now" is not a submit, however the button
-        # picker reads it: the page must hold the application itself.
+        # picker reads it: the page must hold the application itself — unless
+        # an earlier step of this very attempt already took the name, e-mail
+        # or résumé (SmartRecruiters' "Preliminary questions", Oracle's
+        # questionnaire), in which case this page of questions is its tail.
         shot = await session.screenshot(shots_dir / f"{_safe(entry.id)}-needs-review.png")
         o.status, o.detail = "needs_review", "the page at submit time is not an application form (a job page or a sign-in step); not submitted"
         o.screenshot = str(shot)
@@ -2700,14 +2820,49 @@ async def _process_one_inner(session: ApplySession, profile: Profile, entry: Que
         return o
     buttons = await session.buttons()
     submit = _pick_submit_button(buttons)
+    greyed = _greyed_submit(buttons)
+    if submit is None and greyed:
+        # Rippling keeps Apply greyed out until every required answer is in,
+        # and says under the field which one is missing. That is not an
+        # ambiguous page: one repair round with the complaint in view, then
+        # the button is read again.
+        demanded = await _demanded_by_page(session)
+        if not demanded:
+            # Nothing named. The usual case is a choice the page never marked
+            # required — Rippling's text-message consent, drawn only once the
+            # phone is in — so every radio group with nothing chosen is asked for.
+            groups = {(f.get("label") or "").strip() for f in await session.describe_form()
+                      if f.get("type") in ("radio", "yesno") and (f.get("label") or "").strip()}
+            if groups:
+                demanded = {(f.get("label") or "").strip() for f in await session.unfilled_required(groups)} & groups
+        if demanded:
+            _now("answering what the page still asks for", entry, url=apply_url)
+            try:
+                more_unresolved, more = await _fill_form(session, profile, pdf_path, jd_text, force_required=demanded)
+                o.answers = o.answers + [a for a in more if a.get("answer")]
+            except Exception as e:
+                more_unresolved = [f"repair failed: {_brief(e)}"]
+            buttons = await session.buttons()
+            submit = _pick_submit_button(buttons)
+            greyed = _greyed_submit(buttons)
+            if submit is None and greyed:
+                o.status = "needs_review"
+                o.detail = (f"the submit button {greyed.get('text', '')[:30]!r} stays disabled; the page asks for: "
+                            + ", ".join(sorted(demanded))[:200] + (("; unresolved: " + "; ".join(more_unresolved)[:200]) if more_unresolved else ""))
+                o.screenshot = str(await session.screenshot(shots_dir / f"{_safe(entry.id)}-needs-review.png"))
+                return o
     if submit is None:
         submit = await _ask_button(buttons, "submit")
         if submit is not None and (_NEXT_WORDS.match(submit.get("text", "")) or _NOT_SUBMIT.search(submit.get("text", ""))):
             submit = None  # the model may not turn a Next or Verify into a submit
     if submit is None:
         o.status = "needs_review"
-        o.detail = ("could not identify a single unambiguous submit button; the page offers: "
-                    + ", ".join(repr(b.get("text", "")[:30]) for b in buttons[:12]))
+        if greyed:
+            o.detail = (f"the submit button {greyed.get('text', '')[:30]!r} is disabled and the page does not say which field it wants; "
+                        "it offers: " + ", ".join(repr(b.get("text", "")[:30]) for b in buttons[:12]))
+        else:
+            o.detail = ("could not identify a single unambiguous submit button; the page offers: "
+                        + ", ".join(repr(b.get("text", "")[:30]) for b in buttons[:12]))
         o.screenshot = str(await session.screenshot(shots_dir / f"{_safe(entry.id)}-needs-review.png"))
         return o
 
@@ -2724,18 +2879,7 @@ async def _process_one_inner(session: ApplySession, profile: Profile, entry: Que
         # count as required, are decided again with the page's complaint in
         # view, and the form is sent again — up to three rounds.
         rounds += 1
-        errors = await session.errors()
-        demanded = set(_missing_labels(errors))
-        invalid_ids = {m.group(1) for e in errors for m in [re.match(r"(rt-\d+): ", e)] if m}
-        fields_now = await session.describe_form()
-        for f in fields_now:
-            label = (f.get("label") or "").strip()
-            if not label:
-                continue
-            if f.get("id") in invalid_ids:
-                demanded.add(label)
-            elif any(label[:30].lower() in e.lower() for e in errors if not re.match(r"rt-\d+: ", e)):
-                demanded.add(label)
+        demanded = await _demanded_by_page(session)
         if not demanded:
             break
         _now(f"repairing the form (round {rounds})", entry, url=apply_url)

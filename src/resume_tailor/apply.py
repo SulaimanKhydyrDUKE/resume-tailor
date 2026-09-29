@@ -94,14 +94,21 @@ _FIELD_JS = r"""
   // What a control's own label says — for a radio button that is "Yes", not the question.
   const ownLabel = el => {
     if (el.labels && el.labels.length) return txt(el.labels[0]);
-    if (el.getAttribute('aria-label')) return el.getAttribute('aria-label').trim();
+    // A name wired up by id beats aria-label: Rippling gives every picker's
+    // input aria-label="Search" (its location box "textbox") beside the
+    // aria-labelledby that actually names it.
     const lb = el.getAttribute('aria-labelledby'); if (lb) { const t = byIds(lb); if (t) return t; }
+    const al = (el.getAttribute('aria-label') || '').trim();
+    if (al && !/^(search|textbox|text box|input|select|combobox|listbox|dropdown|type here)$/i.test(al)) return al;
     const wrap = el.closest('label'); if (wrap) return txt(wrap);
     return '';
   };
   // Text that names an action or a hint, not the question: a file input's
   // "Attach" button label, a picker's "Start typing...".
-  const placeholderish = t => /^(type your response|your answer|type here.*|enter .*|select\.{0,3}|choose.*|start typing.*|attach( file)?|upload( file)?|browse|choose file|select file|drag and drop.*|drop files?.*)$/i.test(t || '');
+  // "Choose one", "Choose an option", "Choose…" are prompts; "Choose not to
+  // Disclose" is an answer (Workday's Gender list), and once read as a
+  // prompt every such choice looked unmade.
+  const placeholderish = t => /^(type your response|your answer|type here.*|enter .*|select\.{0,3}|choose( one| an? (option|value|answer|selection)| from( the)? list)?\.{0,3}|start typing.*|attach( file)?|upload( file)?|browse|choose file|select file|drag and drop.*|drop files?.*)$/i.test(t || '');
   const MAXQ = 600;
   const STAR = /[*✱]\s*:?\s*$/;
   const STARLEAD = /^\s*[*✱]\s*\S/;  // Workable writes the star first: "* What is your…"
@@ -151,7 +158,7 @@ _FIELD_JS = r"""
     // A picker's own chosen value ("Duke University" in react-select's
     // singleValue node beside the input), its placeholder, or its chips sit
     // before the input too, and are never its name.
-    const PICKER_OWN = '[class*="single-value"], [class*="singleValue"], [class*="selected-value"], [class*="selectedValue"], '
+    const PICKER_OWN = '[class*="single-value"], [class*="singleValue"], [class*="selected-value"], [class*="selectedValue"], [class*="selection-item"], '
       + '[class*="placeholder"], [class*="multi-value"], [class*="multiValue"], [data-automation-id="selectedItem"], [class*="-chip"], spl-chip';
     const pickerOwn = n => n.matches(PICKER_OWN) || !!n.querySelector(PICKER_OWN);
     const walkUp = (start, levels) => {
@@ -245,8 +252,8 @@ _FIELD_JS = r"""
       n = n.parentElement;
       if (!n || n.tagName === 'FORM' || n.tagName === 'BODY') break;
       if (n.querySelectorAll('input, [role=combobox]').length > 2) break;
-      const v = n.querySelector('[class*="single-value"], [class*="singleValue"], [class*="selected-value"], [class*="selectedValue"]');
-      if (v && txt(v)) return txt(v);
+      const v = n.querySelector('[class*="single-value"], [class*="singleValue"], [class*="selected-value"], [class*="selectedValue"], [class*="selection-item"]');
+      if (v && txt(v)) return txt(v);  // (selection-item: Ant Design's Select shows its choice there, the input stays empty)
       // Workday's multi-select keeps its choices as chips beside the input.
       const chips = [...n.querySelectorAll('[data-automation-id="selectedItem"], [data-automation-id*="selectedItem"]')].map(txt).filter(Boolean);
       if (chips.length) return chips.join(' | ');
@@ -257,7 +264,12 @@ _FIELD_JS = r"""
   const sel = 'input:not([type=hidden]), select, textarea';
   // A styled radio or checkbox may be hidden outright behind its label; the
   // label being visible is what makes it a real choice on the page.
-  const labelVisible = el => isOption(el) && el.labels && el.labels.length && vis(el.labels[0]);
+  // The label may be wired by id rather than <label for>: Rippling's
+  // text-message consent radios are display:none inputs named only by
+  // aria-labelledby, and their visible labels are what a person chooses.
+  const labelEl = el => (el.labels && el.labels.length) ? el.labels[0]
+    : (el.getAttribute('aria-labelledby') ? el.getAttribute('aria-labelledby').split(/\s+/).map(id => document.getElementById(id)).find(Boolean) : null);
+  const labelVisible = el => { if (!isOption(el)) return false; const l = labelEl(el); return !!(l && vis(l)); };
   const out = [...document.querySelectorAll(sel)].filter(el => (vis(el) || labelVisible(el)) && !dummy(el)).map(el => {
     const id = tagOf(el);
     const type = (el.type || '').toLowerCase();
@@ -368,7 +380,15 @@ _FIELD_JS = r"""
       let sib = node.previousElementSibling;
       while (sib) {
         const t = txt(sib);
-        if (t && t.length <= MAXQ && !sib.querySelector('input, select, textarea, button') && !placeholderish(t) && !/^[*✱:\s]+$/.test(t)) return t;
+        if (t && !sib.querySelector('input, select, textarea, button') && !placeholderish(t) && !/^[*✱:\s]+$/.test(t)) {
+          if (t.length <= MAXQ) return t;
+          // A block too long to be a label — a compliance paragraph that
+          // ends in the actual question — names the control by its last
+          // question sentence.
+          const sents = t.split(/(?<=[.!?])\s+/).map(x => x.trim()).filter(Boolean);
+          const last = sents.length ? sents[sents.length - 1] : '';
+          if (last && /\?\s*[*✱]?\s*$/.test(last) && last.length <= MAXQ) return last;
+        }
         sib = sib.previousElementSibling;
       }
       node = node.parentElement;
@@ -453,9 +473,32 @@ e => {
 # shadow root, rendered as a div.c-spl-autocomplete-…-option). Each entry is
 # tagged so the click lands on the same node the scan saw, whatever order
 # a shadow-piercing locator would put them in.
+# A separate country-code control beside the phone number: Workday's own
+# field, or any picker, select or box that says so.
+_COUNTRY_CODE_JS = _deep(r"""
+() => {
+  if (document.querySelector('[data-automation-id="formField-countryPhoneCode"], [data-automation-id*="countryPhoneCode"]')) return true;
+  const rx = /\b(country|dial(ing)?|phone|calling) code\b/i;
+  for (const e of document.querySelectorAll('input, select, button, [role=combobox], [role=listbox]')) {
+    const r = e.getBoundingClientRect(); if (!(r.width > 0 && r.height > 0)) continue;
+    const names = [e.getAttribute('aria-label'), e.placeholder, e.name, e.id, e.innerText,
+                   e.labels && e.labels[0] && e.labels[0].innerText, e.getAttribute('title')];
+    if (names.some(n => n && rx.test(String(n)))) return true;
+  }
+  return false;
+}
+""")
+
 _OPTION_SEL = ('[role=option], [role=listbox] li, [id*="-option-"], [class*="__option"]:not([class*="__options"]), .pac-item, '
                '[class*="autocomplete-option"], [class*="autocomplete-default-option"], '
-               'spl-select-option, spl-dropdown-item, [class*="dropdown-item"]')
+               'spl-select-option, spl-dropdown-item, [class*="dropdown-item"], '
+               # Ant Design's Select (EquipmentShare's Greenhouse-fed form): the
+               # entries a person sees carry no role; its role=option list is
+               # the zero-width one for screen readers.
+               '[class*="select-item-option"]:not([class*="option-content"]):not([class*="option-state"]), '
+               # Oracle JET's lists (its CandidateExperience pickers), by class
+               # where the role is on a wrapper the text is not in.
+               '[class*="listbox-result"], [class*="listview-item"]')
 _OPTIONS_JS = r"""
 () => [...document.querySelectorAll('__OPTION_SEL__')].map((e, i) => {
   const r = e.getBoundingClientRect(); const s = getComputedStyle(e);
@@ -576,6 +619,14 @@ _ERRORS_JS = r"""
     const m = msg && document.getElementById(msg);
     out.push((id ? id + ': ' : '') + ((m && txt(m)) || 'invalid'));
   }
+  // A form the browser itself refused to send (Lever): the complaint is the
+  // native bubble on the first control failing its constraint, which is not
+  // in the DOM — the control's own validity says which one and why.
+  for (const c of document.querySelectorAll('input, select, textarea')) {
+    if (!c.willValidate || c.checkValidity() || !vis(c)) continue;
+    const id = c.dataset && c.dataset.rtId;
+    out.push((id ? id + ': ' : '') + (c.validationMessage || 'invalid'));
+  }
   return [...new Set(out)].slice(0, 20);
 }
 """
@@ -584,7 +635,9 @@ _ERRORS_JS = _deep(_ERRORS_JS)
 # loaded" and "résumé.pdf successfully uploaded" both come through role=alert,
 # and either one read as an error cut the wait for a step change short.
 _NOT_AN_ERROR = re.compile(r"page is loaded|successfully|uploaded|upload(ed)? complete|has been (added|attached|saved)|"
-                           r"\bloading\b|please wait|^\s*saved\b|^\s*$", re.I)
+                           r"\bloading\b|please wait|^\s*saved\b|^\s*$|"
+                           # Lever's cookie strip is a live region: a notice, not a complaint.
+                           r"\bcookies?\b|privacy notice|cookie (policy|settings)", re.I)
 
 _US_STATES = {
     "al": "alabama", "ak": "alaska", "az": "arizona", "ar": "arkansas", "ca": "california", "co": "colorado",
@@ -1229,6 +1282,7 @@ class ApplySession:
         _relabel_workday(fields)
         _relabel_greenhouse(fields)
         _relabel_ashby(fields)
+        _relabel_entry_editors(fields)
         # A label, hint or option written for an automated reader goes before
         # any model sees the form (untrusted.py); the record keeps a note.
         for n in scrub_fields(fields):
@@ -1337,9 +1391,7 @@ class ApplySession:
             else:
                 return None
         before = list(self._ctx.pages)
-        try:
-            await self._doc.locator(chosen["selector"]).first.click()
-        except Exception:
+        if not await self.click_hard(chosen["selector"]):
             return None
         try:
             await self._page.wait_for_load_state("networkidle", timeout=8000)
@@ -1552,10 +1604,10 @@ class ApplySession:
             return
         phone_label = bool(re.search(r"\bphone\b", (field or {}).get("label") or "", re.I)) and not re.search(
             r"extension|\bext\b|code|type|device", (field or {}).get("label") or "", re.I)
-        if (typ == "tel" or phone_label) and re.match(r"^\s*\+?1\b", value) and await self._doc.evaluate(
-                "() => !!document.querySelector('[data-automation-id=\"formField-countryPhoneCode\"], [data-automation-id*=\"countryPhoneCode\"]')"):
-            # The country code has its own field here (Workday): the number
-            # takes the national digits alone.
+        if (typ == "tel" or phone_label) and re.match(r"^\s*\+?1\b", value) and await self._doc.evaluate(_COUNTRY_CODE_JS):
+            # The country code has its own control here (Workday's, Oracle's
+            # "Country code" picker beside the number): the number takes the
+            # national digits alone — "19103360632" is "not a valid number".
             digits = re.sub(r"\D", "", value)
             value = digits[1:] if len(digits) == 11 and digits.startswith("1") else digits
         if tag == "select":
@@ -1600,6 +1652,27 @@ class ApplySession:
             await el.fill(value)
         else:
             await self._type(el, value)
+            await self._settle_suggestion(el)
+
+    async def _settle_suggestion(self, el) -> None:
+        """Lever's Current location is a plain text box backed by a suggestion
+        list: on blur without a pick, its script empties the box and the
+        hidden selected-location beside it, and the form then fails the
+        browser's own required check. Once the list shows, the first entry
+        is taken, as a person would."""
+        try:
+            lever = await el.evaluate("e => e.classList.contains('location-input') && !!document.querySelector('#selected-location')")
+        except Exception:
+            return
+        if not lever:
+            return
+        opt = self._page.locator(".dropdown-location").first
+        try:
+            await opt.wait_for(state="visible", timeout=5000)
+            await opt.click()
+            await self._page.wait_for_timeout(300)
+        except Exception:
+            pass
 
     async def _toggle_by_hand(self, selector: str, field: dict | None, want: bool) -> None:
         """A styled box that refuses Playwright's click (Ashby's zero-opacity
@@ -1783,6 +1856,20 @@ class ApplySession:
                 return found[: limit + 1]
             await self._page.wait_for_timeout(250)
 
+    @staticmethod
+    def _ignored_typing(typed: str, found: list[dict]) -> bool:
+        """A list that took no notice of what was typed: eight or more entries
+        and not one carrying the first typed word as a whole word ("Computer"
+        for "Computer Science and Mathematics"; Invesco's head has "Actuarial
+        Sciences", which is not "science"). A list that filtered shows the
+        word (or nothing); pressing Enter on that would choose from it."""
+        words = [w.lower() for w in re.findall(r"[A-Za-z0-9']+", typed or "")
+                 if len(w) >= 3 and w.lower() not in ("and", "the", "for", "with", "sciences")]
+        if not words or len(found) < 8:
+            return False
+        first = re.compile(r"\b" + re.escape(words[0]) + r"\b", re.I)
+        return not any(first.search(o.get("t") or "") for o in found)
+
     async def _searches_on_enter(self, el) -> bool:
         """Workday's search pickers (its School or University field) run the
         search only when Enter is pressed — "start typing the name and press
@@ -1943,8 +2030,10 @@ class ApplySession:
             if typed:
                 await el.press_sequentially(typed, delay=30)
             found = await self._visible_options()
-            if not found and typed and await self._searches_on_enter(el):
-                # The list stays empty until the search is run.
+            if typed and ((not found and await self._searches_on_enter(el)) or self._ignored_typing(typed, found)):
+                # The list stays empty until the search is run — or, on some
+                # Workday prompts, keeps showing the unfiltered head of the
+                # whole list ("Accounting…") until Enter runs it.
                 await page.keyboard.press("Enter")
                 await page.wait_for_timeout(1500)
                 found = await self._visible_options(wait_ms=2500)
@@ -2059,7 +2148,13 @@ class ApplySession:
                 await el.fill("")
                 await el.press_sequentially(t[:60], delay=20)
                 found = await self._visible_options(limit, wait_ms=1500)
-                if not found and await self._searches_on_enter(el):
+                if (not found and await self._searches_on_enter(el)) or self._ignored_typing(t, found):
+                    # Workday's prompts run the search on Enter: some show "No
+                    # Items." until then, others (Invesco's Field of Study) keep
+                    # showing the unfiltered head of a long list — "Accounting…"
+                    # whatever was typed — and "Computer Science" only appears
+                    # once Enter is pressed. A list that already reflects the
+                    # typed word is left alone: Enter would pick from it.
                     await page.keyboard.press("Enter")
                     await page.wait_for_timeout(1500)
                     found = await self._visible_options(limit, wait_ms=2500)
@@ -2076,7 +2171,8 @@ class ApplySession:
             pass
         await page.keyboard.press("Escape")
         await page.wait_for_timeout(150)
-        return [o["t"] for o in found][:limit]
+        # Workday renders each entry more than once (a hidden twin per row): one of each.
+        return list(dict.fromkeys(o["t"] for o in found))[:limit]
 
     async def combobox_options(self, selector: str, field: dict | None = None, limit: int = 60) -> list[str]:
         """What a picker offers when opened with nothing typed — the short,
@@ -2088,9 +2184,10 @@ class ApplySession:
         el = await self._locate(selector, field)
         await el.click()
         found = await self._visible_options(limit, wait_ms=800)
-        if not found:
+        if not found and not await el.evaluate("e => !!e.readOnly"):
             # Ashby and Workday open the list on input rather than on focus:
             # type a character, read the list while it shows, take it back.
+            # (A read-only box takes no character; its list opened on click.)
             await el.fill("a")
             found = await self._visible_options(limit, wait_ms=1500)
             await el.fill("")
@@ -2132,7 +2229,12 @@ class ApplySession:
             try:
                 await button.click(force=True, timeout=5000)
             except Exception:
-                return False, f"the submit control could not be clicked — something covers it: {str(first).splitlines()[0][:160]}"
+                try:
+                    # Workday's click-filter overlay takes the pointer; the
+                    # element's own handler still fires.
+                    await button.evaluate("e => e.click()")
+                except Exception:
+                    return False, f"the submit control could not be clicked — something covers it: {str(first).splitlines()[0][:160]}"
         import time
 
         deadline = time.monotonic() + SUBMIT_WAIT_S
@@ -2308,6 +2410,28 @@ class ApplySession:
             labels = ()
         return (self._page.url if self._page is not None else "", labels)
 
+    async def click_hard(self, selector: str) -> bool:
+        """Press a control an overlay may be covering. Workday floats a
+        transparent click-filter div over every button (Create Account, Save
+        and Continue, Submit); Playwright's normal click sees the overlay
+        intercepting and retries until it times out, so the step never
+        moves and nothing says why. A normal click first, then a forced
+        one, then the element's own click handler."""
+        await self.start()
+        loc = self._doc.locator(selector).first
+        for attempt in ("normal", "force", "js"):
+            try:
+                if attempt == "normal":
+                    await loc.click(timeout=5000)
+                elif attempt == "force":
+                    await loc.click(force=True, timeout=5000)
+                else:
+                    await loc.evaluate("e => e.click()")
+                return True
+            except Exception:
+                continue
+        return False
+
     async def advance(self, selector: str, seconds: float = 45.0) -> bool:
         """Click a Next/Continue control of a multi-step form and wait for
         the following step to render. True when the page changed.
@@ -2323,7 +2447,8 @@ class ApplySession:
             await self._page.keyboard.press("Escape")  # any open menu would take this click instead
         except Exception:
             pass
-        await self._doc.locator(selector).first.click()
+        if not await self.click_hard(selector):
+            return False
         try:
             await self._page.wait_for_load_state("networkidle", timeout=8000)
         except Exception:
@@ -2536,6 +2661,38 @@ def _relabel_ashby(fields: list[dict]) -> None:
             f["label"] = "Start date — Year" if years == 1 else "End date — Year"
         elif t == "checkbox":
             f["label"] = "I am still a student here"
+
+
+_EXP_HEAD = re.compile(r"^(title|job title|position)\*?$", re.I)
+_EDU_HEAD = re.compile(r"^(institution|school|university|school name|institution name)\*?$", re.I)
+_ENTRY_PART = re.compile(r"^(company|employer|office location|location|description|from|to|start|end|start date|end date|"
+                         r"i currently work here|current|major|degree|field of study|school location|i currently attend|gpa)\*?$", re.I)
+
+
+def _relabel_entry_editors(fields: list[dict]) -> None:
+    """An entry editor opened by an Add button (SmartRecruiters' Experience and
+    Education blocks) puts its controls under the page's own heading, so
+    "Title", "From" and "To" arrive with the job title as their section.
+    From the head control of each editor — Title, or Institution — the
+    controls that follow are that entry's, in a Work Experience or
+    Education section, with From and To read as its start and end."""
+    block = None
+    for f in fields:
+        label = (f.get("label") or "").strip()
+        if _EXP_HEAD.match(label):
+            block = "Work Experience 1"
+        elif _EDU_HEAD.match(label):
+            block = "Education 1"
+        elif block and not _ENTRY_PART.match(label):
+            block = None
+        if not block:
+            continue
+        f["section"] = block
+        low = label.lower().rstrip("*")
+        if low == "from":
+            f["label"] = "Start date"
+        elif low == "to":
+            f["label"] = "End date"
 
 
 def usable(fields: list[dict]) -> list[dict]:

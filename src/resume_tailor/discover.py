@@ -383,6 +383,13 @@ def _refresh_locked(out_dir: Path, url: str, table_sources: list[tuple[str, str]
     extra = [l for l in extra if "jobright.ai/" not in l["url"] or role_key(l) not in direct]
     if not tables:  # every source down: keep what the cache had
         extra = [l for l in (cache or []) if str(l.get("id", "")).startswith("gh:")]
+    # Postings read off Instagram stories, and links the user added by hand
+    # (igstories.py) — a file on disk, never a fetch here.
+    try:
+        from .igstories import to_listings as _ig_listings
+        listings, extra = merge_hand_links(listings, extra, _ig_listings(out_dir))
+    except Exception as e:
+        print(f"  instagram links skipped ({str(e)[:60]})", file=sys.stderr, flush=True)
     before = {l.get("id") for l in (cache or [])}
     merged = listings + extra
     changed = changed or any(l["id"] not in before for l in extra)
@@ -414,10 +421,37 @@ def is_us(locations: list[str]) -> bool | None:
     return None
 
 
+def merge_hand_links(listings: list[dict], extra: list[dict], links: list[dict]) -> tuple[list[dict], list[dict]]:
+    """The story links and by-hand links joined to the feeds. A posting the
+    user added by hand replaces a feed's copy of the same link: the feed's
+    tags (its term, its title) would otherwise decide, and the user's choice
+    is exempt from those gates. A story link that a feed already lists is
+    not listed twice; the feed's copy stands."""
+    def key(l: dict) -> str:
+        return (l.get("url") or "").split("?")[0].rstrip("/").lower()
+
+    by_hand = {key(l): l for l in links if l.get("source") == "added by hand"}
+    if by_hand:
+        listings = [l for l in listings if key(l) not in by_hand]
+        extra = [l for l in extra if key(l) not in by_hand]
+    have = {key(l) for l in listings + extra}
+    extra = extra + [l for l in links if key(l) not in have or l.get("source") == "added by hand"]
+    seen: set[str] = set()
+    extra = [l for l in extra if not (l["id"] in seen or seen.add(l["id"]))]
+    return listings, extra
+
+
 def evaluate(listing: dict, prefs: Prefs) -> str:
     """Empty string when the listing is worth applying to; otherwise why not."""
     if not listing.get("active", True):
         return "inactive"
+    if listing.get("source") == "added by hand":
+        # The user put this link in the pool themselves (`resume-tailor add`):
+        # the title and category gates are for feeds, not for a choice made
+        # by a person. The blacklist and the judges still apply.
+        if any(b.lower() in (listing.get("company_name") or "").lower() for b in prefs.company_blacklist):
+            return "company blacklist"
+        return ""
     if not listing.get("is_visible", True):
         return "hidden"
     if prefs.terms and not set(listing.get("terms") or []) & set(prefs.terms):
@@ -542,7 +576,18 @@ def to_entry(listing: dict) -> QueueEntry:
         id=listing.get("id") or url, url=url, apply_url=ats.apply_url_for(url),
         company_hint=listing.get("company_name") or "", title=listing.get("title") or "",
         location=", ".join(str(l) for l in (listing.get("locations") or [])),
+        source=str(listing.get("source") or ""),
+        term=entry_term(listing),
     )
+
+
+def entry_term(listing: dict) -> str:
+    """The term to apply for: a term the title names, else the list's tag."""
+    named = sorted(title_terms(listing.get("title") or ""))
+    if named:
+        return named[0]
+    terms = [str(t) for t in (listing.get("terms") or []) if t and str(t).upper() != "N/A"]
+    return terms[0] if terms else ""
 
 
 RETRY_CAP = 3
@@ -661,8 +706,36 @@ def select(listings: list[dict], prefs: Prefs, state: RunState | None = None,
                 holds_at[company_key(company)] = holds_at.get(company_key(company), 0) + 1
     max_age = int(getattr(prefs, "max_posting_age_days", 21) or 0)
     stale_before = int(time.time()) - max_age * 86400 if max_age else 0
+    applied_urls: set[str] = set()
+    applied_roles: dict[tuple[str, str], str] = {}
+    if state is not None:
+        for rid, rec in state.done.items():
+            if rec.get("status") not in ("applied", "awaiting_approval", "by_hand"):
+                continue
+            applied_urls.add(url_key((by_listing_id.get(rid) or {}).get("url") or ""))
+            if rec.get("company") and rec.get("role"):
+                # The listing behind an older record may have left the cache;
+                # the record's own company and role still say what was sent.
+                applied_roles[role_key_of(rec["company"], rec["role"])] = (rec.get("when") or "")[:10]
+        applied_urls.discard("")
     for l in listings:
         reason = evaluate(l, prefs)
+        if not reason and l.get("source") == "added by hand" and state is not None:
+            # The user's own pick: the company cooldown, the judges' holds on
+            # the company and the retry caps are for the feeds. Only a link
+            # already applied to is not applied to again.
+            rk = role_key_of(l.get("company_name") or "", l.get("title") or "")
+            if url_key(l.get("url") or "") in applied_urls:
+                reason = "this link was already applied to"
+            elif rk in applied_roles and rk[1]:
+                reason = f"this role was already applied to at this company ({applied_roles[rk]})"
+            elif state.already_attempted(l.get("id") or l.get("url", ""), RETRYABLE):
+                reason = "already attempted"
+            if reason:
+                excluded[reason] = excluded.get(reason, 0) + 1
+            else:
+                kept.append(l)
+            continue
         attempted_before = state is not None and (l.get("id") or l.get("url")) in state.done
         if not reason and stale_before and not attempted_before and 0 < int(l.get("date_posted") or 0) < stale_before:
             # Never attempted and past the cap: a retry of something already

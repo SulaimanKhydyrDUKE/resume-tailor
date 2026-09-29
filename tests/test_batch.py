@@ -181,6 +181,19 @@ with tempfile.TemporaryDirectory() as d:
     check("state: an entry re-recorded by the later writer takes its latest status", merged.done["job-2"]["status"] == "applied")
     check("state: applied companies merge", {"acme", "aco"} <= merged.applied_companies)
     check("state: the writer's own view is refreshed after saving", "job-A" in b.done and "job-B" in b.done)
+    # A hand-run retry edits records it did not itself record. save() writes
+    # back only touched entries, so the edit must count as touched or the
+    # re-queue is silently lost and every capped record stays capped.
+    c = RunState.load(spath)
+    c.done["job-B"]["attempts"] = 3
+    c.done["job-B"]["detail"] = "could not answer: x"
+    c._touched.add("job-B"); c.save()
+    d = RunState.load(spath)
+    check("state: mark_retry changes the given records and nothing else", d.mark_retry(["job-B", "job-A"], "fixed x") == 2)
+    again = RunState.load(spath)
+    check("state: a re-queue survives the merge with the file on disk",
+          (again.done["job-B"].get("detail") or "").startswith("retry: fixed x · could not answer: x"))
+    check("state: a re-queue of a re-queued record is not stacked", again.mark_retry(["job-B"], "twice") == 0)
 
 # --- boilerplate autofill: the never-guess-on-a-real-field boundary ------
 
@@ -211,6 +224,8 @@ check("'how you heard about this position' (no 'did') is a source field, answere
 check("a REQUIRED 'who referred you' box gets an honest N/A rather than a name or a stall",
       (_autofill_boilerplate("Who referred you to this position? Enter their first and last name here.",
                              {"type": "text", "tag": "input", "required": True}) or "").startswith("N/A"))
+check("a required 'What is your preferred name?' box is not a referral box (\"preferred\" holds \"referred\")",
+      _autofill_boilerplate("What is your preferred name?", {"type": "text", "required": True}) is None)
 check("an OPTIONAL 'who referred you' box is left blank",
       _autofill_boilerplate("Who referred you to this position?", {"type": "text", "tag": "input", "required": False}) is None)
 check("'How did you first hear about this role?' and 'From what source did you hear of the job opening?' are source fields",
@@ -950,6 +965,32 @@ check("session on file: a site with no cookie rule takes any live cookie", sessi
 check("session on file: nothing saved reads as nothing", session_on_file({"host": "example.org"}, _ld) == (False, "nothing on file"))
 
 
+# --- a Workday field-of-study list, once searched ----------------------------------
+from resume_tailor.apply import ApplySession as _AS2
+_fos = [{"t": x} for x in ("Computer Science", "Computer Science & Commerce", "Computer Science&Applied Maths")]
+check("picker: 'Computer Science and Mathematics' lands on 'Computer Science' among the searched entries",
+      _AS2._match_option("Computer Science and Mathematics", _fos) == 0)
+check("picker: 'Computer Science' exactly", _AS2._match_option("Computer Science", _fos) == 0)
+check("picker: 'Mathematics' alone picks none of them", _AS2._match_option("Mathematics", _fos) is None)
+_head = [{"t": x} for x in ("Accounting", "Accounting & Finance", "Actuarial Sciences", "Administration", "Advertising", "Aeronautical Engineering", "Aerospace Engineering", "Agriculture")]
+check("picker: a long list with none of the typed words is an ignored search", _AS2._ignored_typing("Computer Science and Mathematics", _head))
+check("picker: a list that shows the typed word was filtered", not _AS2._ignored_typing("Computer Science", _fos))
+check("picker: a short list is never called ignored", not _AS2._ignored_typing("Computer Science", _head[:3]))
+check("picker: nothing typed, nothing ignored", not _AS2._ignored_typing("", _head))
+
+
+# --- availability follows the posting's term ---------------------------------------
+from resume_tailor.profile import Profile as _PT
+_pt = _PT(career={"personal_information": {}}, answers={"availability": {"notice_period": "available May through August 2027", "target_term": "Summer 2027",
+          "by_term": {"Winter 2027": {"notice_period": "available January through April 2027", "earliest_start_date": "January 2027"}}}}, root=Path("."))
+_w = _pt.for_term("Winter 2027")
+check("term: a winter posting gets the winter availability", _w.answers["availability"]["notice_period"] == "available January through April 2027" and _w.answers["availability"]["target_term"] == "Winter 2027")
+check("term: the profile itself is untouched", _pt.answers["availability"]["notice_period"] == "available May through August 2027")
+check("term: a term with no entry keeps the summer answers", _pt.for_term("Fall 2027") is _pt and _pt.for_term("") is _pt)
+check("term: by_term never leaks into the flat bank", not any("by_term" in k for k in _pt.flat_answers()) and _pt.flat_answers()["availability.notice_period"].startswith("available May"))
+check("term: the swapped bank answers a notice-period question with the winter window", _w.flat_answers()["availability.notice_period"].startswith("available January"))
+
+
 # --- résumé lint and the current employer ------------------------------------
 from types import SimpleNamespace as _NS
 from resume_tailor import gates as _gates
@@ -1106,6 +1147,110 @@ check("education month as a number option", _education_date_answer(_prof, "Educa
 check("education dates: nothing outside an Education section", _education_date_answer(_prof, "Work Experience 1", "Start date — Month", ["August"]) is None)
 check("education dates: nothing when the option is absent (never a near miss)", _education_date_answer(_prof, "Education", "Start date — Year", ["2027", "2026"]) is None)
 
+from resume_tailor.apply import _relabel_entry_editors
+_sr = [{"type": "text", "label": "First name*"}, {"type": "text", "label": "Title*"}, {"type": "text", "label": "Company"}, {"type": "text", "label": "From"},
+       {"type": "text", "label": "To"}, {"type": "checkbox", "label": "I currently work here"}, {"type": "text", "label": "Institution*"}, {"type": "text", "label": "Major"},
+       {"type": "text", "label": "From"}, {"type": "checkbox", "label": "I currently attend"}, {"type": "text", "label": "LinkedIn"}]
+_relabel_entry_editors(_sr)
+check("entry editors: Title… is Work Experience 1 with Start/End dates; Institution… is Education 1; the rest untouched",
+      [f.get("section") for f in _sr] == [None, "Work Experience 1", "Work Experience 1", "Work Experience 1", "Work Experience 1", "Work Experience 1",
+                                          "Education 1", "Education 1", "Education 1", "Education 1", None]
+      and _sr[3]["label"] == "Start date" and _sr[4]["label"] == "End date" and _sr[8]["label"] == "Start date", str([(f.get("section"), f["label"]) for f in _sr]))
+check("education whole-date box gets MM/YYYY from the record", _education_date_answer(_prof, "Education 1", "Start date", []) == "08/2024")
+check("education whole-date end box from the completion date", _education_date_answer(_prof, "Education 1", "End date", []) == "05/2028")
+
+
+
+# --- the field scan on a real page: names wired by id, hidden radios named by
+# aria-labelledby, a greyed-out submit, Ant Design's option entries ---------
+_SCAN_HTML = """<!doctype html><html><body><form>
+<div id="loc-label">Location</div><span>*</span>
+<input id="loc" aria-label="textbox" aria-labelledby="loc-label" aria-required="true" aria-autocomplete="list">
+<div id="pr-label">Pronouns</div>
+<input id="pr" aria-label="Search" aria-labelledby="pr-label" role="combobox" placeholder="Search">
+<p>Check Yes or No to indicate your agreement to receive text message updates from Acme regarding your job application.</p>
+<div role="radiogroup">
+  <div role="radio" aria-checked="false"><input type="radio" name="sms" value="true" style="display:none" aria-labelledby="l1"><div id="l1"><p>Yes - I consent to receiving text messages</p></div></div>
+  <div role="radio" aria-checked="false"><input type="radio" name="sms" value="false" style="display:none" aria-labelledby="l2"><div id="l2"><p>No - I do not consent to receiving text messages</p></div></div>
+</div>
+<button type="submit" disabled>Apply</button>
+<div id="g-label">Gender*</div>
+<button aria-haspopup="listbox" aria-labelledby="g-label">Choose not to Disclose</button>
+<div id="h-label">Hispanic or Latino?</div>
+<button aria-haspopup="listbox" aria-labelledby="h-label">Choose One</button>
+</form>
+<div class="ant-select-dropdown"><div class="rc-virtual-list">
+  <div class="ant-select-item ant-select-item-option"><div class="ant-select-item-option-content">Yes</div><span class="ant-select-item-option-state"></span></div>
+  <div class="ant-select-item ant-select-item-option ant-select-item-option-active"><div class="ant-select-item-option-content">No</div></div>
+</div></div>
+</body></html>"""
+
+
+async def _scan_page():
+    import tempfile as _tf
+    from resume_tailor.apply import ApplySession
+    s = ApplySession(headless=True, profile_dir=Path(_tf.mkdtemp()) / "profile")
+    try:
+        await s.start()
+        await s._page.set_content(_SCAN_HTML)
+        fields = await s.describe_form()
+        buttons = await s.buttons()
+        options = [o["t"] for o in await s._visible_options(wait_ms=200)]
+        return fields, buttons, options
+    finally:
+        try:
+            await s.stop()
+        except Exception:
+            pass
+
+
+try:
+    _fields, _buttons, _opts = _aio.run(_scan_page())
+    _by = {f.get("dom_id"): f for f in _fields if f.get("dom_id")}
+    check("scan: a name wired by aria-labelledby beats a generic aria-label (Rippling's 'textbox')",
+          (_by.get("loc") or {}).get("label", "").startswith("Location"), _by.get("loc"))
+    check("scan: a picker whose aria-label is 'Search' is named by its aria-labelledby",
+          (_by.get("pr") or {}).get("label", "") == "Pronouns", _by.get("pr"))
+    _sms = [f for f in _fields if f.get("name") == "sms"]
+    check("scan: display:none radios with visible aria-labelledby labels are listed", len(_sms) == 2, [(f.get("label"), f.get("option_label")) for f in _sms])
+    check("scan: such a group is named by the paragraph before it",
+          all("text message updates" in (f.get("label") or "") for f in _sms), [f.get("label") for f in _sms])
+    check("scan: each radio carries its own option wording",
+          sorted(f.get("option_label") or "" for f in _sms) == ["No - I do not consent to receiving text messages", "Yes - I consent to receiving text messages"],
+          [f.get("option_label") for f in _sms])
+    check("scan: a disabled submit is reported disabled", any(b.get("text") == "Apply" and b.get("disabled") for b in _buttons), _buttons)
+    _lists = {(f.get("label") or ""): f.get("value") for f in _fields if f.get("type") == "listbox"}
+    check("scan: 'Choose not to Disclose' is a chosen value, not an unmade choice", _lists.get("Gender*") == "Choose not to Disclose", _lists)
+    check("scan: 'Choose One' is still an unmade choice", _lists.get("Hispanic or Latino?") == "", _lists)
+    check("scan: Ant Design option entries are read, without their inner content nodes doubling them", _opts == ["Yes", "No"], _opts)
+except Exception as e:  # the browser is part of this check, as in test_untrusted
+    check("scan: the page test ran in a browser", False, f"{type(e).__name__}: {str(e)[:160]}")
+
+from resume_tailor.batch import _greyed_submit, _TEXT_CONSENT
+from resume_tailor.batch import _application_underway, _LANGUAGE_Q, _record_language
+from resume_tailor.batch import _decide as _decide_fn
+check("language: 'Language*' and 'Spoken languages' are the languages question; 'Programming language' is not",
+      bool(_LANGUAGE_Q.match("Language*")) and bool(_LANGUAGE_Q.match("Spoken languages")) and not _LANGUAGE_Q.match("Programming language*"))
+check("language: the record's first language answers it, in the option's words",
+      _aio.run(_decide_fn("Language*", {"type": "listbox"}, ["English", "French", "Spanish"], _P(career={"languages": [{"language": "English", "proficiency": "Native"}]}, answers={}, root=Path(".")), "", {}, {}, None, "listbox")) == "English")
+check("language: a record without languages answers nothing", _record_language(_P(career={}, answers={}, root=Path("."))) == "")
+check("verdict: a questions page after a step that took the name and e-mail is part of the application",
+      _application_underway([{"question": "First name*", "answer": "Ada"}, {"question": "Email*", "answer": "a@b.c"}]))
+check("verdict: nothing answered yet means no application underway", not _application_underway([{"question": "Email*", "answer": ""}]))
+check("submit: the one disabled submit-worded button is the greyed submit",
+      (_greyed_submit([{"text": "Exit to job board"}, {"text": "Apply", "disabled": True, "type": "submit"}]) or {}).get("text") == "Apply")
+check("submit: an enabled Apply is not a greyed submit", _greyed_submit([{"text": "Apply", "type": "submit"}]) is None)
+check("submit: a disabled Withdraw is not a submit", _greyed_submit([{"text": "Withdraw application", "disabled": True}]) is None)
+from resume_tailor.batch import _decide as _decide_fn
+_consenting = _P(career={}, answers={"consents": {"text_message_updates": "Yes"}}, root=Path("."))
+_sms_q = "Check Yes or No to indicate your agreement to receive text message updates from Tive Inc regarding your job application. Frequency may vary. Reply STOP to opt out."
+_sms_opts = ["Yes - I consent to receiving text messages", "No - I do not consent to receiving text messages"]
+_src = {}
+check("consent: the bank's text-message entry answers the paragraph, in the option's words",
+      _aio.run(_decide_fn(_sms_q, {"type": "radio"}, _sms_opts, _consenting, "", {}, _src, None, "radio")) == _sms_opts[0] and "text_message_updates" in str(_src))
+check("consent: a text-message consent paragraph is recognised",
+      bool(_TEXT_CONSENT.search("Check Yes or No to indicate your agreement to receive text message updates from Tive Inc regarding your job application. Frequency may vary."))
+      and bool(_TEXT_CONSENT.search("Do you consent to receive SMS notifications?")) and not _TEXT_CONSENT.search("Do you agree to the terms of service?"))
 
 width = max(len(n) for n, _, _ in RESULTS)
 failed = 0

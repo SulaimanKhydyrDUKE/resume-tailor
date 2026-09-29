@@ -13,7 +13,7 @@ resume-tailor/
 │   ├── profile.py, models.py, llm.py, freetext.py         # Record, schemas, model access
 │   ├── apply.py, batch.py, queue.py, planner.py           # Browser filling and unattended runs
 │   ├── discover.py, outreach.py, mailbox.py, mailscan.py  # Discovery, recruiter outreach, e-mailed codes
-│   └── dashboard.py, static/      # Local review dashboard
+│   └── dashboard.py, settings.py, static/   # Local review dashboard; its Settings tab's file writes
 └── tests/                         # Standalone scripts, one per area, model calls stubbed
 ```
 

@@ -38,6 +38,10 @@ availability:
   earliest_start_date: ""
   earliest_full_time_start_date: ""    # for the "when could you start full time?" question interns get asked
   target_term: ""
+  # Answers for postings of another term, swapped in by Profile.for_term when
+  # the listing's term is not summer (search.terms lists which terms to apply
+  # to at all). Keys here replace the ones above for that posting only.
+  by_term: {}                          # e.g. {"Winter 2027": {notice_period: "available January through April 2027", earliest_start_date: "January 2027"}}
 
 salary_expectations:
   # Several spellings of the same answer, so "Expected salary", "Salary range"
@@ -110,8 +114,22 @@ search:
   # {name, url, host, cookie, check} — `cookie` a regex for the cookie name
   # that marks a session, `check` a page only a signed-in visitor can see.
   hand_logins: []                      # e.g. [https://app.joinhandshake.com/login]
-  # Replace the built-in GitHub README-table sources (jobright-ai, speedyapply,
-  # vanshb03) with your own: [[name, raw README url], ...]
+  # Instagram pages whose stories carry application links, read by
+  # `resume-tailor instagram read|watch` in the tool's signed-in Chrome
+  # (`login --site instagram.com` once). Every link sticker's address is
+  # kept and joins the loop like any other listing. Slow by design: one
+  # pass every couple of hours; any check from Instagram parks the page.
+  instagram_pages: []                  # e.g. [ducksjobs]
+  # Which lists discovery reads. A built-in left out here stays on; the
+  # dashboard's Job sources card writes these two keys.
+  # sources:
+  #   simplify: true          # the SimplifyJobs JSON feed (the main list)
+  #   jobright-swe: true
+  #   jobright-ba: true
+  #   speedyapply: true
+  #   vanshb03: true
+  # Your own README-table lists (Company | Role | Location | Link), added to
+  # the built-ins: [[name, raw README url], ...]
   # extra_sources: []
 
 # Form fields beyond the resume. School/degree/major answer themselves from

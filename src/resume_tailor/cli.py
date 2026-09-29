@@ -273,8 +273,11 @@ async def _watch(args: argparse.Namespace) -> int:
                 new_ids = ids_now - seen
                 seen |= ids_now
                 seen_path.write_text(json.dumps(sorted(seen)), encoding="utf-8")
-                entries, excluded = select(listings, prefs, state, limit=args.max_per_run)
-                entries = [e for e in entries if e.id in new_ids]
+                # Everything worth applying to, then only what is new, then the
+                # cap — capping first let retries push a new posting out of the
+                # ten and it was never dealt (FOX, 2026-09-29).
+                entries, excluded = select(listings, prefs, state)
+                entries = [e for e in entries if e.id in new_ids][:args.max_per_run]
                 print(f"{tag}[{stamp}] {len(listings)} listings ({'updated' if changed else 'unchanged'}), "
                       f"{len(new_ids)} new on the sources, {len(entries)} worth applying to", file=sys.stderr, flush=True)
                 if entries:
@@ -622,6 +625,33 @@ async def _setup_logins(args: argparse.Namespace) -> int:
     return 0 if n or args.check else 1
 
 
+def _add(args: argparse.Namespace) -> int:
+    """One posting by hand, into the pool: recorded like a story link, read
+    for its facts, and shown against the discovery filters at once."""
+    from .discover import Prefs, evaluate
+    from .igstories import add_url, to_listings
+
+    out = PROJECT_ROOT / args.out
+    rec = add_url(out, args.url, company=args.company or "", title=args.title or "")
+    print(f"{'added' if rec.get('new') else 'already on file'}: {rec.get('company') or '?'} — {rec.get('title') or '?'}"
+          + (f" ({rec['location']})" if rec.get("location") else "") + f"\n  {rec['url']}", file=sys.stderr)
+    try:
+        prefs = Prefs.from_profile(Profile.load(args.profile))
+        listing = next((l for l in to_listings(out) if l["url"] == rec["url"]), None)
+        why = evaluate(listing, prefs) if listing else "not listed"
+        print("  discovery: " + ("will be dealt on the next pass (the fresh lane polls every 5 minutes)" if not why else f"would be left out: {why} — pass --title/--company to correct it"), file=sys.stderr)
+    except Exception as e:
+        print(f"  (could not run the filters: {str(e)[:80]})", file=sys.stderr)
+    return 0
+
+
+async def _instagram(args: argparse.Namespace) -> int:
+    from .igstories import run_cli
+
+    args.out = str(PROJECT_ROOT / args.out)
+    return await run_cli(args)
+
+
 async def _login(args: argparse.Namespace) -> int:
     """Open the site's sign-in page in a visible Chrome; once the user is
     through, fill and submit the posting in that window and keep the cookies.
@@ -891,6 +921,22 @@ def main() -> int:
     pdash.add_argument("--stop", action="store_true", help="stop a detached dashboard")
     pdash.set_defaults(func=cmd_dashboard)
 
+    padd = sub.add_parser("add", help="put one posting into the pool by its link (a story, a friend, a mail); the page is read for company and title")
+    padd.add_argument("url")
+    padd.add_argument("--company", default=None)
+    padd.add_argument("--title", default=None)
+    padd.add_argument("--out", default="output")
+    padd.add_argument("--profile", default=None)
+    padd.set_defaults(func=_add)
+    pig = sub.add_parser("instagram", help="stories of a page that posts application links: read them in the tool's signed-in Chrome "
+                                            "(login --site instagram.com first), keep every link, feed the loop; read | links | unpark | watch")
+    pig.add_argument("action", choices=["read", "links", "unpark", "watch"])
+    pig.add_argument("--handle", default=None, help="one page (default: search.instagram_pages in answers.yaml)")
+    pig.add_argument("--interval", type=int, default=150, help="watch: minutes between passes (stories last 24 h; keep this slow)")
+    pig.add_argument("--show", action="store_true", help="a visible window")
+    pig.add_argument("--out", default="output")
+    pig.add_argument("--profile", default=None)
+    pig.set_defaults(func=lambda a: asyncio.run(_instagram(a)))
     pm = sub.add_parser("mail", help="read the inbox for what came of each application (assessments, interviews, offers, rejections)")
     pm.add_argument("action", choices=["scan", "results", "watch"], help="scan once, print the results, or scan every --interval minutes")
     pm.add_argument("--out", default="output")

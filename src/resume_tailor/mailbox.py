@@ -47,6 +47,56 @@ def waiting_for_inbox(rec: dict | None) -> bool:
     return rec.get("status") == "needs_login" and ENV_HINT in (rec.get("detail") or "")
 
 
+# A forward the user's other mailbox made (Outlook: a rule on the Duke
+# account forwards to Gmail; Gmail: "Forwarded message"): the sender is the
+# user, the subject carries a prefix, and the real headers sit at the top of
+# the body — as lines, or run together when the text came out of HTML.
+FORWARD_SUBJECT = re.compile(r"^\s*(?:(?:FW|Fwd|Fw|TR|WG)\s*:\s*)+", re.I)
+_FWD_FIELD = r"(?:Sent|Date|To|Cc|Subject)\s*:"
+_FWD_FROM = re.compile(r"From\s*:\s*(?P<from>.+?)\s*(?=\n|\s" + _FWD_FIELD + r")", re.I | re.S)
+_FWD_SUBJECT = re.compile(r"Subject\s*:\s*(?P<subject>[^\n]+?)\s*(?:\n|$)", re.I)
+
+
+def own_addresses(own: str = "") -> set[str]:
+    """The user's own addresses: the mailbox read, the address on the
+    record, and RESUME_TAILOR_OWN_ADDRESSES (comma-separated) for any other."""
+    out = {a.strip().lower() for a in (own or "").split(",") if a.strip()}
+    out |= {a.strip().lower() for a in os.environ.get("RESUME_TAILOR_OWN_ADDRESSES", "").split(",") if a.strip()}
+    try:
+        out.add(_profile_email().lower())
+    except Exception:
+        pass
+    out.discard("")
+    return out
+
+
+def unforward(frm: str, subject: str, body: str, own: set[str] | None = None) -> tuple[str, str, str, bool]:
+    """(sender, subject, body, was_forwarded): the original message's when
+    this is a forward the user's own mailbox made, the message itself
+    otherwise. The subject comes from the forward block when that block
+    ends in a line break; run-together text keeps the header's subject
+    minus its prefix, which is the same words."""
+    from email.utils import parseaddr
+
+    prefixed = bool(FORWARD_SUBJECT.match(subject or ""))
+    from_self = parseaddr(frm or "")[1].lower() in (own or set())
+    if not (prefixed or from_self):
+        return frm, subject, body, False
+    head = (body or "")[:3000]
+    m = _FWD_FROM.search(head)
+    if not m:
+        return frm, FORWARD_SUBJECT.sub("", subject or ""), body, prefixed
+    orig_from = m.group("from").strip()
+    ms = _FWD_SUBJECT.search(head, m.end())
+    orig_subject = (ms.group("subject").strip() if ms and "\n" in head[m.end():ms.end() + 1] else "") or FORWARD_SUBJECT.sub("", subject or "")
+    cut = ms.end() if ms else m.end()
+    # The rest of the header block (To:, Cc:, Date:) runs to the first blank line.
+    blank = re.search(r"\n[ \t\r]*\n", (body or "")[cut:cut + 800])
+    if blank:
+        cut += blank.end()
+    return orig_from, orig_subject, (body or "")[cut:], True
+
+
 def extract_link(text: str, html: str = "") -> str | None:
     """The sign-in or continue link a message carries (the longest candidate
     that is not a footer link), or None."""
@@ -130,13 +180,18 @@ def _search_once(since: float, hints: list[str], require: list[str] | None = Non
         uids = (data[0] or b"").split()[-(200 if deep else 60 if require else 25):]
         need = [r.lower() for r in (require or []) if r]
         best: tuple[datetime, int, dict] | None = None
+        mine = own_addresses(user)
         for uid in reversed(uids):
             if need:
                 _, head = box.uid("fetch", uid, "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT)])")
                 if not head or not head[0] or not isinstance(head[0], tuple):
                     continue
-                if not any(n in head[0][1].decode("utf-8", errors="replace").lower() for n in need):
+                head_text = head[0][1].decode("utf-8", errors="replace").lower()
+                forwarded = bool(re.search(r"\bsubject:\s*(fw|fwd|tr|wg)\s*:", head_text)) or any(a in head_text for a in mine)
+                if not forwarded and not any(n in head_text for n in need):
                     continue
+                if forwarded and not (LOOKS_LIKE_CODE_MAIL.search(head_text) or re.search(r"activat|account|candidate", head_text)):
+                    continue  # a forward, but its subject says nothing of a code, a link or an account: not fetched
             _, raw = box.uid("fetch", uid, "(RFC822)")
             if not raw or not raw[0] or not isinstance(raw[0], tuple):
                 continue
@@ -148,8 +203,10 @@ def _search_once(since: float, hints: list[str], require: list[str] | None = Non
                 continue
             if when < floor:
                 continue
-            subject = str(msg.get("Subject") or "")
-            text = subject + " " + str(msg.get("From") or "") + " " + _body_text(msg)
+            frm, subject, body_text, _fwd = unforward(str(msg.get("From") or ""), str(msg.get("Subject") or ""), _body_text(msg), mine)
+            if need and not any(n in (frm + " " + subject).lower() for n in need):
+                continue
+            text = subject + " " + frm + " " + body_text
             if not LOOKS_LIKE_CODE_MAIL.search(text):
                 continue
             code = extract_code(text)

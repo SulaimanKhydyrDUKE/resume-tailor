@@ -28,6 +28,8 @@ class QueueEntry:
     company_hint: str = ""
     title: str = ""
     location: str = ""  # the listing's location(s); decides which address applies
+    source: str = ""    # where the listing came from ("Simplify", "instagram:<page>", "added by hand")
+    term: str = ""      # the term the listing is for ("Summer 2027", "Winter 2027", …); decides the availability answers
 
     @property
     def has_source(self) -> bool:
@@ -177,6 +179,10 @@ class RunState:
             if not rec or (rec.get("detail") or "").startswith(("retry:", "re-queued")):
                 continue
             rec["detail"] = f"retry: {why} · {(rec.get('detail') or '')[:220]}"
+            # save() writes back only the entries this process touched;
+            # everything else is taken as it stands on disk, so an edit
+            # that is not marked touched is silently lost.
+            self._touched.add(eid)
             n += 1
         if n:
             self.save()
