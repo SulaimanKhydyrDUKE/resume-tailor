@@ -39,6 +39,32 @@
   .badge.info { background: #dbeafe; color: #1e40af; }
   .badge.muted { background: #e5e7eb; color: #374151; }
   .empty { color: var(--muted); padding: 60px; text-align: center; }
+  .calwrap { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .cal { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .cal h3 { margin: 0 0 8px; font-size: 14px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .cal .nav { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .cal .nav b { font-size: 15px; min-width: 150px; }
+  .cal .nav button { border: 1px solid var(--line); background: var(--panel); border-radius: 6px; padding: 2px 9px; cursor: pointer; font: inherit; }
+  .cal .grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+  .cal .dow { color: var(--muted); font-size: 11px; text-align: center; padding-bottom: 2px; }
+  .cal .cell { min-height: 60px; border: 1px solid var(--line); border-radius: 6px; padding: 4px 5px; cursor: pointer; font-size: 12px; background: #fff; }
+  .cal .cell.blank { border-color: transparent; background: transparent; cursor: default; }
+  .cal .cell:hover { background: #f3f4f6; }
+  .cal .cell.sel { background: #eff6ff; border-color: var(--accent); }
+  .cal .cell.today .n { color: var(--accent); font-weight: 700; }
+  .cal .cell .n { color: var(--muted); }
+  .cal .pill { display: inline-block; border-radius: 999px; padding: 0 7px; color: #fff; font-size: 11px; font-weight: 600; margin: 4px 3px 0 0; }
+  .daypanel { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
+  .daypanel .card { margin: 0; }
+  .evt { border-top: 1px solid var(--line); padding: 8px 0; display: grid; gap: 2px; }
+  .evt:first-child { border-top: none; }
+  .evt .t { color: var(--muted); font-size: 12px; }
+  .evt.app { cursor: pointer; }
+  .evt.app:hover { background: #f9fafb; }
+  .evt .links a { margin-right: 10px; font-size: 12px; }
+  .upcoming { display: grid; grid-template-columns: 130px 110px 1fr; gap: 6px 12px; font-size: 13px; align-items: baseline; }
+  .upcoming .k { color: #fff; border-radius: 999px; padding: 0 8px; font-size: 11px; font-weight: 600; text-align: center; }
+  .toggle { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
   .detail h2 { margin: 0 0 4px; font-size: 22px; }
   .detail .sub { color: var(--muted); margin-bottom: 14px; }
   .detail a { color: var(--accent); }
@@ -364,7 +390,7 @@ function Workers({ data, onPick }) {
   );
 }
 
-function Header({ data, err, filter, setFilter, q, setQ, showWorkers }) {
+function Header({ data, err, filter, setFilter, q, setQ, showWorkers, mode, showCalendar }) {
   const counts = data?.counts || {};
   const total = Object.values(counts).reduce((a, b) => a + b, 0);
   const w = data?.watch || {};
@@ -382,6 +408,7 @@ function Header({ data, err, filter, setFilter, q, setQ, showWorkers }) {
         {err ? <span className="err"> · {err}</span> : null}
       </span>
       <div className="chips">
+        <span className={"chip " + (mode === "calendar" ? "active" : "")} onClick={showCalendar}>Calendar</span>
         <span className="chip link" onClick={showWorkers}>Workers<small>{procs}</small></span>
         <span className={"chip " + (filter === "all" ? "active" : "")} onClick={() => setFilter("all")}>All<small>{total}</small></span>
         {ORDER.filter(s => counts[s]).map(s => (
@@ -547,12 +574,153 @@ function Detail({ app }) {
   );
 }
 
+const KIND_COLOR = { assessment: "#7c3aed", interview: "#2563eb", deadline: "#dc2626", event: "#0891b2", other: "#6b7280" };
+const KIND_LABEL = { assessment: "Assessment", interview: "Interview", deadline: "Deadline", event: "Event", other: "Date" };
+const DOW = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const isoDay = (y, m, d) => `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+const fmtDay = iso => new Date(iso + "T12:00:00").toLocaleDateString([], { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+const fmtTime = iso => (iso && iso.length > 10) ? new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "";
+
+function MonthGrid({ title, year, month, today, selected, onPick, render }) {
+  const first = new Date(year, month, 1);
+  const lead = (first.getDay() + 6) % 7;
+  const days = new Date(year, month + 1, 0).getDate();
+  const cells = [];
+  for (let i = 0; i < lead; i++) cells.push(null);
+  for (let d = 1; d <= days; d++) cells.push(d);
+  while (cells.length % 7) cells.push(null);
+  return (
+    <div className="cal">
+      <h3>{title}</h3>
+      <div className="grid">
+        {DOW.map(d => <div key={d} className="dow">{d}</div>)}
+        {cells.map((d, i) => {
+          if (!d) return <div key={"b" + i} className="cell blank" />;
+          const iso = isoDay(year, month, d);
+          return (
+            <div key={iso} className={"cell" + (iso === today ? " today" : "") + (iso === selected ? " sel" : "")} onClick={() => onPick(iso)}>
+              <div className="n">{d}</div>
+              {render(iso)}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function Calendar({ onOpen }) {
+  const [cal, setCal] = useState(null);
+  const [err, setErr] = useState(null);
+  const [ym, setYm] = useState(() => { const t = new Date(); return [t.getFullYear(), t.getMonth()]; });
+  const [day, setDay] = useState(null);
+  const [onlyApplied, setOnlyApplied] = useState(true);
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      try {
+        const r = await fetch("/api/calendar", { cache: "no-store" });
+        const j = await r.json();
+        if (!alive) return;
+        if (j.error) { setErr(j.error); return; }
+        setCal(j); setErr(null);
+      } catch (e) { if (alive) setErr(String(e)); }
+    };
+    load();
+    const t = setInterval(load, 60000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
+  if (err) return <div className="empty">calendar: {err}</div>;
+  if (!cal) return <div className="empty">loading…</div>;
+  const [year, month] = ym;
+  const label = new Date(year, month, 1).toLocaleDateString([], { month: "long", year: "numeric" });
+  const appsOf = iso => (cal.applied[iso] || []).filter(a => !onlyApplied || a.status === "applied" || a.status === "by_hand");
+  const evsOf = iso => cal.deadlines[iso] || [];
+  const nav = (
+    <div className="nav">
+      <button onClick={() => setYm(month === 0 ? [year - 1, 11] : [year, month - 1])}>‹</button>
+      <b>{label}</b>
+      <button onClick={() => setYm(month === 11 ? [year + 1, 0] : [year, month + 1])}>›</button>
+      <button onClick={() => { const t = new Date(); setYm([t.getFullYear(), t.getMonth()]); setDay(cal.today); }}>today</button>
+      <span className="watch" style={{ marginLeft: "auto" }}>
+        {cal.counts.applied} applied over {Object.keys(cal.applied).length} days · {cal.counts.events} dated events
+        {cal.deadlines_scanned_at ? " · inbox read for dates " + new Date(cal.deadlines_scanned_at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : " · run `resume-tailor calendar scan` to read the inbox for dates"}
+      </span>
+    </div>
+  );
+  const dayApps = day ? appsOf(day) : [];
+  const dayEvs = day ? evsOf(day) : [];
+  return (
+    <div>
+      <div className="card" style={{ marginTop: 0 }}>
+        <h3>Upcoming</h3>
+        {cal.upcoming.length ? (
+          <div className="upcoming">
+            {cal.upcoming.slice(0, 12).map(ev => (
+              <React.Fragment key={ev.uid}>
+                <span style={{ cursor: "pointer" }} onClick={() => { const d = ev.date.slice(0, 10); setDay(d); setYm([+d.slice(0, 4), +d.slice(5, 7) - 1]); }}>{ev.date.slice(0, 10)} {fmtTime(ev.date)}</span>
+                <span className="k" style={{ background: KIND_COLOR[ev.kind] || KIND_COLOR.other }}>{KIND_LABEL[ev.kind] || ev.kind}</span>
+                <span><b>{ev.company}</b> · {ev.what || ev.subject}</span>
+              </React.Fragment>
+            ))}
+          </div>
+        ) : <span className="none">nothing dated ahead — run `resume-tailor calendar scan` to read the inbox for deadlines</span>}
+      </div>
+      <div className="cal" style={{ marginBottom: 12, padding: "10px 16px" }}>
+        {nav}
+        <div className="toggle">
+          <label><input type="checkbox" checked={onlyApplied} onChange={e => setOnlyApplied(e.target.checked)} /> applications only (uncheck for every attempt: held, blocked, review)</label>
+        </div>
+      </div>
+      <div className="calwrap">
+        <MonthGrid title="Deadlines and dates, from your inbox" year={year} month={month} today={cal.today} selected={day} onPick={setDay}
+          render={iso => evsOf(iso).slice(0, 3).map(ev => (
+            <span key={ev.uid} className="pill" style={{ background: KIND_COLOR[ev.kind] || KIND_COLOR.other }} title={ev.company + ": " + (ev.what || ev.subject)}>
+              {ev.company.split(" ")[0].slice(0, 12)}{fmtTime(ev.date) ? " " + fmtTime(ev.date) : ""}
+            </span>
+          )).concat(evsOf(iso).length > 3 ? [<span key="more" className="n">+{evsOf(iso).length - 3}</span>] : [])} />
+        <MonthGrid title="Applications, by the day they went out" year={year} month={month} today={cal.today} selected={day} onPick={setDay}
+          render={iso => { const n = appsOf(iso).length; return n ? <span className="pill" style={{ background: "#16a34a" }}>{n} sent</span> : null; }} />
+      </div>
+      {day ? (
+        <div className="daypanel">
+          <div className="card">
+            <h3>{fmtDay(day)} · deadlines and dates</h3>
+            {dayEvs.length ? dayEvs.map(ev => (
+              <div key={ev.uid} className="evt">
+                <div><span className="k pill" style={{ background: KIND_COLOR[ev.kind] || KIND_COLOR.other, margin: 0 }}>{KIND_LABEL[ev.kind] || ev.kind}</span> <b>{ev.company}</b>{fmtTime(ev.date) ? <span className="t"> · {fmtTime(ev.date)}</span> : null}</div>
+                <div>{ev.what}</div>
+                <div className="t">from the e-mail "{ev.subject}"{ev.received ? ", received " + fmtWhen(ev.received) : ""} · found by {ev.source}</div>
+              </div>
+            )) : <span className="none">nothing due or scheduled this day</span>}
+          </div>
+          <div className="card">
+            <h3>{fmtDay(day)} · {dayApps.length} application{dayApps.length === 1 ? "" : "s"}</h3>
+            {dayApps.length ? dayApps.map(a => (
+              <div key={a.id} className="evt app" onClick={() => onOpen(a.id)} title="open this application">
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}><span><b>{a.company}</b> · {a.role}</span><Badge status={a.status} /></div>
+                <div className="t">{fmtWhen(a.when)}{a.fit ? " · " + a.fit : ""}</div>
+                <div className="links" onClick={e => e.stopPropagation()}>
+                  {a.url ? <a href={a.url} target="_blank" rel="noreferrer">posting</a> : null}
+                  {a.pdf ? <a href={a.pdf} target="_blank" rel="noreferrer">résumé PDF</a> : null}
+                  {a.screenshot ? <a href={a.screenshot} target="_blank" rel="noreferrer">screenshot</a> : null}
+                </div>
+              </div>
+            )) : <span className="none">nothing went out this day</span>}
+          </div>
+        </div>
+      ) : <div className="empty" style={{ padding: "24px 0 0" }}>Click a day on either calendar to see what is due and what went out.</div>}
+    </div>
+  );
+}
+
 function App() {
   const [data, setData] = useState(null);
   const [err, setErr] = useState(null);
   const [filter, setFilter] = useState("all");
   const [q, setQ] = useState("");
   const [sel, setSel] = useState(null);
+  const [mode, setMode] = useState("apps");
 
   useEffect(() => {
     let alive = true;
@@ -578,7 +746,8 @@ function App() {
 
   return (
     <div className="app">
-      <Header data={data} err={err} filter={filter} setFilter={setFilter} q={q} setQ={setQ} showWorkers={() => setSel(null)} />
+      <Header data={data} err={err} filter={filter} setFilter={s => { setFilter(s); setMode("apps"); }} q={q} setQ={setQ}
+        showWorkers={() => { setSel(null); setMode("apps"); }} mode={mode} showCalendar={() => { setSel(null); setMode("calendar"); }} />
       <div className="body">
         <aside>
           {apps.map(a => <Row key={a.id} app={a} active={a.id === sel} onClick={() => setSel(a.id)} />)}
@@ -586,7 +755,7 @@ function App() {
           {!data && !err ? <div className="empty">loading…</div> : null}
         </aside>
         <main>
-          {current ? <Detail app={current} /> : (
+          {current ? <Detail app={current} /> : mode === "calendar" ? <Calendar onOpen={id => { setSel(id); setMode("apps"); }} /> : (
             <div>
               <Flows flows={data?.flows} />
               <Workers data={data} onPick={setSel} />
