@@ -10,7 +10,29 @@
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
     font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
   #root { height: 100%; }
-  .app { display: grid; grid-template-rows: auto 1fr; height: 100vh; }
+  .app { display: grid; grid-template-rows: auto auto auto 1fr; height: 100vh; }
+  .tabs { display: flex; align-items: flex-end; gap: 4px; padding: 10px 20px 0; background: #dfe3e8; border-bottom: 1px solid #cfd4db; }
+  .tab { padding: 8px 18px 9px; border: 1px solid #cfd4db; border-bottom: none; border-radius: 10px 10px 0 0; background: #eceff3; color: var(--muted); cursor: pointer; font-size: 13px; user-select: none; }
+  .tab:hover { background: #f3f5f8; }
+  .tab.active { background: var(--panel); color: var(--ink); font-weight: 600; margin-bottom: -1px; padding-bottom: 10px; }
+  .tab small { color: var(--muted); margin-left: 6px; font-weight: 400; }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; padding: 10px 20px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  .toolbar:empty { display: none; }
+  .body.single { grid-template-columns: 1fr; }
+  .files { display: grid; grid-template-columns: 460px 1fr; gap: 16px; min-height: 0; }
+  .files .list { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); overflow-y: auto; max-height: calc(100vh - 260px); }
+  .files .list .row { grid-template-columns: 1fr; }
+  .files .list .row .top { align-items: center; }
+  .files .list .row .links { display: flex; gap: 10px; font-size: 12px; }
+  .files iframe.pdf { height: calc(100vh - 340px); }
+  .secret { border: 1px dashed var(--line); border-radius: 10px; padding: 12px 16px; margin-top: 12px; background: #fafafa; }
+  .secret .kv { display: grid; grid-template-columns: 170px 1fr; gap: 6px 12px; font-size: 13px; align-items: baseline; }
+  .secret .kv b { color: var(--muted); font-weight: 600; }
+  .secret code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; background: #eef2ff; padding: 2px 6px; border-radius: 6px; }
+  .secret button { font: inherit; font-size: 13px; padding: 5px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); cursor: pointer; margin-right: 8px; }
+  .secret button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .hosts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .hosts span { background: #f3f4f6; border: 1px solid var(--line); border-radius: 999px; padding: 2px 9px; font-size: 12px; }
   header { background: var(--panel); border-bottom: 1px solid var(--line); padding: 12px 20px; display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; }
   header h1 { font-size: 17px; margin: 0; }
   .watch { color: var(--muted); font-size: 13px; }
@@ -390,15 +412,13 @@ function Workers({ data, onPick }) {
   );
 }
 
-function Header({ data, err, filter, setFilter, q, setQ, showWorkers, mode, showCalendar }) {
-  const counts = data?.counts || {};
-  const total = Object.values(counts).reduce((a, b) => a + b, 0);
+function Header({ data, err }) {
   const w = data?.watch || {};
   const busy = (data?.workers_now || []).filter(n => n.stage && n.stage !== "idle").length;
   const procs = (w.processes || []).filter(p => p.alive).length;
   return (
     <header>
-      <h1>Applications</h1>
+      <h1>resume-tailor</h1>
       <span className="watch">
         <span className={"dot " + (w.running || w.pass_running ? "on" : "")}></span>
         <b>{w.label || (w.running ? "loop running" : "loop stopped")}</b>
@@ -407,9 +427,31 @@ function Header({ data, err, filter, setFilter, q, setQ, showWorkers, mode, show
         {data ? <span> · refreshed {new Date(data.generated_at).toLocaleTimeString()}</span> : null}
         {err ? <span className="err"> · {err}</span> : null}
       </span>
+    </header>
+  );
+}
+
+function Tabs({ tab, setTab, data }) {
+  const total = Object.values(data?.counts || {}).reduce((a, b) => a + b, 0);
+  const procs = ((data?.watch || {}).processes || []).filter(p => p.alive).length;
+  const items = [["applications", "Applications", total], ["calendar", "Calendar", null], ["workers", "Workers", procs], ["files", "Files", null]];
+  return (
+    <div className="tabs">
+      {items.map(([id, label, n]) => (
+        <span key={id} className={"tab" + (tab === id ? " active" : "")} onClick={() => setTab(id)}>
+          {label}{n != null ? <small>{n}</small> : null}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function AppsToolbar({ data, filter, setFilter, q, setQ }) {
+  const counts = data?.counts || {};
+  const total = Object.values(counts).reduce((a, b) => a + b, 0);
+  return (
+    <div className="toolbar">
       <div className="chips">
-        <span className={"chip " + (mode === "calendar" ? "active" : "")} onClick={showCalendar}>Calendar</span>
-        <span className="chip link" onClick={showWorkers}>Workers<small>{procs}</small></span>
         <span className={"chip " + (filter === "all" ? "active" : "")} onClick={() => setFilter("all")}>All<small>{total}</small></span>
         {ORDER.filter(s => counts[s]).map(s => (
           <span key={s} className={"chip " + (filter === s ? "active" : "")} onClick={() => setFilter(s)}>
@@ -418,7 +460,107 @@ function Header({ data, err, filter, setFilter, q, setQ, showWorkers, mode, show
         ))}
       </div>
       <input className="search" placeholder="Search company or role" value={q} onChange={e => setQ(e.target.value)} />
-    </header>
+    </div>
+  );
+}
+
+function FilesTab({ onOpen }) {
+  const [files, setFiles] = useState(null);
+  const [err, setErr] = useState(null);
+  const [q, setQ] = useState("");
+  const [pick, setPick] = useState(null);
+  const [secret, setSecret] = useState(null);   // null = hidden; otherwise the revealed record
+  const [busy, setBusy] = useState(false);
+  const [allHosts, setAllHosts] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      try {
+        const r = await fetch("/api/files", { cache: "no-store" });
+        const j = await r.json();
+        if (!alive) return;
+        if (j.error) { setErr(j.error); return; }
+        setFiles(j); setErr(null);
+      } catch (e) { if (alive) setErr(String(e)); }
+    };
+    load();
+    const t = setInterval(load, 60000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
+  const reveal = async () => {
+    setBusy(true);
+    try {
+      const r = await fetch("/api/logins/reveal", { cache: "no-store" });
+      const j = await r.json();
+      setSecret(j.error ? { error: j.error } : j);
+    } catch (e) { setSecret({ error: String(e) }); }
+    setBusy(false);
+  };
+  if (err) return <div className="empty">files: {err}</div>;
+  if (!files) return <div className="empty">loading…</div>;
+  const rows = files.resumes.filter(r => !q || (r.company + " " + r.role + " " + r.folder).toLowerCase().includes(q.toLowerCase()));
+  const current = rows.find(r => r.id === pick) || rows[0];
+  return (
+    <div>
+      <div className="card" style={{ marginTop: 0 }}>
+        <h3>Login info <span className="none" style={{ textTransform: "none", letterSpacing: 0 }}>· hidden until you ask</span></h3>
+        <div className="secret">
+          {secret && !secret.error ? (
+            <div>
+              <div className="kv">
+                <b>account e-mail</b><span><code>{secret.email}</code>{secret.other_emails?.length ? <span className="none"> · older accounts: {secret.other_emails.join(", ")}</span> : null}</span>
+                <b>site password</b><span><code>{secret.site_password || "(not set — RESUME_TAILOR_SITE_PASSWORD)"}</code></span>
+                <b>mailbox the tool reads</b><span><code>{secret.mailbox_user || "(profile e-mail)"}</code></span>
+              </div>
+              <div className="none" style={{ marginTop: 8 }}>{secret.note}</div>
+              <div style={{ marginTop: 10 }}><button onClick={() => setSecret(null)}>Hide</button></div>
+            </div>
+          ) : (
+            <div>
+              <span className="none">The e-mail and the one password the tool uses for every portal account it creates. Nothing is shown until you press the button.</span>
+              <div style={{ marginTop: 10 }}>
+                <button className="primary" disabled={busy} onClick={reveal}>{busy ? "…" : "Show login info"}</button>
+                {secret?.error ? <span className="err">{secret.error}</span> : null}
+              </div>
+            </div>
+          )}
+          <div className="none" style={{ marginTop: 12 }}>Portals with a saved sign-in ({files.logins.hosts.length}; {files.logins.saved_sites} sites hold cookies in all):</div>
+          <div className="hosts">
+            {(allHosts ? files.logins.hosts : files.logins.hosts.slice(0, 40)).map(h => <span key={h}>{h}</span>)}
+            {files.logins.hosts.length > 40 ? <a href="#" onClick={e => { e.preventDefault(); setAllHosts(!allHosts); }} style={{ fontSize: 12, alignSelf: "center" }}>{allHosts ? "show fewer" : `show all ${files.logins.hosts.length}`}</a> : null}
+          </div>
+        </div>
+      </div>
+      <div className="workers-head">
+        <h3>Résumés on disk <span className="none" style={{ textTransform: "none", letterSpacing: 0 }}>· {files.counts.resumes} tailored PDFs, {files.counts.documents} generated documents</span></h3>
+        <input className="search" placeholder="Search company, role or folder" value={q} onChange={e => setQ(e.target.value)} />
+      </div>
+      <div className="files">
+        <div className="list">
+          {rows.slice(0, 400).map(r => (
+            <div key={r.id} className={"row" + (current && current.id === r.id ? " active" : "")} onClick={() => setPick(r.id)}>
+              <div className="top"><span className="co">{r.company}</span><Badge status={r.status} /></div>
+              <div className="role">{r.role}</div>
+              <div className="meta"><span>{fmtWhen(r.when)}</span><span>{r.folder}</span>{r.resume_version ? <span>v{r.resume_version}</span> : null}</div>
+              <div className="links" onClick={e => e.stopPropagation()}>
+                <a href={r.pdf} target="_blank" rel="noreferrer">open PDF</a>
+                {r.documents.map(d => <a key={d.url} href={d.url} target="_blank" rel="noreferrer">{d.name}</a>)}
+                <a href="#" onClick={e => { e.preventDefault(); onOpen(r.id); }}>application</a>
+              </div>
+            </div>
+          ))}
+          {!rows.length ? <div className="empty">nothing matches</div> : null}
+        </div>
+        <div>
+          {current ? (
+            <div>
+              <div className="sub" style={{ marginBottom: 8 }}><b>{current.company}</b> · {current.role} · <a href={current.pdf} target="_blank" rel="noreferrer">open in a new tab</a></div>
+              <iframe className="pdf" src={current.pdf} title="resume" />
+            </div>
+          ) : <div className="empty">pick a résumé on the left</div>}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -720,7 +862,8 @@ function App() {
   const [filter, setFilter] = useState("all");
   const [q, setQ] = useState("");
   const [sel, setSel] = useState(null);
-  const [mode, setMode] = useState("apps");
+  const [tab, setTab] = useState(() => { try { return localStorage.getItem("rt-tab") || "applications"; } catch (e) { return "applications"; } });
+  useEffect(() => { try { localStorage.setItem("rt-tab", tab); } catch (e) {} }, [tab]);
 
   useEffect(() => {
     let alive = true;
@@ -743,35 +886,46 @@ function App() {
     (!q || (a.company + " " + a.role).toLowerCase().includes(q.toLowerCase()))
   ), [data, filter, q]);
   const current = (data?.applications || []).find(a => a.id === sel);
+  const open = id => { setSel(id); setTab("applications"); };
 
   return (
     <div className="app">
-      <Header data={data} err={err} filter={filter} setFilter={s => { setFilter(s); setMode("apps"); }} q={q} setQ={setQ}
-        showWorkers={() => { setSel(null); setMode("apps"); }} mode={mode} showCalendar={() => { setSel(null); setMode("calendar"); }} />
-      <div className="body">
-        <aside>
-          {apps.map(a => <Row key={a.id} app={a} active={a.id === sel} onClick={() => setSel(a.id)} />)}
-          {data && !apps.length ? <div className="empty">nothing here yet</div> : null}
-          {!data && !err ? <div className="empty">loading…</div> : null}
-        </aside>
-        <main>
-          {current ? <Detail app={current} /> : mode === "calendar" ? <Calendar onOpen={id => { setSel(id); setMode("apps"); }} /> : (
-            <div>
-              <Flows flows={data?.flows} />
-              <Workers data={data} onPick={setSel} />
-              <div className="empty" style={{ padding: "30px 0 0" }}>
-                <p>Pick an application on the left for its answers, résumé and screenshots.</p>
-                {data?.watch?.log_tail?.length ? (
-                  <details className="log">
-                    <summary>whole loop log (last lines)</summary>
-                    <pre>{data.watch.log_tail.join("\n")}</pre>
-                  </details>
-                ) : null}
+      <Header data={data} err={err} />
+      <Tabs tab={tab} setTab={setTab} data={data} />
+      {tab === "applications" ? <AppsToolbar data={data} filter={filter} setFilter={s => { setFilter(s); setSel(null); }} q={q} setQ={setQ} /> : <div className="toolbar"></div>}
+      {tab === "applications" ? (
+        <div className="body">
+          <aside>
+            {apps.map(a => <Row key={a.id} app={a} active={a.id === sel} onClick={() => setSel(a.id)} />)}
+            {data && !apps.length ? <div className="empty">nothing here yet</div> : null}
+            {!data && !err ? <div className="empty">loading…</div> : null}
+          </aside>
+          <main>
+            {current ? <Detail app={current} /> : (
+              <div>
+                <Flows flows={data?.flows} />
+                <div className="empty" style={{ padding: "30px 0 0" }}>
+                  <p>Pick an application on the left for its answers, résumé and screenshots.</p>
+                  {data?.watch?.log_tail?.length ? (
+                    <details className="log">
+                      <summary>whole loop log (last lines)</summary>
+                      <pre>{data.watch.log_tail.join("\n")}</pre>
+                    </details>
+                  ) : null}
+                </div>
               </div>
-            </div>
-          )}
-        </main>
-      </div>
+            )}
+          </main>
+        </div>
+      ) : (
+        <div className="body single">
+          <main>
+            {tab === "calendar" ? <Calendar onOpen={open} /> : null}
+            {tab === "workers" ? <Workers data={data} onPick={open} /> : null}
+            {tab === "files" ? <FilesTab onOpen={open} /> : null}
+          </main>
+        </div>
+      )}
     </div>
   );
 }

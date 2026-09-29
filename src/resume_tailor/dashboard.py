@@ -213,6 +213,94 @@ def build_index(out_dir: str | Path, profile_dir: Path = DEFAULT_PROFILE_DIR) ->
 REVIEWS_DIR = DEFAULT_PROFILE_DIR / "reviews"
 
 
+_PORTAL_HOST = re.compile(r"jobright|careers?|jobs?|recruit|apply|talent|hire|workday|icims|greenhouse|lever|ashby|oracle|taleo|"
+                          r"successfactors|smartrecruiters|avature|jibeapply|yello|workatastartup|bytedance|tiktok|ycombinator", re.I)
+
+
+def portal_hosts(names: list[str], allowed: list[str] | None = None) -> list[str]:
+    """The saved-login hosts that are job portals: an ATS the tool knows, a
+    host the owner allows accounts on, or one whose name says careers.
+    Ad-tech and analytics cookies (most of the directory) are left out."""
+    from . import ats
+
+    allowed = [str(a).strip().lower() for a in (allowed or []) if str(a).strip()]
+    out = []
+    for name in names:
+        host = name[:-5] if name.endswith(".json") else name
+        host = host.lower().strip(".")
+        if not host or "." not in host:
+            continue
+        if ats.host_kind("https://" + host + "/") not in ("", "other") or any(host == a or host.endswith("." + a) or a in host for a in allowed) \
+                or _PORTAL_HOST.search(host):
+            if not re.search(r"doubleclick|googlesyndication|adsrvr|adnxs|criteo|taboola|outbrain|quantserve|scorecardresearch|"
+                             r"demdex|bluekai|rubiconproject|pubmatic|openx|casalemedia|linkedin\.com$|facebook|twitter|youtube|google\.com$", host):
+                out.append(host)
+    return sorted(dict.fromkeys(out))
+
+
+def build_files(out_dir: str | Path, logins_dir: Path | None = None, answers: dict | None = None) -> dict:
+    """Every tailored résumé and generated document on disk, from the state
+    file, newest first, and the portals with a saved sign-in. The site
+    password is never in this response."""
+    from .apply import ApplySession
+
+    out_dir = Path(out_dir)
+    state_path = out_dir / "batch-state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else {"done": {}}
+    listings: dict[str, dict] = {}
+    cache = out_dir / "listings-cache.json"
+    if cache.is_file():
+        try:
+            for l in json.loads(cache.read_text(encoding="utf-8")):
+                listings[l.get("id") or ""] = l
+        except Exception:
+            pass
+    resumes: list[dict] = []
+    seen: set[str] = set()
+    for eid, rec in (state.get("done") or {}).items():
+        pdf = rec.get("pdf") or ""
+        if not pdf or pdf in seen or not Path(pdf).is_file():
+            continue
+        seen.add(pdf)
+        docs_dir = Path(pdf).parent / "documents"
+        documents = [{"name": d.name, "url": _file_url(out_dir, str(d))} for d in sorted(docs_dir.iterdir())] if docs_dir.is_dir() else []
+        l = listings.get(eid, {})
+        resumes.append({"id": eid, "company": rec.get("company") or l.get("company_name") or "", "role": rec.get("role") or l.get("title") or "",
+                        "status": rec.get("status") or "?", "when": rec.get("when") or "", "fit": rec.get("fit") or "",
+                        "url": l.get("url") or rec.get("url") or "", "pdf": _file_url(out_dir, pdf), "name": Path(pdf).name,
+                        "folder": Path(pdf).parent.name, "documents": documents, "resume_version": rec.get("resume_version") or 0})
+    resumes.sort(key=lambda r: r["when"], reverse=True)
+    if answers is None:
+        try:
+            from .profile import Profile
+            answers = Profile.load().answers
+        except Exception:
+            answers = {}
+    allowed = list((answers.get("search") or {}).get("create_accounts_on") or [])
+    ldir = logins_dir if logins_dir is not None else ApplySession.LOGINS_DIR
+    names = [p.name for p in ldir.glob("*.json")] if ldir.is_dir() else []
+    return {"resumes": resumes, "counts": {"resumes": len(resumes), "documents": sum(len(r["documents"]) for r in resumes)},
+            "logins": {"hosts": portal_hosts(names, allowed), "saved_sites": len(names), "allowed": allowed}}
+
+
+def reveal_logins() -> dict:
+    """The site account's e-mail(s) and password, for signing in by hand.
+    Read at the moment the page's Reveal button asks."""
+    import os
+
+    from .llm import _load_env_file
+    from .profile import Profile
+
+    _load_env_file()
+    profile = Profile.load()
+    email = str(profile.career.get("personal_information", {}).get("email") or "")
+    flat = profile.flat_answers()
+    others = sorted({str(v) for k, v in flat.items() if "email" in k.lower() and "@" in str(v)} - {email})
+    return {"email": email, "other_emails": others, "site_password": os.environ.get("RESUME_TAILOR_SITE_PASSWORD") or "",
+            "mailbox_user": os.environ.get("RESUME_TAILOR_IMAP_USER") or "",
+            "note": "The site password is the one the tool used for every portal account it created; older accounts were made with the earlier e-mail."}
+
+
 def open_for_review(out_dir: Path, entry_id: str) -> int:
     """Start `resume-tailor review <id>` detached: a visible Chrome window with
     the form filled in, left open for the user. Returns the process id and
@@ -331,6 +419,22 @@ class _Handler(BaseHTTPRequestHandler):
             try:
                 body = json.dumps(build_index(self.out_dir)).encode("utf-8")
             except Exception as e:  # a half-written state file mid-save, most likely
+                return self._send(json.dumps({"error": str(e)}).encode("utf-8"), "application/json", 500)
+            return self._send(body, "application/json")
+        if path == "/api/files":
+            # Every tailored résumé and generated document, plus which portals
+            # hold a saved sign-in. No secret in this response (see /api/logins/reveal).
+            try:
+                body = json.dumps(build_files(self.out_dir)).encode("utf-8")
+            except Exception as e:
+                return self._send(json.dumps({"error": str(e)}).encode("utf-8"), "application/json", 500)
+            return self._send(body, "application/json")
+        if path == "/api/logins/reveal":
+            # The site account's e-mail and password, only when the page's
+            # Reveal button asks: never part of the index or the files list.
+            try:
+                body = json.dumps(reveal_logins()).encode("utf-8")
+            except Exception as e:
                 return self._send(json.dumps({"error": str(e)}).encode("utf-8"), "application/json", 500)
             return self._send(body, "application/json")
         if path == "/api/calendar":
