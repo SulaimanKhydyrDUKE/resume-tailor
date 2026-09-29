@@ -126,7 +126,9 @@ class Outcome:
 #  6: "GPA 3.6/4.0" with no qualifier (the user, later that day).
 #  7: no GPA on the résumé — the skeleton's and the record's gpa lines are
 #     commented out (the user, 2026-09-12 evening); a cached PDF still prints one.
-RESUME_VERSION = 7
+#  8: the header's e-mail is sulaiman.khydyruulu@duke.edu (the user, 2026-09-28);
+#     earlier PDFs print the Gmail address.
+RESUME_VERSION = 8
 
 
 # Wording that says a control is not the one that sends the application,
@@ -646,7 +648,14 @@ async def _create_account(session: ApplySession, profile: Profile) -> str:
             pressed = await press(r"create (an )?account|sign up|register|^\s*create\s*$")
             note(f"create pressed again={pressed}; errors={[e[:60] for e in (await session.errors())[:3]]}")
         text = (await session.read_text())[:5000].lower()
-        if re.search(r"already (exists|in use|registered|have an account)|account exists", text):
+        # Only the site's *complaint* counts. Every Workday registration form
+        # carries the link "Already have an account? Sign In", and matching
+        # that read an untouched form as "the account exists", after which
+        # the tool signed in to an account that was never made (Xcel,
+        # Medline: 13 and 6 postings "wall stayed").
+        if re.search(r"(e-?mail( address)?|account|user(name)?) (is )?already (exists|in use|registered|taken)|"
+                     r"already (has|have) an account (with|for|using) this|an account (already )?exists (for|with) this|"
+                     r"already registered", text):
             created = False
             note("the site says the account already exists")
         else:
@@ -2595,6 +2604,56 @@ def _wall_url(record: dict | None, entry: QueueEntry) -> str:
     detail = (record or {}).get("detail") or ""
     urls = re.findall(r"https?://[^\s'\"]+", detail)
     return urls[-1].rstrip(".,;)") if urls else (entry.apply_url or entry.url)
+
+
+async def login_site(url: str, timeout_s: float = 30 * 60) -> int:
+    """A visible Chrome on any page the user names — accounts.google.com,
+    jobright.ai, TikTok — so they can sign in by hand, in their own time.
+    It is the user's installed Chrome on one shared profile of the tool's
+    (~/.resume-tailor/login-profile, never a worker's, so no profile lock),
+    with automation tells off, which is what "Sign in with Google" checks.
+    The cookies are exported every few seconds while the window is open and
+    once more at the end, into the folder every worker loads at start; so
+    a worker relaunch after this carries the session. Returns the number
+    of cookies kept."""
+    from .apply import DEFAULT_PROFILE_DIR
+
+    session = ApplySession(headless=False, fast=True, profile_dir=DEFAULT_PROFILE_DIR.parent / "login-profile")
+    saved = 0
+    try:
+        await session.start()
+        await session.goto(url)
+        print("\nSign in on that page in the Chrome window (Google, the site, whatever it offers). Take your time; "
+              "the window's cookies are kept as you go. When you are done, close the window or press Enter here.",
+              file=sys.stderr, flush=True)
+        loop = asyncio.get_event_loop()
+        enter = loop.run_in_executor(None, sys.stdin.readline)
+        deadline = loop.time() + timeout_s
+        while loop.time() < deadline:
+            done, _ = await asyncio.wait({enter}, timeout=5)
+            if done:
+                break
+            try:
+                if session._page.is_closed():
+                    break
+                saved = await session.save_logins()
+            except Exception:
+                break
+        try:
+            saved = await session.save_logins()
+        except Exception:
+            pass
+    finally:
+        try:
+            await session.stop()
+        except Exception:
+            pass
+    hosts = sorted({p.stem for p in session.LOGINS_DIR.glob("*.json")})
+    named = [h for h in hosts if re.search(r"google|jobright|tiktok|bytedance|linkedin|handshake", h)]
+    print(f"  kept {saved} cookies ({len(hosts)} sites on file); sign-ins of note: " + (", ".join(named) or "none yet"),
+          file=sys.stderr, flush=True)
+    print("  run `resume-tailor stop` so the workers relaunch with these sessions.", file=sys.stderr, flush=True)
+    return saved
 
 
 async def login_and_apply(profile: Profile, entry: QueueEntry, out_dir: str | Path = "output",

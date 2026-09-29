@@ -599,7 +599,17 @@ async def _review(args: argparse.Namespace) -> int:
 
 async def _login(args: argparse.Namespace) -> int:
     """Open the site's sign-in page in a visible Chrome; once the user is
-    through, fill and submit the posting in that window and keep the cookies."""
+    through, fill and submit the posting in that window and keep the cookies.
+    With --site, just open that page for a hand sign-in and keep the cookies."""
+    if getattr(args, "site", None):
+        from .batch import login_site
+        url = args.site if "://" in args.site else "https://" + args.site
+        print(f"opening {url}", file=sys.stderr, flush=True)
+        await login_site(url)
+        return 0
+    if not args.posting:
+        print("error: give a posting id or company name, or --site <url>", file=sys.stderr)
+        return 1
     try:
         profile = Profile.load(args.profile)
     except ProfileError as e:
@@ -813,8 +823,10 @@ def main() -> int:
                          "plan/send: write to named people only, skip companies with just a shared mailbox")
     po.set_defaults(func=lambda a: __import__("resume_tailor.outreach", fromlist=["run_cli"]).run_cli(a))
 
-    plg = sub.add_parser("login", help="open a site's sign-in wall in Chrome; after you log in, the tool fills and submits that posting")
-    plg.add_argument("posting", help="an id from the dashboard, or a company name")
+    plg = sub.add_parser("login", help="open a site's sign-in wall in Chrome; after you log in, the tool fills and submits that posting; "
+                                       "or --site <url> to sign in somewhere by hand (Google, jobright, TikTok) and keep the session for every worker")
+    plg.add_argument("posting", nargs="?", default=None, help="an id from the dashboard, or a company name")
+    plg.add_argument("--site", default=None, help="a URL to open for a hand sign-in, e.g. accounts.google.com")
     plg.add_argument("--out", default="output")
     plg.add_argument("--profile", default=None)
     plg.set_defaults(func=lambda a: asyncio.run(_login(a)))
