@@ -383,12 +383,11 @@ def _refresh_locked(out_dir: Path, url: str, table_sources: list[tuple[str, str]
     extra = [l for l in extra if "jobright.ai/" not in l["url"] or role_key(l) not in direct]
     if not tables:  # every source down: keep what the cache had
         extra = [l for l in (cache or []) if str(l.get("id", "")).startswith("gh:")]
-    # Postings read off Instagram stories (igstories.py) — a file on disk,
-    # never a fetch here; the same link on a list above is not listed twice.
+    # Postings read off Instagram stories, and links the user added by hand
+    # (igstories.py) — a file on disk, never a fetch here.
     try:
         from .igstories import to_listings as _ig_listings
-        have = {(l.get("url") or "").split("?")[0] for l in listings + extra}
-        extra += [l for l in _ig_listings(out_dir) if l["url"].split("?")[0] not in have]
+        listings, extra = merge_hand_links(listings, extra, _ig_listings(out_dir))
     except Exception as e:
         print(f"  instagram links skipped ({str(e)[:60]})", file=sys.stderr, flush=True)
     before = {l.get("id") for l in (cache or [])}
@@ -420,6 +419,26 @@ def is_us(locations: list[str]) -> bool | None:
     if verdicts and all(v is False for v in verdicts):
         return False
     return None
+
+
+def merge_hand_links(listings: list[dict], extra: list[dict], links: list[dict]) -> tuple[list[dict], list[dict]]:
+    """The story links and by-hand links joined to the feeds. A posting the
+    user added by hand replaces a feed's copy of the same link: the feed's
+    tags (its term, its title) would otherwise decide, and the user's choice
+    is exempt from those gates. A story link that a feed already lists is
+    not listed twice; the feed's copy stands."""
+    def key(l: dict) -> str:
+        return (l.get("url") or "").split("?")[0].rstrip("/").lower()
+
+    by_hand = {key(l): l for l in links if l.get("source") == "added by hand"}
+    if by_hand:
+        listings = [l for l in listings if key(l) not in by_hand]
+        extra = [l for l in extra if key(l) not in by_hand]
+    have = {key(l) for l in listings + extra}
+    extra = extra + [l for l in links if key(l) not in have or l.get("source") == "added by hand"]
+    seen: set[str] = set()
+    extra = [l for l in extra if not (l["id"] in seen or seen.add(l["id"]))]
+    return listings, extra
 
 
 def evaluate(listing: dict, prefs: Prefs) -> str:
@@ -557,6 +576,7 @@ def to_entry(listing: dict) -> QueueEntry:
         id=listing.get("id") or url, url=url, apply_url=ats.apply_url_for(url),
         company_hint=listing.get("company_name") or "", title=listing.get("title") or "",
         location=", ".join(str(l) for l in (listing.get("locations") or [])),
+        source=str(listing.get("source") or ""),
     )
 
 

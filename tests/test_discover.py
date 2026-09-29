@@ -335,6 +335,22 @@ check("worn out: a 'retry:' detail lifts the cap like a hand re-queue",
       not _wo({"status": "needs_review", "attempts": 3, "detail": "retry: after a fix · could not answer: x"}) and _wo({"status": "needs_review", "attempts": 3, "detail": "could not answer: x"}))
 
 
+# --- by-hand links beat a feed's copy; story links do not ---------------------
+from resume_tailor.discover import merge_hand_links as _mhl, to_entry as _to_entry
+_feed = [{"id": "sim-1", "url": "https://job-boards.greenhouse.io/gitai/jobs/5?gh_src=x", "source": "Simplify", "terms": ["Winter 2026"], "title": "Software Engineer Intern"},
+         {"id": "sim-2", "url": "https://jobs.lever.co/acme/1", "source": "Simplify", "title": "SWE Intern"}]
+_hand = [{"id": "ig:aaaa", "url": "https://job-boards.greenhouse.io/gitai/jobs/5", "source": "added by hand", "terms": ["Summer 2027"], "title": "Field-Deployed SWE Intern"},
+         {"id": "ig:bbbb", "url": "https://jobs.lever.co/acme/1", "source": "instagram:page", "title": "SWE Intern"},
+         {"id": "ig:cccc", "url": "https://jobs.ashbyhq.com/new/9", "source": "instagram:page", "title": "Platform Intern"}]
+_l, _e = _mhl(_feed, [], _hand)
+_ids = [l["id"] for l in _l + _e]
+check("hand links: a by-hand posting replaces the feed's copy of the same link", "sim-1" not in _ids and "ig:aaaa" in _ids)
+check("hand links: a story link a feed already lists is not listed twice", "sim-2" in _ids and "ig:bbbb" not in _ids)
+check("hand links: a story link no feed has is added", "ig:cccc" in _ids)
+check("hand links: ids stay unique", len(_ids) == len(set(_ids)))
+check("entries: the listing's source travels with the queue entry", _to_entry(_hand[0]).source == "added by hand")
+
+
 width = max(len(n) for n, _, _ in RESULTS)
 failed = 0
 for name, ok, detail in RESULTS:

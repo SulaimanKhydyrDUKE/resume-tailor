@@ -273,8 +273,11 @@ async def _watch(args: argparse.Namespace) -> int:
                 new_ids = ids_now - seen
                 seen |= ids_now
                 seen_path.write_text(json.dumps(sorted(seen)), encoding="utf-8")
-                entries, excluded = select(listings, prefs, state, limit=args.max_per_run)
-                entries = [e for e in entries if e.id in new_ids]
+                # Everything worth applying to, then only what is new, then the
+                # cap — capping first let retries push a new posting out of the
+                # ten and it was never dealt (FOX, 2026-09-29).
+                entries, excluded = select(listings, prefs, state)
+                entries = [e for e in entries if e.id in new_ids][:args.max_per_run]
                 print(f"{tag}[{stamp}] {len(listings)} listings ({'updated' if changed else 'unchanged'}), "
                       f"{len(new_ids)} new on the sources, {len(entries)} worth applying to", file=sys.stderr, flush=True)
                 if entries:

@@ -2398,6 +2398,12 @@ async def _process_one_inner(session: ApplySession, profile: Profile, entry: Que
     apply_below_bar = bool(search.get("apply_below_bar", True))
     if os.environ.get("RESUME_TAILOR_APPLY_BELOW_BAR", "").strip().lower() in ("0", "false", "no"):
         apply_below_bar = False  # the launch script's word: every judge at the bar, or the posting is held
+    if getattr(entry, "source", "") == "added by hand":
+        # The user put this posting in the pool themselves: the judges' notes
+        # are recorded, the application goes in — unless an eligibility
+        # barrier (degree level, citizenship, clearance) stands, which the
+        # user is told about in the record.
+        apply_below_bar = True
 
     prev = state.done.get(entry.id) or {}
     # A cached resume and verdict stand only when the verdict was a pass at

@@ -28,6 +28,7 @@ class QueueEntry:
     company_hint: str = ""
     title: str = ""
     location: str = ""  # the listing's location(s); decides which address applies
+    source: str = ""    # where the listing came from ("Simplify", "instagram:<page>", "added by hand")
 
     @property
     def has_source(self) -> bool:
