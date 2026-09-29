@@ -965,6 +965,15 @@ check("session on file: a site with no cookie rule takes any live cookie", sessi
 check("session on file: nothing saved reads as nothing", session_on_file({"host": "example.org"}, _ld) == (False, "nothing on file"))
 
 
+# --- a Workday field-of-study list, once searched ----------------------------------
+from resume_tailor.apply import ApplySession as _AS2
+_fos = [{"t": x} for x in ("Computer Science", "Computer Science & Commerce", "Computer Science&Applied Maths")]
+check("picker: 'Computer Science and Mathematics' lands on 'Computer Science' among the searched entries",
+      _AS2._match_option("Computer Science and Mathematics", _fos) == 0)
+check("picker: 'Computer Science' exactly", _AS2._match_option("Computer Science", _fos) == 0)
+check("picker: 'Mathematics' alone picks none of them", _AS2._match_option("Mathematics", _fos) is None)
+
+
 # --- availability follows the posting's term ---------------------------------------
 from resume_tailor.profile import Profile as _PT
 _pt = _PT(career={"personal_information": {}}, answers={"availability": {"notice_period": "available May through August 2027", "target_term": "Summer 2027",

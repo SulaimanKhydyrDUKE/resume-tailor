@@ -2130,9 +2130,19 @@ class ApplySession:
             try:
                 await el.click()
                 await el.fill("")
+                unopened = [o["t"] for o in await self._visible_options(limit, wait_ms=600)]
                 await el.press_sequentially(t[:60], delay=20)
                 found = await self._visible_options(limit, wait_ms=1500)
-                if not found and await self._searches_on_enter(el):
+                words = [w.lower() for w in re.findall(r"[A-Za-z0-9']+", t) if len(w) >= 3]
+                names_word = bool(words) and any(words[0] in o["t"].lower() for o in found)
+                unfiltered = bool(found) and [o["t"] for o in found][:5] == unopened[:5] and not names_word
+                if (not found and await self._searches_on_enter(el)) or unfiltered:
+                    # Workday's prompts run the search on Enter: some show "No
+                    # Items." until then, others (Invesco's Field of Study) keep
+                    # showing the unfiltered head of a long list — "Accounting…"
+                    # whatever was typed — and "Computer Science" only appears
+                    # once Enter is pressed. A list that already reflects the
+                    # typed word is left alone: Enter would pick from it.
                     await page.keyboard.press("Enter")
                     await page.wait_for_timeout(1500)
                     found = await self._visible_options(limit, wait_ms=2500)
@@ -2149,7 +2159,8 @@ class ApplySession:
             pass
         await page.keyboard.press("Escape")
         await page.wait_for_timeout(150)
-        return [o["t"] for o in found][:limit]
+        # Workday renders each entry more than once (a hidden twin per row): one of each.
+        return list(dict.fromkeys(o["t"] for o in found))[:limit]
 
     async def combobox_options(self, selector: str, field: dict | None = None, limit: int = 60) -> list[str]:
         """What a picker offers when opened with nothing typed — the short,
