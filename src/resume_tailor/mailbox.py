@@ -190,6 +190,8 @@ def _search_once(since: float, hints: list[str], require: list[str] | None = Non
                 forwarded = bool(re.search(r"\bsubject:\s*(fw|fwd|tr|wg)\s*:", head_text)) or any(a in head_text for a in mine)
                 if not forwarded and not any(n in head_text for n in need):
                     continue
+                if forwarded and not (LOOKS_LIKE_CODE_MAIL.search(head_text) or re.search(r"activat|account|candidate", head_text)):
+                    continue  # a forward, but its subject says nothing of a code, a link or an account: not fetched
             _, raw = box.uid("fetch", uid, "(RFC822)")
             if not raw or not raw[0] or not isinstance(raw[0], tuple):
                 continue
