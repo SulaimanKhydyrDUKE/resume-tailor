@@ -426,6 +426,13 @@ def evaluate(listing: dict, prefs: Prefs) -> str:
     """Empty string when the listing is worth applying to; otherwise why not."""
     if not listing.get("active", True):
         return "inactive"
+    if listing.get("source") == "added by hand":
+        # The user put this link in the pool themselves (`resume-tailor add`):
+        # the title and category gates are for feeds, not for a choice made
+        # by a person. The blacklist and the judges still apply.
+        if any(b.lower() in (listing.get("company_name") or "").lower() for b in prefs.company_blacklist):
+            return "company blacklist"
+        return ""
     if not listing.get("is_visible", True):
         return "hidden"
     if prefs.terms and not set(listing.get("terms") or []) & set(prefs.terms):

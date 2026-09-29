@@ -622,6 +622,26 @@ async def _setup_logins(args: argparse.Namespace) -> int:
     return 0 if n or args.check else 1
 
 
+def _add(args: argparse.Namespace) -> int:
+    """One posting by hand, into the pool: recorded like a story link, read
+    for its facts, and shown against the discovery filters at once."""
+    from .discover import Prefs, evaluate
+    from .igstories import add_url, to_listings
+
+    out = PROJECT_ROOT / args.out
+    rec = add_url(out, args.url, company=args.company or "", title=args.title or "")
+    print(f"{'added' if rec.get('new') else 'already on file'}: {rec.get('company') or '?'} — {rec.get('title') or '?'}"
+          + (f" ({rec['location']})" if rec.get("location") else "") + f"\n  {rec['url']}", file=sys.stderr)
+    try:
+        prefs = Prefs.from_profile(Profile.load(args.profile))
+        listing = next((l for l in to_listings(out) if l["url"] == rec["url"]), None)
+        why = evaluate(listing, prefs) if listing else "not listed"
+        print("  discovery: " + ("will be dealt on the next pass (the fresh lane polls every 5 minutes)" if not why else f"would be left out: {why} — pass --title/--company to correct it"), file=sys.stderr)
+    except Exception as e:
+        print(f"  (could not run the filters: {str(e)[:80]})", file=sys.stderr)
+    return 0
+
+
 async def _instagram(args: argparse.Namespace) -> int:
     from .igstories import run_cli
 
@@ -898,6 +918,13 @@ def main() -> int:
     pdash.add_argument("--stop", action="store_true", help="stop a detached dashboard")
     pdash.set_defaults(func=cmd_dashboard)
 
+    padd = sub.add_parser("add", help="put one posting into the pool by its link (a story, a friend, a mail); the page is read for company and title")
+    padd.add_argument("url")
+    padd.add_argument("--company", default=None)
+    padd.add_argument("--title", default=None)
+    padd.add_argument("--out", default="output")
+    padd.add_argument("--profile", default=None)
+    padd.set_defaults(func=_add)
     pig = sub.add_parser("instagram", help="stories of a page that posts application links: read them in the tool's signed-in Chrome "
                                             "(login --site instagram.com first), keep every link, feed the loop; read | links | unpark | watch")
     pig.add_argument("action", choices=["read", "links", "unpark", "watch"])

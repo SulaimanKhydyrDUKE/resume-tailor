@@ -155,26 +155,87 @@ def posting_facts(html: str, url: str) -> dict:
         if m:
             title = re.sub(r"\s+", " ", m.group(1)).strip()
     title, company = _unescape(title), _unescape(company)
-    # "Software Engineer Intern - Acme" / "Acme | Careers": split a title that carries the company.
+    # "Software Engineer Intern - Acme" / "Acme | Careers": a title that carries
+    # the company after a spaced dash or bar. A hyphen inside a word
+    # ("Field-Deployed") is not a separator.
     if title and not company:
-        m = re.match(r"^(.*?)\s*[\-–|·@]\s*(.+?)$", title)
+        m = re.match(r"^(.*?)\s+[\-–—|·@]\s+(.+?)$", title)
         if m and len(m.group(2)) < 40:
             title, company = m.group(1).strip(), m.group(2).strip()
+    from_host = False
     if not company:
+        from_host = True
         host = urllib.parse.urlsplit(url).netloc.lower()
         m = re.search(r"(?:boards|job-boards)\.greenhouse\.io/([^/]+)|jobs\.lever\.co/([^/]+)|jobs\.ashbyhq\.com/([^/]+)|"
-                      r"^([a-z0-9-]+)\.(?:wd\d+\.myworkdayjobs|myworkdaysite)\.com", (host + urllib.parse.urlsplit(url).path).lower())
+                      r"^([a-z0-9-]+)\.(?:wd\d+\.myworkdayjobs|myworkdaysite)\.com|careerpuck\.com/job-board/([^/]+)",
+                      (host + urllib.parse.urlsplit(url).path).lower())
         if m:
             company = next(g for g in m.groups() if g).replace("-", " ").title()
         else:
-            company = re.sub(r"^(www|careers|jobs|apply)\.", "", host).split(".")[0].title()
+            company = re.sub(r"^(www|careers|jobs|apply|app)\.", "", host).split(".")[0].title()
     title = _unescape(re.sub(r"\s*\|\s*(Careers|Jobs).*$", "", title, flags=re.I)).strip()
-    return {"company": _unescape(company).strip()[:80], "title": title[:120]}
+    return {"company": _unescape(company).strip()[:80], "title": title[:120], "company_from_host": from_host}
 
 
 def _unescape(s: str) -> str:
     import html as _h
     return _h.unescape(s or "")
+
+
+GH_JOB = re.compile(r"(?:boards|job-boards)\.greenhouse\.io/([a-z0-9_-]+)/jobs/(\d+)|/job-board/([a-z0-9_-]+)/job/(\d+)|[?&]gh_jid=(\d+)", re.I)
+
+
+def greenhouse_facts(url: str) -> dict:
+    """Title, company and location from Greenhouse's public board API for a
+    posting it hosts — the boards that wrap it (careerpuck, a company's own
+    page) render with JavaScript and show a fetch nothing."""
+    m = GH_JOB.search(url or "")
+    if not m:
+        return {}
+    slug = m.group(1) or m.group(3)
+    jid = m.group(2) or m.group(4) or m.group(5)
+    if not slug:
+        m2 = re.search(r"/job-board/([a-z0-9_-]+)/|greenhouse\.io/([a-z0-9_-]+)/", url, re.I)
+        slug = (m2.group(1) or m2.group(2)) if m2 else ""
+    if not (slug and jid):
+        return {}
+    try:
+        req = urllib.request.Request(f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs/{jid}", headers={"User-Agent": UA})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            d = json.loads(r.read().decode("utf-8", "replace"))
+    except Exception:
+        return {}
+    company = _unescape(str(d.get("company_name") or "")).strip() or slug.replace("-", " ").title()
+    return {"company": company[:80], "title": _unescape(str(d.get("title") or ""))[:120],
+            "location": str((d.get("location") or {}).get("name") or "")[:80]}
+
+
+def add_url(out_dir: str | Path, url: str, company: str = "", title: str = "") -> dict:
+    """A posting the user hands over (a link from a story, a friend, a
+    mail): recorded under the page "added" so discovery lists it like any
+    other; the page is read for its facts, Greenhouse asked when the page
+    shows nothing. Returns the record."""
+    data = load_links(out_dir)
+    url = unwrap(url)
+    postings = resolve(url)
+    posting, chain, facts = postings[0] if postings else (url, [url], {})
+    if not facts.get("title") or not facts.get("company"):
+        gh = greenhouse_facts(posting) or greenhouse_facts(url)
+        for k, v in gh.items():
+            if v and not facts.get(k):
+                facts[k] = v
+    facts.pop("company_from_host", None)
+    if company:
+        facts["company"] = company
+    if title:
+        facts["title"] = title
+    new = record_link(data, "added", posting, label="added by hand", via="hand", chain=chain, facts=facts)
+    if not new:
+        # Added again, perhaps with a correction: the latest facts stand.
+        data["pages"]["added"]["links"][posting].update({k: v for k, v in facts.items() if v})
+    save_links(out_dir, data)
+    rec = dict(data["pages"]["added"]["links"][posting]); rec.update({"url": posting, "new": new})
+    return rec
 
 
 def listing_id(url: str) -> str:
@@ -229,14 +290,16 @@ def to_listings(out_dir: str | Path, profile=None) -> list[dict]:
                 continue
             seen.add(url)
             title = info.get("title") or ""
+            tag = "added by hand" if handle == "added" else "from Instagram"
             if not re.search(r"intern|co-?op", title, re.I):
-                title = (title + " — Internship (from Instagram)").strip(" —") if title else "Internship (from Instagram)"
+                title = (title + f" — Internship ({tag})").strip(" —") if title else f"Internship ({tag})"
             try:
                 posted = int(time.mktime(time.strptime(info.get("first_seen", "")[:19], "%Y-%m-%dT%H:%M:%S")))
             except Exception:
                 posted = int(time.time())
             out.append({"id": listing_id(url), "url": url, "company_name": info.get("company") or "", "title": title,
-                        "locations": [], "date_posted": posted, "source": f"instagram:{handle}", "active": True, "is_visible": True,
+                        "locations": [info["location"]] if info.get("location") else [], "date_posted": posted,
+                        "source": "added by hand" if handle == "added" else f"instagram:{handle}", "active": True, "is_visible": True,
                         "terms": sorted(title_terms(title)) or ["Summer 2027"], "degrees": [], "category": "Software Engineering"})
     return out
 
@@ -273,7 +336,13 @@ def resolve(url: str, depth: int = 0) -> list[tuple[str, list[str], dict]]:
             for posting, sub_chain, facts in resolve(sub, depth + 1):
                 found.append((posting, chain + sub_chain, facts))
         return found or [(final, chain, {"company": "", "title": "", "note": "a link page with nothing outward"})]
-    return [(final, chain, posting_facts(html, final))]
+    facts = posting_facts(html, final)
+    if facts.get("company_from_host") or not facts.get("title") or len(facts["title"]) < 4 \
+            or re.search(r"^(job application|careers?|jobs?)$", facts["title"], re.I):
+        # The board's own answer beats a name guessed off the host.
+        facts.update({k: v for k, v in greenhouse_facts(final).items() if v})
+    facts.pop("company_from_host", None)
+    return [(final, chain, facts)]
 
 
 # --- reading the stories ---------------------------------------------------------
