@@ -14,11 +14,11 @@ The specification and the architecture are in [SPEC.md](SPEC.md); the
 requirement numbers there (R1–R20) are the ones the tests and the gaps
 section below refer to.
 
-> **Course submission (CompSci 390.05, Fall 2026).** This repository is the
-> project submission. It lives at `sk930/mass-apply-submission` rather than
-> in the course group's `mass-apply` project because that project's default
-> branch is fully protected and rejected every push from a Developer; the
-> code, history and CI here are the same. Development continues on GitHub
+> **Course submission (CompSci 390.05, Fall 2026).** This is the project
+> submission. In the course group's `mass-apply` project it is the branch
+> `course-submission`, with a merge request into `main` (that branch is
+> protected, so nothing can be pushed to it directly); the same commit is
+> `main` at `sk930/mass-apply-submission`. Development continues on GitHub
 > (`SulaimanKhydyrDUKE/resume-tailor`), where later work is proposed as pull
 > requests against `main`.
 
