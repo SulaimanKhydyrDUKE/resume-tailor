@@ -1276,6 +1276,17 @@ check("variants: the per-term profile keeps the variants", _vp.for_term("Winter 
 _vq = QueueEntry(id="x", url="https://e.example/j", title="Drone Autonomy Intern", category="Software Engineering")
 check("variants: queue entries carry the list's category", _vq.category == "Software Engineering")
 
+
+# --- forwarded code mails whose text part is only the forward block ---------
+from resume_tailor import mailbox as _mbx
+_fwd_text = "\n\nFrom: Greenhouse <no-reply@us.greenhouse-mail.io>\nSent: Friday, October 2, 2026 6:57 AM\nTo: Sulaiman <sk930@duke.edu>\nSubject: Security code for your application\n\n"
+_fwd_html = "<html><body><div>From: Greenhouse &lt;no-reply@us.greenhouse-mail.io&gt;<br>Subject: Security code for your application</div><p>Your security code is <b>482913</b>. It expires in 10 minutes.</p></body></html>"
+_f, _s, _body, _was = _mbx.unforward("Sulaiman Khydyr uulu <sulaiman.khydyruulu@duke.edu>", "FW: Security code for your application", _fwd_text, {"sk930@duke.edu"})
+check("mail: a forward whose text part is only the header block has no readable body", _body.strip() == "" and _was)
+_f2, _s2, _body2, _ = _mbx.unforward("Sulaiman Khydyr uulu <sulaiman.khydyruulu@duke.edu>", "FW: Security code for your application", _mbx.html_as_text(_fwd_html), {"sk930@duke.edu"})
+check("mail: the HTML part read as text yields the code", _mbx.extract_code(_s2 + " " + _body2) == "482913", (_s2, _body2))
+check("mail: html_as_text drops tags and decodes entities", _mbx.html_as_text("<p>a &amp; b</p><script>x()</script>") == "a & b")
+
 width = max(len(n) for n, _, _ in RESULTS)
 failed = 0
 for name, ok, detail in RESULTS:

@@ -97,6 +97,18 @@ def unforward(frm: str, subject: str, body: str, own: set[str] | None = None) ->
     return orig_from, orig_subject, (body or "")[cut:], True
 
 
+def html_as_text(html_src: str) -> str:
+    """The readable text of an HTML part: tags dropped, entities decoded,
+    block elements ending a line — enough for a code or a sender line."""
+    import html as _html
+    s = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", html_src or "")
+    s = re.sub(r"(?i)<br\s*/?>|</(p|div|tr|li|h\d)>", "\n", s)
+    s = re.sub(r"<[^>]+>", " ", s)
+    s = _html.unescape(s)
+    s = re.sub(r"[ \t\xa0]+", " ", s)
+    return re.sub(r"\n\s*\n+", "\n", s).strip()
+
+
 def extract_link(text: str, html: str = "") -> str | None:
     """The sign-in or continue link a message carries (the longest candidate
     that is not a footer link), or None."""
@@ -204,6 +216,11 @@ def _search_once(since: float, hints: list[str], require: list[str] | None = Non
             if when < floor:
                 continue
             frm, subject, body_text, _fwd = unforward(str(msg.get("From") or ""), str(msg.get("Subject") or ""), _body_text(msg), mine)
+            if not body_text.strip():
+                # Outlook forwards the original as HTML only: its text part is
+                # just the forward block, so the code must be read off the HTML.
+                frm, subject, body_text, _fwd = unforward(str(msg.get("From") or ""), str(msg.get("Subject") or ""),
+                                                          html_as_text(_body_html(msg)), mine)
             if need and not any(n in (frm + " " + subject).lower() for n in need):
                 continue
             text = subject + " " + frm + " " + body_text

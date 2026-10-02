@@ -2295,13 +2295,14 @@ async def _process_one(session: ApplySession, profile: Profile, entry: QueueEntr
     session.injection_notes = []
     if getattr(entry, "term", "") and not entry.term.lower().startswith("summer"):
         profile = profile.for_term(entry.term)  # winter / spring availability answers for a winter / spring posting
-        # The skeleton this kind of posting gets (resume/variants/*.yaml by
-        # search.resume_variants): a robotics posting is answered with the
-        # robotics résumé, an AI posting with the AI one; base.yaml otherwise.
-        o.resume_variant = profile.resume_variant_for(entry.title, entry.category) or "base"
-        profile = profile.for_resume_variant(entry.title, entry.category)
+    # The skeleton this kind of posting gets (resume/variants/*.yaml by
+    # search.resume_variants): a robotics posting is answered with the
+    # robotics résumé, an AI posting with the AI one; base.yaml otherwise.
+    variant = profile.resume_variant_for(entry.title, getattr(entry, "category", "")) or "base"
+    profile = profile.for_resume_variant(entry.title, getattr(entry, "category", ""))
     o = await _process_one_inner(session, profile, entry, out_dir, shots_dir, apply_once, state, dry_run,
                                  judge_gate=judge_gate, approved=approved)
+    o.resume_variant = variant
     notes = list(dict.fromkeys(session.injection_notes))
     if notes:
         o.flags = list(o.flags) + [f"third-party text addressed an automated reader and was removed ({len(notes)}): " + " | ".join(notes[:6])]
