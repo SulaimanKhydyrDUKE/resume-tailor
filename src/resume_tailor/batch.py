@@ -577,9 +577,17 @@ async def _create_account(session: ApplySession, profile: Profile) -> str:
         return True
 
     async def press(pattern: str) -> bool:
-        buttons = await session.buttons()
-        btn = next((b for b in buttons if not b.get("disabled") and re.search(pattern, b.get("text", ""), re.I) and b.get("type") == "submit"), None) \
-            or next((b for b in buttons if not b.get("disabled") and re.search(pattern, b.get("text", ""), re.I)), None)
+        # The dialog's own submit before anything else by that name: Workday's
+        # sign-in dialog has a "Sign In" submit inside its form and a "Sign
+        # In" nav button outside it, and its create-account dialog a "Create
+        # Account" submit beside a "Sign In" link that would toggle the
+        # dialog away. Inside the form and a submit; then a submit; then
+        # inside the form; then whatever matches.
+        buttons = [b for b in await session.buttons() if not b.get("disabled") and re.search(pattern, b.get("text", ""), re.I)]
+        btn = (next((b for b in buttons if b.get("type") == "submit" and b.get("in_form")), None)
+               or next((b for b in buttons if b.get("type") == "submit"), None)
+               or next((b for b in buttons if b.get("in_form")), None)
+               or (buttons[0] if buttons else None))
         if btn is None:
             return False
         baseline = await session._fields_present()
@@ -635,7 +643,11 @@ async def _create_account(session: ApplySession, profile: Profile) -> str:
             if not still or await _code_fields(session) or await _link_wall(session):
                 return "email_step"
     if not any(f.get("type") == "password" and re.search(r"verify|confirm|re-?enter", f.get("label") or "", re.I) for f in fields):
-        await click_text(r"create (an )?account|sign up|register|new user")
+        if await click_text(r"create (an )?account|sign up|register|new user"):
+            # The toggle swapped the dialog (Workday: sign-in → create account,
+            # with its Verify New Password and consent box): read it afresh,
+            # or the sign-in branch below runs on the wrong form.
+            fields = await session.describe_form()
     debug = bool(os.environ.get("RESUME_TAILOR_DEBUG"))
 
     def note(msg: str) -> None:
