@@ -30,6 +30,7 @@ class QueueEntry:
     location: str = ""  # the listing's location(s); decides which address applies
     source: str = ""    # where the listing came from ("Simplify", "instagram:<page>", "added by hand")
     term: str = ""      # the term the listing is for ("Summer 2027", "Winter 2027", …); decides the availability answers
+    category: str = ""  # the list's category ("Software Engineering", "AI/ML/Data", …), for the skeleton variant
 
     @property
     def has_source(self) -> bool:

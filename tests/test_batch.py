@@ -1252,6 +1252,30 @@ check("consent: a text-message consent paragraph is recognised",
       bool(_TEXT_CONSENT.search("Check Yes or No to indicate your agreement to receive text message updates from Tive Inc regarding your job application. Frequency may vary."))
       and bool(_TEXT_CONSENT.search("Do you consent to receive SMS notifications?")) and not _TEXT_CONSENT.search("Do you agree to the terms of service?"))
 
+
+# --- skeleton variants: which résumé a posting gets ---------------------------
+from resume_tailor.profile import Profile as _PV
+_vrules = {"search": {"resume_variants": {"fde": ["forward deployed"], "robotics": ["robotics", "robot", "ros", "drone"],
+                                           "mobile_ar": ["android", "ar", "vr"], "ai_engineer": ["ai", "ml", "machine learning"],
+                                           "swe": ["software engineer", "backend"], "ghost": ["quant"]}}}
+_vfiles = {"fde": {"roles": [{"id": "exp0", "base": ["f"]}]}, "robotics": {"roles": [{"id": "exp0", "base": ["r"]}]},
+           "mobile_ar": {"roles": [{"id": "exp0", "base": ["m"]}]}, "ai_engineer": {"roles": [{"id": "exp0", "base": ["a"]}]},
+           "swe": {"roles": [{"id": "exp0", "base": ["s"]}]}}
+_vp = _PV(career=_career, answers=_vrules, root=Path("."), base_resume={"roles": [{"id": "exp0", "base": ["base"]}]}, base_variants=_vfiles)
+check("variants: a robotics title gets the robotics skeleton", _vp.resume_variant_for("Robotics Software Intern", "Software Engineering") == "robotics")
+check("variants: the list's category counts too", _vp.resume_variant_for("Research Intern", "AI/ML/Data") == "ai_engineer")
+check("variants: whole words only — 'ar' is not in 'architecture', 'ai' is not in 'train'",
+      _vp.resume_variant_for("Architecture Intern", "") == "" and _vp.resume_variant_for("Train Systems Intern", "") == "")
+check("variants: the first matching rule wins", _vp.resume_variant_for("Forward Deployed AI Engineer Intern", "") == "fde")
+check("variants: a plain software title gets the swe skeleton", _vp.resume_variant_for("Software Engineer Intern - Summer 2027", "") == "swe")
+check("variants: no match means the base skeleton", _vp.resume_variant_for("Technology Analyst Intern", "") == "" and _vp.for_resume_variant("Technology Analyst Intern") is _vp)
+check("variants: a rule naming a variant with no file is ignored", _vp.resume_variant_for("Quant Intern", "") == "")
+check("variants: the chosen profile carries that skeleton and keeps the record",
+      _vp.for_resume_variant("Android Intern").base_resume["roles"][0]["base"] == ["m"] and _vp.for_resume_variant("Android Intern").career is _career)
+check("variants: the per-term profile keeps the variants", _vp.for_term("Winter 2027").base_variants is _vfiles)
+_vq = QueueEntry(id="x", url="https://e.example/j", title="Drone Autonomy Intern", category="Software Engineering")
+check("variants: queue entries carry the list's category", _vq.category == "Software Engineering")
+
 width = max(len(n) for n, _, _ in RESULTS)
 failed = 0
 for name, ok, detail in RESULTS:

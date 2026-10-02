@@ -141,6 +141,7 @@ class Outcome:
     worker: str = ""  # which parallel loop handled it ("0".."3", "fresh"), for the dashboard
     flags: list = field(default_factory=list)  # e.g. third-party text aimed at an automated reader was found and removed (untrusted.py)
     url: str = ""  # the posting actually opened — a jobright link resolves to the employer's own page (see _resolve_jobright)
+    resume_variant: str = ""  # which skeleton the résumé was built on: "base" or a resume/variants/<name>.yaml
 
 
 # Bumped whenever the résumé composer or renderer changes in a way that makes
@@ -159,7 +160,9 @@ class Outcome:
 #     commented out (the user, 2026-09-12 evening); a cached PDF still prints one.
 #  8: the header's e-mail is sulaiman.khydyruulu@duke.edu (the user, 2026-09-28);
 #     earlier PDFs print the Gmail address.
-RESUME_VERSION = 8
+#  9: the skeleton was replaced (2026-10-02 résumés) and variants chosen per posting
+#     (resume/variants/*.yaml); every earlier PDF is on the old wording.
+RESUME_VERSION = 9
 
 
 # Wording that says a control is not the one that sends the application,
@@ -2292,6 +2295,11 @@ async def _process_one(session: ApplySession, profile: Profile, entry: QueueEntr
     session.injection_notes = []
     if getattr(entry, "term", "") and not entry.term.lower().startswith("summer"):
         profile = profile.for_term(entry.term)  # winter / spring availability answers for a winter / spring posting
+        # The skeleton this kind of posting gets (resume/variants/*.yaml by
+        # search.resume_variants): a robotics posting is answered with the
+        # robotics résumé, an AI posting with the AI one; base.yaml otherwise.
+        o.resume_variant = profile.resume_variant_for(entry.title, entry.category) or "base"
+        profile = profile.for_resume_variant(entry.title, entry.category)
     o = await _process_one_inner(session, profile, entry, out_dir, shots_dir, apply_once, state, dry_run,
                                  judge_gate=judge_gate, approved=approved)
     notes = list(dict.fromkeys(session.injection_notes))

@@ -205,6 +205,8 @@ your words where a rewording fails. The `jake` style renders the LaTeX
 résumé look. See `~/.resume-tailor/resume/base.yaml` for the shape; roles are
 named by their `exp` id in `career.yaml` order.
 
+Several skeletons: put more under `~/.resume-tailor/resume/variants/<name>.yaml` (the same shape as `base.yaml`; `resume-tailor skeleton draft file.pdf` transcribes a PDF into it) and list in `answers.yaml → search.resume_variants` which words in a posting's title or category pick which one — `{robotics: [robot, ros, drone], ai_engineer: [ai, ml, llm]}`. The first rule that matches wins; a posting that matches none gets `base.yaml`. The attempt records which skeleton it used (`resume_variant`).
+
 You get a PDF plus a report: positioning, hard-requirement coverage, gaps the
 posting asks for that you do not cover, and any claim the audit could not trace
 back to your record. **Read the unsupported-claims list before sending
