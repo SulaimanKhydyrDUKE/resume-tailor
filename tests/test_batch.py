@@ -801,6 +801,13 @@ check("blocker: 'verify you are human' is a wall even with fields present",
 check("blocker: a password field without a file input is a login wall",
       blocker_verdict([{"type": "email"}, {"type": "password"}], "Sign in to continue") == "login_required")
 check("blocker: no fields at all is no form", blocker_verdict([], "Loading...") == "no_form_found")
+_wd_wall_text = ("Skip to main content Sign In Home Search for Jobs Back to Job Posting Summer Intern - Software Developer "
+                 "current step 1 of 6 Create Account/Sign In step 2 of 6 My Information step 3 of 6 My Experience")
+_wd_wall_controls = ["Sign In", "Home", "Search for Jobs", "main menu", "Back to Job Posting", "Sign in with Apple", "Sign in with Google", "Sign in with email"]
+check("blocker: Workday's step-1 Create Account/Sign In page is a login wall even before any Apply click",
+      blocker_verdict([], _wd_wall_text, "https://x.wd1.myworkdayjobs.com/en-US/x/job/a/b_R1/apply/applyManually", False, _wd_wall_controls) == "login_required")
+check("blocker: a posting page with an Apply control beside its Sign In is not a wall",
+      blocker_verdict([], "Software Engineer Intern. Apply. Sign In. Home.", "https://x.wd1.myworkdayjobs.com/en-US/x/job/a/b_R1", False, ["Apply", "Sign In", "Home"]) == "no_form_found")
 check("blocker: Workday's already-applied page, signed in, is not a missing form",
       blocker_verdict([], "Software Engineering Intern - Summer 2027 You've already applied for this job. View My Applications",
                       "https://x.wd5.myworkdayjobs.com/en-US/careers/job/Chicago/SWE-Intern", after_apply=True) == "already_applied")
