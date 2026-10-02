@@ -2422,94 +2422,111 @@ async def _process_one_inner(session: ApplySession, profile: Profile, entry: Que
         # user is told about in the record.
         apply_below_bar = True
 
-    prev = state.done.get(entry.id) or {}
-    # A cached resume and verdict stand only when the verdict was a pass at
-    # today's bar: a posting the judges turned down is judged again on a
-    # forced retry, not waved through on the strength of having been looked at.
-    cached = (prev.get("pdf") if prev.get("fit") and prev.get("pdf") and Path(prev["pdf"]).is_file()
-              and prev.get("status") in RETRYABLE and int(prev.get("resume_version") or 0) >= RESUME_VERSION
-              and judge.cached_scores_ok(prev.get("fit", ""), min_score)
-              else None)
     o.resume_version = RESUME_VERSION
-    if cached:
-        # A retry. The resume and both judges' verdicts stand from the last
-        # attempt; only the form is tried again, since the answer bank may have
-        # grown in between.
-        pdf_path = Path(cached)
-        o.role = prev.get("role") or entry.title
-        o.company = prev.get("company") or entry.company_hint
-        o.pdf, o.fit, o.coverage = cached, prev["fit"], prev.get("coverage") or {}
-        o.revisions = int(prev.get("revisions") or 0)
-    else:
-        # Tailor, judge, and — when a judge holds — revise from the judges'
-        # notes and judge again, up to `max_revisions` times, keeping the best
-        # draft. A disqualifier (citizenship, degree level, graduation window)
-        # ends it early: no rewrite meets those.
-        best = None  # (weakest score, result, verdicts, fit_ok)
-        revision = None
-        job_spec = None
-        for round_no in range(max_revisions + 1):
-            _now("tailoring the résumé" if not round_no else f"revising the résumé (round {round_no})", entry)
-            try:
-                result = await tailor(profile, jd_text, out_dir=out_dir, label=entry.id, revision=revision,
-                                      variant=f"-r{round_no}" if round_no else "", job=job_spec)
-            except Exception as e:
-                if best is not None:
+    pdf_path: Path | None = None
+    judged = False
+
+    async def fit_and_resume() -> Outcome | None:
+        """The résumé and the two judges — the model calls of an attempt. Run
+        only once the form is known to be reachable (or there is no form to
+        open), so a login wall, a captcha or a vanished posting costs no
+        tokens; and before an account is made on a portal, so no account is
+        left behind for a posting the judges would turn down. Returns the
+        outcome that ends the attempt, or None to go on."""
+        nonlocal pdf_path, judged
+        judged = True
+        prev = state.done.get(entry.id) or {}
+        # A cached resume and verdict stand only when the verdict was a pass at
+        # today's bar: a posting the judges turned down is judged again on a
+        # forced retry, not waved through on the strength of having been looked at.
+        cached = (prev.get("pdf") if prev.get("fit") and prev.get("pdf") and Path(prev["pdf"]).is_file()
+                  and prev.get("status") in RETRYABLE and int(prev.get("resume_version") or 0) >= RESUME_VERSION
+                  and judge.cached_scores_ok(prev.get("fit", ""), min_score)
+                  else None)
+        o.resume_version = RESUME_VERSION
+        if cached:
+            # A retry. The resume and both judges' verdicts stand from the last
+            # attempt; only the form is tried again, since the answer bank may have
+            # grown in between.
+            pdf_path = Path(cached)
+            o.role = prev.get("role") or entry.title
+            o.company = prev.get("company") or entry.company_hint
+            o.pdf, o.fit, o.coverage = cached, prev["fit"], prev.get("coverage") or {}
+            o.revisions = int(prev.get("revisions") or 0)
+        else:
+            # Tailor, judge, and — when a judge holds — revise from the judges'
+            # notes and judge again, up to `max_revisions` times, keeping the best
+            # draft. A disqualifier (citizenship, degree level, graduation window)
+            # ends it early: no rewrite meets those.
+            best = None  # (weakest score, result, verdicts, fit_ok)
+            revision = None
+            job_spec = None
+            for round_no in range(max_revisions + 1):
+                _now("tailoring the résumé" if not round_no else f"revising the résumé (round {round_no})", entry)
+                try:
+                    result = await tailor(profile, jd_text, out_dir=out_dir, label=entry.id, revision=revision,
+                                          variant=f"-r{round_no}" if round_no else "", job=job_spec)
+                except Exception as e:
+                    if best is not None:
+                        break
+                    o.status, o.detail = "error", f"tailoring failed: {e}"
+                    return o
+                job_spec = result.job
+                if round_no == 0:
+                    o.role, o.company = result.job.role_title, result.job.company or entry.company_hint
+                    if profile.blacklisted(o.company):
+                        o.status, o.detail = "skipped", f"{o.company} is on your company blacklist"
+                        return o
+                    if apply_once and o.company and state.has_applied(o.company):
+                        o.status, o.detail = "skipped", f"already applied at {o.company} (apply_once_at_company)"
+                        return o
+                    if apply_once and o.company and state.held_at(o.company, except_id=entry.id):
+                        o.status, o.detail = "skipped", f"another posting at {o.company} is awaiting your approval (apply_once_at_company)"
+                        return o
+                    if result.roles_included == 0:
+                        o.status, o.detail = "skipped", "no experience survived selection and audit for this posting — poor fit"
+                        return o
+                # Two independent match judges, both of which must pass before
+                # anything is submitted. Judged on the PDF's extracted text — what a
+                # recruiter's tools will actually read — against the posting.
+                _now("judging the résumé", entry)
+                try:
+                    fit_ok, verdicts = await judge.two_independent(
+                        jd_text, extract_pdf_text(result.pdf_path), profile.applicant_facts(), min_score=min_score)
+                except Exception as e:
+                    if best is not None:
+                        break
+                    o.status, o.detail = "error", f"fit judging failed: {e}"
+                    return o
+                score = judge.weakest(verdicts)
+                if best is None or score > best[0]:
+                    best = (score, result, verdicts, fit_ok)
+                if fit_ok or judge.disqualified(verdicts) or round_no == max_revisions:
                     break
-                o.status, o.detail = "error", f"tailoring failed: {e}"
+                revision = judge.revision_notes(verdicts)
+                o.revisions = round_no + 1
+            score, result, verdicts, fit_ok = best
+            o.pdf, o.coverage = str(result.pdf_path), result.coverage
+            pdf_path = result.pdf_path
+            # The résumé lint: a PDF whose text layer lost a bullet, the GPA, the
+            # city or the graduation year is held for a look, never sent.
+            lint = [v for v in (result.render_violations or [])
+                    if v.startswith(("[clipped]", "[leading-punctuation]", "[missing-in-pdf]"))]
+            if lint:
+                o.status, o.detail = "needs_review", "résumé lint: " + "; ".join(v[:160] for v in lint[:3])
                 return o
-            job_spec = result.job
-            if round_no == 0:
-                o.role, o.company = result.job.role_title, result.job.company or entry.company_hint
-                if profile.blacklisted(o.company):
-                    o.status, o.detail = "skipped", f"{o.company} is on your company blacklist"
+            o.fit = judge.summarize(verdicts, min_score) + (f" (revised ×{o.revisions})" if o.revisions else "")
+            if not fit_ok and judge_gate:
+                if judge.disqualified(verdicts) or not apply_below_bar:
+                    o.status, o.detail = "fit_rejected", judge.reasons(verdicts, min_score)
                     return o
-                if apply_once and o.company and state.has_applied(o.company):
-                    o.status, o.detail = "skipped", f"already applied at {o.company} (apply_once_at_company)"
-                    return o
-                if apply_once and o.company and state.held_at(o.company, except_id=entry.id):
-                    o.status, o.detail = "skipped", f"another posting at {o.company} is awaiting your approval (apply_once_at_company)"
-                    return o
-                if result.roles_included == 0:
-                    o.status, o.detail = "skipped", "no experience survived selection and audit for this posting — poor fit"
-                    return o
-            # Two independent match judges, both of which must pass before
-            # anything is submitted. Judged on the PDF's extracted text — what a
-            # recruiter's tools will actually read — against the posting.
-            _now("judging the résumé", entry)
-            try:
-                fit_ok, verdicts = await judge.two_independent(
-                    jd_text, extract_pdf_text(result.pdf_path), profile.applicant_facts(), min_score=min_score)
-            except Exception as e:
-                if best is not None:
-                    break
-                o.status, o.detail = "error", f"fit judging failed: {e}"
-                return o
-            score = judge.weakest(verdicts)
-            if best is None or score > best[0]:
-                best = (score, result, verdicts, fit_ok)
-            if fit_ok or judge.disqualified(verdicts) or round_no == max_revisions:
-                break
-            revision = judge.revision_notes(verdicts)
-            o.revisions = round_no + 1
-        score, result, verdicts, fit_ok = best
-        o.pdf, o.coverage = str(result.pdf_path), result.coverage
-        pdf_path = result.pdf_path
-        # The résumé lint: a PDF whose text layer lost a bullet, the GPA, the
-        # city or the graduation year is held for a look, never sent.
-        lint = [v for v in (result.render_violations or [])
-                if v.startswith(("[clipped]", "[leading-punctuation]", "[missing-in-pdf]"))]
-        if lint:
-            o.status, o.detail = "needs_review", "résumé lint: " + "; ".join(v[:160] for v in lint[:3])
-            return o
-        o.fit = judge.summarize(verdicts, min_score) + (f" (revised ×{o.revisions})" if o.revisions else "")
-        if not fit_ok and judge_gate:
-            if judge.disqualified(verdicts) or not apply_below_bar:
-                o.status, o.detail = "fit_rejected", judge.reasons(verdicts, min_score)
-                return o
-            o.fit += " — applied below the bar"
+                o.fit += " — applied below the bar"
+        return None
 
     if not entry.apply_url:
+        verdict = await fit_and_resume()
+        if verdict is not None:
+            return verdict
         o.status, o.detail = "tailored_only", "resume generated; no apply URL was given, so nothing was submitted"
         return o
 
@@ -2539,7 +2556,11 @@ async def _process_one_inner(session: ApplySession, profile: Profile, entry: Que
 
     if blocker == "login_required" and _accounts_allowed(profile, _page_url(session) or apply_url, apply_url):
         # A portal the user told us to make an account on (Workday): create
-        # it, or sign in if an earlier attempt already did, and go on.
+        # it, or sign in if an earlier attempt already did, and go on — but
+        # the judges first, so no account is made for a posting they reject.
+        verdict = await fit_and_resume()
+        if verdict is not None:
+            return verdict
         _now("creating the site account", entry, url=apply_url)
         try:
             how = await _create_account(session, profile)
@@ -2608,6 +2629,11 @@ async def _process_one_inner(session: ApplySession, profile: Profile, entry: Que
         o.status, o.detail = "needs_review", "no application form was found on this page"
         return o
 
+    if not judged:
+        # The form is on the page: now the résumé and the judges.
+        verdict = await fit_and_resume()
+        if verdict is not None:
+            return verdict
     _now("filling the form", entry, url=apply_url)
     form_started = time.time()
     try:
