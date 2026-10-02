@@ -31,7 +31,7 @@ from .planner import Decision
 from .profile import Profile, gpa_answer, sponsorship_answer
 from .render import extract_pdf_text
 from .queue import QueueEntry, RunState, company_key, load_queue
-from .tailor import tailor
+from .tailor import tailor, fixed_pdf_path
 
 # Outcomes that are worth re-attempting on a later run without --retry-all —
 # transient errors and the two blockers a human can actually clear in between
@@ -162,7 +162,9 @@ class Outcome:
 #     earlier PDFs print the Gmail address.
 #  9: the skeleton was replaced (2026-10-02 résumés) and variants chosen per posting
 #     (resume/variants/*.yaml); every earlier PDF is on the old wording.
-RESUME_VERSION = 9
+# 10: the user's own PDFs are sent as they are (`pdf:` in the skeleton) — no rewording,
+#     no re-rendering; a retry on an older, reworded PDF swaps it for the fixed one.
+RESUME_VERSION = 10
 
 
 # Wording that says a control is not the one that sends the application,
@@ -2405,6 +2407,8 @@ async def _process_one_inner(session: ApplySession, profile: Profile, entry: Que
     search = profile.answers.get("search", {}) or {}
     min_score = search.get("min_judge_score") or judge.PASS_SCORE  # one number, or {judge name: score}
     max_revisions = int(search.get("max_revisions") if search.get("max_revisions") is not None else 2)
+    if fixed_pdf_path(profile):
+        max_revisions = 0  # the résumé is sent as written: nothing to revise from the judges' notes
     # The user's rule: a score below the bar earns the résumé its revisions,
     # then the application goes in anyway. Only an eligibility barrier —
     # citizenship, clearance, degree level, graduation window — still stops it.
