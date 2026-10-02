@@ -2813,12 +2813,18 @@ def blocker_verdict(fields: list[dict], text: str, url: str = "", after_apply: b
         return "bot_check"
     if any(f.get("type") == "password" for f in fields) and not any(f.get("type") == "file" for f in fields):
         return "login_required"
-    if controls is not None and after_apply and len(fields) <= 3 and not _looks_like_application(fields):
+    if controls is not None and len(fields) <= 3 and not _looks_like_application(fields):
         # Nothing but sign-in routes to press (Workday's "Sign in with
-        # Google / LinkedIn / email" wall), and no way on without one.
+        # Google / LinkedIn / email" wall), and no way on without one. The
+        # apply address itself lands on that wall on many tenants — "Create
+        # Account/Sign In, step 1 of 6" with no Apply control to click — so
+        # an explicit "Sign in with …" route, or that step title, counts
+        # before any Apply click too.
         signin = [c for c in controls if _SIGNIN_TEXT.search(c)]
         onward = [c for c in controls if re.match(r"^\s*(next|continue|save (and|&) continue|apply|submit)\b", c, re.I)]
-        if signin and not onward:
+        routes = [c for c in controls if re.search(r"\bsign in with\b", c, re.I)]
+        wall_step = re.search(r"create (an )?account\s*/\s*sign in|create account or sign in|step 1 of \d+\s*create account", text) is not None
+        if signin and not onward and (after_apply or routes or wall_step):
             return "login_required"
     if not fields or (not after_apply and not _looks_like_application(fields)):
         if any(p in text for p in _APPLIED_PHRASES):

@@ -801,6 +801,13 @@ check("blocker: 'verify you are human' is a wall even with fields present",
 check("blocker: a password field without a file input is a login wall",
       blocker_verdict([{"type": "email"}, {"type": "password"}], "Sign in to continue") == "login_required")
 check("blocker: no fields at all is no form", blocker_verdict([], "Loading...") == "no_form_found")
+_wd_wall_text = ("Skip to main content Sign In Home Search for Jobs Back to Job Posting Summer Intern - Software Developer "
+                 "current step 1 of 6 Create Account/Sign In step 2 of 6 My Information step 3 of 6 My Experience")
+_wd_wall_controls = ["Sign In", "Home", "Search for Jobs", "main menu", "Back to Job Posting", "Sign in with Apple", "Sign in with Google", "Sign in with email"]
+check("blocker: Workday's step-1 Create Account/Sign In page is a login wall even before any Apply click",
+      blocker_verdict([], _wd_wall_text, "https://x.wd1.myworkdayjobs.com/en-US/x/job/a/b_R1/apply/applyManually", False, _wd_wall_controls) == "login_required")
+check("blocker: a posting page with an Apply control beside its Sign In is not a wall",
+      blocker_verdict([], "Software Engineer Intern. Apply. Sign In. Home.", "https://x.wd1.myworkdayjobs.com/en-US/x/job/a/b_R1", False, ["Apply", "Sign In", "Home"]) == "no_form_found")
 check("blocker: Workday's already-applied page, signed in, is not a missing form",
       blocker_verdict([], "Software Engineering Intern - Summer 2027 You've already applied for this job. View My Applications",
                       "https://x.wd5.myworkdayjobs.com/en-US/careers/job/Chicago/SWE-Intern", after_apply=True) == "already_applied")
@@ -1251,6 +1258,41 @@ check("consent: the bank's text-message entry answers the paragraph, in the opti
 check("consent: a text-message consent paragraph is recognised",
       bool(_TEXT_CONSENT.search("Check Yes or No to indicate your agreement to receive text message updates from Tive Inc regarding your job application. Frequency may vary."))
       and bool(_TEXT_CONSENT.search("Do you consent to receive SMS notifications?")) and not _TEXT_CONSENT.search("Do you agree to the terms of service?"))
+
+
+# --- skeleton variants: which résumé a posting gets ---------------------------
+from resume_tailor.profile import Profile as _PV
+_vrules = {"search": {"resume_variants": {"fde": ["forward deployed"], "robotics": ["robotics", "robot", "ros", "drone"],
+                                           "mobile_ar": ["android", "ar", "vr"], "ai_engineer": ["ai", "ml", "machine learning"],
+                                           "swe": ["software engineer", "backend"], "ghost": ["quant"]}}}
+_vfiles = {"fde": {"roles": [{"id": "exp0", "base": ["f"]}]}, "robotics": {"roles": [{"id": "exp0", "base": ["r"]}]},
+           "mobile_ar": {"roles": [{"id": "exp0", "base": ["m"]}]}, "ai_engineer": {"roles": [{"id": "exp0", "base": ["a"]}]},
+           "swe": {"roles": [{"id": "exp0", "base": ["s"]}]}}
+_vp = _PV(career=_career, answers=_vrules, root=Path("."), base_resume={"roles": [{"id": "exp0", "base": ["base"]}]}, base_variants=_vfiles)
+check("variants: a robotics title gets the robotics skeleton", _vp.resume_variant_for("Robotics Software Intern", "Software Engineering") == "robotics")
+check("variants: the list's category counts too", _vp.resume_variant_for("Research Intern", "AI/ML/Data") == "ai_engineer")
+check("variants: whole words only — 'ar' is not in 'architecture', 'ai' is not in 'train'",
+      _vp.resume_variant_for("Architecture Intern", "") == "" and _vp.resume_variant_for("Train Systems Intern", "") == "")
+check("variants: the first matching rule wins", _vp.resume_variant_for("Forward Deployed AI Engineer Intern", "") == "fde")
+check("variants: a plain software title gets the swe skeleton", _vp.resume_variant_for("Software Engineer Intern - Summer 2027", "") == "swe")
+check("variants: no match means the base skeleton", _vp.resume_variant_for("Technology Analyst Intern", "") == "" and _vp.for_resume_variant("Technology Analyst Intern") is _vp)
+check("variants: a rule naming a variant with no file is ignored", _vp.resume_variant_for("Quant Intern", "") == "")
+check("variants: the chosen profile carries that skeleton and keeps the record",
+      _vp.for_resume_variant("Android Intern").base_resume["roles"][0]["base"] == ["m"] and _vp.for_resume_variant("Android Intern").career is _career)
+check("variants: the per-term profile keeps the variants", _vp.for_term("Winter 2027").base_variants is _vfiles)
+_vq = QueueEntry(id="x", url="https://e.example/j", title="Drone Autonomy Intern", category="Software Engineering")
+check("variants: queue entries carry the list's category", _vq.category == "Software Engineering")
+
+
+# --- forwarded code mails whose text part is only the forward block ---------
+from resume_tailor import mailbox as _mbx
+_fwd_text = "\n\nFrom: Greenhouse <no-reply@us.greenhouse-mail.io>\nSent: Friday, October 2, 2026 6:57 AM\nTo: Sulaiman <sk930@duke.edu>\nSubject: Security code for your application\n\n"
+_fwd_html = "<html><body><div>From: Greenhouse &lt;no-reply@us.greenhouse-mail.io&gt;<br>Subject: Security code for your application</div><p>Your security code is <b>482913</b>. It expires in 10 minutes.</p></body></html>"
+_f, _s, _body, _was = _mbx.unforward("Sulaiman Khydyr uulu <sulaiman.khydyruulu@duke.edu>", "FW: Security code for your application", _fwd_text, {"sk930@duke.edu"})
+check("mail: a forward whose text part is only the header block has no readable body", _body.strip() == "" and _was)
+_f2, _s2, _body2, _ = _mbx.unforward("Sulaiman Khydyr uulu <sulaiman.khydyruulu@duke.edu>", "FW: Security code for your application", _mbx.html_as_text(_fwd_html), {"sk930@duke.edu"})
+check("mail: the HTML part read as text yields the code", _mbx.extract_code(_s2 + " " + _body2) == "482913", (_s2, _body2))
+check("mail: html_as_text drops tags and decodes entities", _mbx.html_as_text("<p>a &amp; b</p><script>x()</script>") == "a & b")
 
 width = max(len(n) for n, _, _ in RESULTS)
 failed = 0

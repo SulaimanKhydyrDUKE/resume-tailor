@@ -153,6 +153,20 @@ async def main():
     ans2, _ = profile.lookup("What is your favourite colour?")
     check("answer bank miss returns None", ans2 is None)
 
+    # A skeleton that names a PDF: the file goes as it is — copied under the
+    # upload name, text layer read for coverage — with no drafting, no audit.
+    before = calls["n"]
+    fixed_src = result.pdf_path
+    profile_fixed = Profile(career=CAREER, answers=ANSWERS, root=Path("/tmp"),
+                            base_resume={"pdf": str(fixed_src), "file_name": "Ada_fixed.pdf", "roles": []})
+    fixed = await T.tailor(profile_fixed, "a" * 500, out_dir="output")
+    check("fixed PDF: sent under the upload name", fixed.pdf_path.name == "Ada_fixed.pdf", str(fixed.pdf_path))
+    check("fixed PDF: byte-for-byte the user's file", fixed.pdf_path.read_bytes() == fixed_src.read_bytes())
+    check("fixed PDF: nothing drafted or audited", calls["n"] == before and fixed.html == "", str(calls["n"] - before))
+    check("fixed PDF: coverage still scored from its text layer", isinstance(fixed.coverage, dict) and "hard_requirements_pct" in fixed.coverage, fixed.coverage)
+    check("fixed PDF: a relative path resolves under the profile's resume/ directory",
+          T.fixed_pdf_path(Profile(career=CAREER, answers=ANSWERS, root=Path("/tmp/prof"), base_resume={"pdf": "variants/x.pdf"})) == Path("/tmp/prof/resume/variants/x.pdf"))
+
     width = max(len(n) for n, _, _ in checks)
     failed = 0
     for name, ok, detail in checks:

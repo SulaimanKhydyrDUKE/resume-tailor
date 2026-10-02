@@ -578,6 +578,7 @@ def to_entry(listing: dict) -> QueueEntry:
         location=", ".join(str(l) for l in (listing.get("locations") or [])),
         source=str(listing.get("source") or ""),
         term=entry_term(listing),
+        category=str(listing.get("category") or ""),
     )
 
 

@@ -109,6 +109,10 @@ search:
   # jobright.ai rows link to jobright itself, which wants a sign-in before it
   # shows the employer's page; set true once the tool's browser is signed in.
   jobright_account: false
+  # Résumé skeleton variants: resume/variants/<name>.yaml, each shaped like
+  # resume/base.yaml. A posting gets the first variant whose words appear in
+  # its title or list category (whole words, any case); none → base.yaml.
+  resume_variants: {}                  # e.g. {robotics: [robot, ros, drone], ai_engineer: [ai, ml, llm]}
   # Sites to sign into by hand once with `resume-tailor setup-logins`, on top
   # of the built-in three (Google, jobright.ai, TikTok careers): a URL, or
   # {name, url, host, cookie, check} — `cookie` a regex for the cookie name
