@@ -9,6 +9,8 @@ work_authorization:
   default_region: "us"                 # which region an unqualified "require sponsorship?" refers to
   us_work_authorization: ""            # "Yes" / "No"
   legally_allowed_to_work_in_us: ""
+  unrestricted_employment_authorization: ""   # "Yes" / "No" — the "any employer, unlimited duration" wording
+  authorized_to_work_in_the_job_posting_country: ""   # "Yes" / "No" — a Yes/No, not a country name
   requires_us_visa: ""
   requires_us_sponsorship: ""
   eu_work_authorization: ""
