@@ -412,10 +412,19 @@ the mail and Instagram lanes, which only read, keep running.
 resume-tailor skeleton draft resume.pdf   # the same transcription from the terminal, printed as JSON; nothing written
 ```
 
-If the loop is going to run overnight, keep the machine awake
-(`caffeinate -d -i -s` on a Mac) and plugged in; a supervisor script that
-restarts `start` when `status` no longer says `watch: running` is worth the
-five lines.
+To keep the loop running while you are away, put a supervisor script at
+`~/.resume-tailor/overnight.sh` (one that runs `start` and relaunches
+whatever stops; the dashboard's Start button runs it) and then
+
+```bash
+resume-tailor autostart on       # a launchd agent: starts it now, at every login, and within a minute of it dying
+resume-tailor autostart status   # off = remove it
+```
+
+Stop on the dashboard still holds it off (the agent is disabled until Start).
+The script's own `caffeinate` prevents idle sleep; a closed lid or a dead
+battery does not, so the machine stays plugged in and open — or the whole
+thing runs on a small always-on machine instead.
 
 ## How a form gets answered
 

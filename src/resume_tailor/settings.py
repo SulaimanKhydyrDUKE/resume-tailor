@@ -983,6 +983,12 @@ def stop_workers(profile_dir: Path = DEFAULT_PROFILE_DIR, stop_loop=None) -> dic
     from . import cli
 
     snap = workers_snapshot(profile_dir)
+    if launch_agent_path().is_file():
+        # Under launchd: boot the agent out (that ends the supervisor) and
+        # disable it, or KeepAlive relaunches within the minute and the next
+        # login starts it again. Start enables it back.
+        _launchctl("bootout", f"{_domain()}/{LAUNCHD_LABEL}")
+        _launchctl("disable", f"{_domain()}/{LAUNCHD_LABEL}")
     supervisor = _kill_pid_file(Path(profile_dir) / "overnight.pid")
     for _ in range(20):
         if not supervisor or _gone(supervisor):
@@ -1001,6 +1007,78 @@ def stop_workers(profile_dir: Path = DEFAULT_PROFILE_DIR, stop_loop=None) -> dic
 
 SUPERVISOR_SCRIPT = "overnight.sh"   # the owner's supervisor, beside the profile files, when there is one
 DEFAULT_WORKERS = 4
+LAUNCHD_LABEL = "com.resume-tailor.loop"
+
+
+def launch_agent_path() -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
+
+
+def _launchctl(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["launchctl", *args], capture_output=True, text=True, timeout=30)
+
+
+def _domain() -> str:
+    return f"gui/{os.getuid()}"
+
+
+def _plist(script: Path, out_dir: Path, profile_dir: Path) -> str:
+    log = Path(profile_dir) / "overnight.log"
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>{LAUNCHD_LABEL}</string>
+  <key>ProgramArguments</key><array><string>/bin/bash</string><string>{script}</string></array>
+  <key>WorkingDirectory</key><string>{Path(out_dir).parent}</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>60</integer>
+  <key>StandardOutPath</key><string>{log}</string>
+  <key>StandardErrorPath</key><string>{log}</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key><string>{Path.home()}</string>
+  </dict>
+</dict>
+</plist>
+"""
+
+
+def autostart(on: bool, out_dir: Path, profile_dir: Path = DEFAULT_PROFILE_DIR) -> dict:
+    """The loop as a launchd agent: `on` installs ~/Library/LaunchAgents/
+    com.resume-tailor.loop.plist, which runs the supervisor script at every
+    login and brings it back within a minute whenever it dies, and starts it
+    now; `off` stops it and removes the file. Stop and Start on the dashboard
+    stay in charge: Stop boots the agent out and disables it until Start
+    enables and bootstraps it again, so a stopped loop stays stopped across
+    a logout. Idle sleep is held off by the script's own caffeinate; a closed
+    lid or a power cut is not, so the machine stays plugged in and open."""
+    plist = launch_agent_path()
+    if not on:
+        if plist.is_file():
+            _launchctl("bootout", f"{_domain()}/{LAUNCHD_LABEL}")
+            plist.unlink()
+        return {"autostart": False, "note": "The launchd agent is removed. Start on the dashboard still runs the supervisor by hand."}
+    script = Path(profile_dir) / SUPERVISOR_SCRIPT
+    if not script.is_file():
+        raise ValueError(f"no supervisor script at {script}: autostart runs that script")
+    plist.parent.mkdir(parents=True, exist_ok=True)
+    plist.write_text(_plist(script, Path(out_dir), Path(profile_dir)))
+    _launchctl("enable", f"{_domain()}/{LAUNCHD_LABEL}")
+    r = _launchctl("bootstrap", _domain(), str(plist))
+    if r.returncode != 0:
+        r = _launchctl("kickstart", "-k", f"{_domain()}/{LAUNCHD_LABEL}")  # already loaded: restart it on the new file
+    return {"autostart": True, "plist": str(plist), "started": r.returncode == 0,
+            "note": "The loop now starts at every login and comes back on its own if it dies; Stop on the dashboard holds it off until Start."
+                    if r.returncode == 0 else f"the agent is installed but launchctl said: {(r.stderr or r.stdout).strip()[:160]}"}
+
+
+def autostart_status() -> dict:
+    plist = launch_agent_path()
+    loaded = plist.is_file() and _launchctl("print", f"{_domain()}/{LAUNCHD_LABEL}").returncode == 0
+    return {"installed": plist.is_file(), "loaded": loaded, "plist": str(plist)}
 
 
 def start_workers(out_dir: Path, profile_dir: Path = DEFAULT_PROFILE_DIR, workers: int | None = None) -> dict:
@@ -1016,6 +1094,14 @@ def start_workers(out_dir: Path, profile_dir: Path = DEFAULT_PROFILE_DIR, worker
         return {"started": False, "note": f"Already running: {snap['alive']} worker{'' if snap['alive'] == 1 else 's'}"
                 + (" and the fresh lane" if snap["fresh"] else "") + (" under the supervisor" if snap["supervisor_pid"] else "") + "."}
     script = Path(profile_dir) / SUPERVISOR_SCRIPT
+    if launch_agent_path().is_file() and script.is_file():
+        _launchctl("enable", f"{_domain()}/{LAUNCHD_LABEL}")
+        r = _launchctl("bootstrap", _domain(), str(launch_agent_path()))
+        if r.returncode != 0:
+            r = _launchctl("kickstart", f"{_domain()}/{LAUNCHD_LABEL}")
+        return {"started": r.returncode == 0, "launcher": "launchd",
+                "note": "The supervisor is up under launchd; the workers and the fresh lane follow within a moment, and it comes back on its own if it dies."
+                        if r.returncode == 0 else f"launchctl said: {(r.stderr or r.stdout).strip()[:160]}"}
     if script.is_file():
         with open(Path(profile_dir) / "overnight.log", "a", buffering=1) as log:
             proc = subprocess.Popen(["bash", str(script)], cwd=Path(out_dir).parent, stdout=log, stderr=subprocess.STDOUT,

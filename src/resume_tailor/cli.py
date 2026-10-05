@@ -527,6 +527,28 @@ def cmd_audit(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_autostart(args: argparse.Namespace) -> int:
+    from . import settings
+
+    if args.state == "status":
+        st = settings.autostart_status()
+        if not st["installed"]:
+            state = "not installed"
+        elif st["loaded"]:
+            state = "installed and loaded"
+        else:
+            state = "installed, not loaded (Stop was pressed, or not since this login)"
+        print(f"{state} — {st['plist']}")
+        return 0
+    try:
+        res = settings.autostart(args.state == "on", PROJECT_ROOT / args.out)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    print(res["note"])
+    return 0
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     from collections import Counter
 
@@ -1027,6 +1049,11 @@ def main() -> int:
     pau.add_argument("--out", default="output")
     pau.add_argument("--profile", default=None)
     pau.set_defaults(func=cmd_audit)
+    pas = sub.add_parser("autostart", help="run the loop as a launchd agent: on = start now, at every login, and back within a minute "
+                                           "if it dies (Stop on the dashboard still holds it off); off = remove; status")
+    pas.add_argument("state", choices=["on", "off", "status"])
+    pas.add_argument("--out", default="output")
+    pas.set_defaults(func=cmd_autostart)
 
     args = p.parse_args()
     return args.func(args)
