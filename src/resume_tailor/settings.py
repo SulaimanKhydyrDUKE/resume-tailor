@@ -17,7 +17,10 @@ the rules are in one place:
   its last four characters; the page sends a new value or nothing.
 - Nothing here restarts a worker on its own. Workers read these files once
   at start, so a save tells the page "restart to apply" and the restart is a
-  separate, explicit action (`restart_workers`).
+  separate, explicit action (`restart_workers`). The loop as a whole is
+  switched off and on the same way (`stop_workers`, `start_workers`): the
+  page's Stop button ends the supervisor, every worker and the fresh lane;
+  Start launches the owner's supervisor script again, or `start` without one.
 - The résumé intake (`draft_skeleton`) is the one model call: it transcribes
   an uploaded résumé into the skeleton's shape for the owner to check and
   save. Every number in the draft is verified against the uploaded text and
@@ -30,6 +33,7 @@ import io
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -938,6 +942,94 @@ def restart_workers(out_dir: Path, profile_dir: Path = DEFAULT_PROFILE_DIR) -> d
                           env=child_env(), timeout=120)
     return {"stopped": snap["alive"], "relaunch": "started", "workers": n, "fresh": snap["fresh"], "exit": proc.returncode,
             "note": f"Started {n} worker{'s' if n > 1 else ''}{' and the fresh lane' if snap['fresh'] else ''} on the new settings."}
+
+
+def _kill_pid_file(path: Path, sig: int = signal.SIGTERM) -> int | None:
+    """Signal the process a pid file names, if it still lives, and drop the
+    file either way: left behind, a stale one reads as "running"."""
+    pid = _pid_alive(path)
+    if pid:
+        try:
+            os.kill(pid, sig)
+        except OSError:
+            pid = None
+    path.unlink(missing_ok=True)
+    return pid
+
+
+def _gone(pid: int) -> bool:
+    try:
+        os.waitpid(pid, os.WNOHANG)  # reap it when it was started from this process
+    except ChildProcessError:
+        pass
+    try:
+        os.kill(pid, 0)
+        return False
+    except OSError:
+        return True
+
+
+def stop_workers(profile_dir: Path = DEFAULT_PROFILE_DIR, stop_loop=None) -> dict:
+    """The Stop button: stop applying. The overnight supervisor goes first and
+    is waited for (alive, it relaunches within five minutes whatever is
+    stopped next, and mid-`start` it could spawn a worker after the stop),
+    then every worker and the fresh lane through `resume-tailor stop`, then
+    the caffeinate that kept the machine awake for it. The mail and Instagram
+    lanes only read the inbox and the stories; they are left running.
+    `stop_loop` is the worker stop itself, replaceable by a test so no test
+    ever touches the real loop."""
+    import argparse
+
+    from . import cli
+
+    snap = workers_snapshot(profile_dir)
+    supervisor = _kill_pid_file(Path(profile_dir) / "overnight.pid")
+    for _ in range(20):
+        if not supervisor or _gone(supervisor):
+            break
+        time.sleep(0.25)
+    _kill_pid_file(Path(profile_dir) / "caffeinate.pid")
+    (stop_loop or (lambda: cli.cmd_stop(argparse.Namespace())))()
+    what = [f"{snap['alive']} worker{'' if snap['alive'] == 1 else 's'}"]
+    if snap["fresh"]:
+        what.append("the fresh lane")
+    if supervisor:
+        what.append("the supervisor")
+    return {"stopped": snap["alive"], "fresh": snap["fresh"], "supervisor": bool(supervisor),
+            "note": "Stopped " + ", ".join(what) + ". Nothing applies until Start."}
+
+
+SUPERVISOR_SCRIPT = "overnight.sh"   # the owner's supervisor, beside the profile files, when there is one
+DEFAULT_WORKERS = 4
+
+
+def start_workers(out_dir: Path, profile_dir: Path = DEFAULT_PROFILE_DIR, workers: int | None = None) -> dict:
+    """The Start button. With the owner's supervisor script beside the profile
+    files (`overnight.sh`: the workers, the fresh lane, the mail and Instagram
+    lanes, each relaunched when it dies) it is started detached, logging to
+    `overnight.log`, and does the rest; without one, `resume-tailor start`
+    runs the given number of workers and the fresh lane. Pressed while the
+    loop runs it changes nothing: the supervisor's first act is to stop the
+    workers, which would abandon an application in progress."""
+    snap = workers_snapshot(profile_dir)
+    if snap["supervisor_pid"] or snap["alive"]:
+        return {"started": False, "note": f"Already running: {snap['alive']} worker{'' if snap['alive'] == 1 else 's'}"
+                + (" and the fresh lane" if snap["fresh"] else "") + (" under the supervisor" if snap["supervisor_pid"] else "") + "."}
+    script = Path(profile_dir) / SUPERVISOR_SCRIPT
+    if script.is_file():
+        with open(Path(profile_dir) / "overnight.log", "a", buffering=1) as log:
+            proc = subprocess.Popen(["bash", str(script)], cwd=Path(out_dir).parent, stdout=log, stderr=subprocess.STDOUT,
+                                    stdin=subprocess.DEVNULL, env=child_env(), start_new_session=True)
+        return {"started": True, "launcher": "supervisor", "pid": proc.pid,
+                "note": "The supervisor is up; the workers and the fresh lane follow within a moment."}
+    n = max(1, workers or DEFAULT_WORKERS)
+    cmd = [sys.executable, "-m", "resume_tailor.cli", "start", "--workers", str(n), "--fresh", "--out", str(out_dir)]
+    with open(Path(profile_dir) / "watch.log", "a", buffering=1) as log:
+        proc = subprocess.run(cmd, cwd=Path(out_dir).parent, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                              env=child_env(), timeout=120)
+    ok = proc.returncode == 0
+    return {"started": ok, "launcher": "start", "workers": n, "exit": proc.returncode,
+            "note": f"Started {n} worker{'s' if n > 1 else ''} and the fresh lane." if ok else f"start exited {proc.returncode}; see watch.log."}
 
 
 def run_intake(upload: Path, out_dir: Path, profile_dir: Path = DEFAULT_PROFILE_DIR) -> dict:

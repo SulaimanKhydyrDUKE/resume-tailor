@@ -400,6 +400,13 @@ checked against the file's own text, and saved only when you press Save.
 Workers read these files when they start, so the tab says which files changed
 since and has a Restart button.
 
+The header carries a **Stop** button (also on the Workers tab and beside
+Restart): it ends the supervisor, every worker and the fresh lane, so nothing
+applies until **Start** is pressed, which launches `~/.resume-tailor/overnight.sh`
+if you keep a supervisor script there, or else `start --fresh`. An
+application in progress when you press Stop is abandoned and retried later;
+the mail and Instagram lanes, which only read, keep running.
+
 ```bash
 resume-tailor skeleton draft resume.pdf   # the same transcription from the terminal, printed as JSON; nothing written
 ```

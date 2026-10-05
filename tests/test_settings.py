@@ -240,6 +240,60 @@ os.utime(root / "watch-w0.pid", (1, 1))
 snap = S.workers_snapshot(root)
 check("workers snapshot: files newer than the workers' start are named", snap["alive"] == 1 and set(snap["stale"]) == {"env", "answers.yaml", "career.yaml", "resume/base.yaml"}, str(snap))
 
+# --- the Stop / Start buttons ---------------------------------------------------
+import subprocess
+import time
+
+(root / "watch-w0.pid").unlink()
+sup = subprocess.Popen(["sleep", "60"])           # stands in for the overnight supervisor
+caf = subprocess.Popen(["sleep", "60"])           # and for its caffeinate
+(root / "overnight.pid").write_text(str(sup.pid))
+(root / "caffeinate.pid").write_text(str(caf.pid))
+calls = []
+res = S.stop_workers(root, stop_loop=lambda: calls.append("stop"))
+for _ in range(40):
+    if sup.poll() is not None and caf.poll() is not None:
+        break
+    time.sleep(0.05)
+check("stop: the supervisor and its caffeinate are ended and their pid files dropped",
+      sup.poll() is not None and caf.poll() is not None and not (root / "overnight.pid").exists() and not (root / "caffeinate.pid").exists(), str(res))
+check("stop: the worker stop runs once, after the supervisor is gone, and the note says what stopped",
+      calls == ["stop"] and res["supervisor"] is True and "the supervisor" in res["note"] and res["stopped"] == 0, str(res))
+res = S.stop_workers(root, stop_loop=lambda: calls.append("stop"))
+check("stop: with nothing running it is harmless", res["supervisor"] is False and calls == ["stop", "stop"] and res["stopped"] == 0, str(res))
+
+(root / "overnight.pid").write_text(str(os.getpid()))
+res = S.start_workers(out, root)
+check("start: pressed while the supervisor lives, nothing is launched", res["started"] is False and "Already running" in res["note"], str(res))
+(root / "overnight.pid").unlink()
+(root / "watch-w0.pid").write_text(str(os.getpid()))
+res = S.start_workers(out, root)
+check("start: pressed while a worker lives, nothing is launched", res["started"] is False and "1 worker" in res["note"], str(res))
+(root / "watch-w0.pid").unlink()
+
+marker = root / "supervisor-ran"
+(root / "overnight.sh").write_text(f'#!/bin/bash\necho $$ > "{root}/overnight.pid"\necho "up $RESUME_TAILOR_MODEL $OPENAI_API_KEY" > "{marker}"\n')
+res = S.start_workers(out, root)
+for _ in range(100):
+    if marker.is_file():
+        break
+    time.sleep(0.05)
+check("start: the supervisor script beside the profile files is launched detached", res["started"] is True and res["launcher"] == "supervisor" and marker.is_file(), str(res))
+check("start: the supervisor reads the env file afresh — the tool variables of this process do not reach it",
+      marker.is_file() and marker.read_text().strip() == "up", marker.read_text() if marker.is_file() else "no marker")
+check("start: the supervisor wrote its own pid file and logs to overnight.log", (root / "overnight.pid").is_file() and (root / "overnight.log").is_file())
+(root / "overnight.pid").unlink(); (root / "overnight.sh").unlink()
+
+ran = []
+real_run = S.subprocess.run
+S.subprocess.run = lambda cmd, **kw: (ran.append(cmd), type("P", (), {"returncode": 0})())[1]
+try:
+    res = S.start_workers(out, root, workers=3)
+finally:
+    S.subprocess.run = real_run
+check("start: without a supervisor script, `start` runs the asked number of workers and the fresh lane",
+      res["started"] is True and res["launcher"] == "start" and len(ran) == 1 and ran[0][-5:] == ["--workers", "3", "--fresh", "--out", str(out)] and "resume_tailor.cli" in ran[0], str(ran))
+
 view = S.settings_view(out, root)
 check("settings view: every part present, no secret in it", set(view) >= {"env", "sources", "answers", "basics", "resume", "workers"} and "sk-ant-abcdefghijkl" not in json.dumps(view))
 
