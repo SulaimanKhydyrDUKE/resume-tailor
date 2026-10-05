@@ -107,12 +107,16 @@ _SOCIO = re.compile(r"household earner|free school meals|highest level of educat
 _LANG_SKILL = re.compile(r"language skills in|proficiency in (reading|writing|speaking)|indicate your language|skills in reading, written and spoken", re.I)
 _CONSENT_WORDS = re.compile(r"\b(certify|agree|confirm|accura|consent|acknowledge|terms|policy|code of conduct|i understand|scheduling tool|"
                             r"please note|reminder that|we will only consider|first preference|one (role|position|application)s? at a time)\b", re.I)
-# "How did you hear about us?" — and not "if you were referred, name the
-# person", which is a different question with a factual answer.
-_SOURCE_FIELD = re.compile(
-    r"\b(how|where|when) (did you|you)( first| originally)? (hear|heard|find|found|learn|learned)( about| of)?\b"
-    r"|\b(what|which) source\b.*\b(hear|heard|learn|learned|find|found)\b|\bsource of (this )?application\b"
-    r"|\breferral source\b|\bapplication source\b", re.I)
+# "How did you hear about us?" (planner.SOURCE_Q, which its rails share).
+_SOURCE_FIELD = planner.SOURCE_Q
+# A year, a season, a place or a requirement in a question makes it about the
+# candidate's situation — "I confirm my availability for a Summer 2026
+# internship", "candidates must be in Omaha, NE for the summer; can you meet
+# this requirement?" — not a statement to acknowledge, whatever consent words
+# it carries. Those went out as Yes under the acknowledgement rules (2026-09).
+_SITUATION = re.compile(r"\b(19|20)\d\d\b|\b(summer|spring|fall|autumn|winter)\b|\b(requirement|must (be|live|reside|work)|"
+                        r"able to (meet|work|commute|relocate|be)|availability|available (to|for|on|from)|located in|live within|live in|"
+                        r"reside|relocat|commut|on-?site|in-?person)\b", re.I)
 # In order of preference: the postings come from a job board (the SimplifyJobs
 # list), so those options are true; "Other" is true of anything; LinkedIn is not.
 # Honest, generic answers to "how did you hear about us", in order of
@@ -1098,6 +1102,70 @@ async def _add_entries_for(session: ApplySession, errors: list[str]) -> int:
     return pressed
 
 
+# Relocation and location requirements: yes to anything (the user, 2026-10-05:
+# "just get me to the interview"). The one answer about the candidate's
+# situation that comes from a standing instruction rather than the bank:
+# willingness or ability to relocate, move, commute, work on site or in
+# person, be in the posting's city for the term, or live in its area takes
+# the affirmative option. Two limits keep it honest: a question about where
+# the candidate lives *now* with only Yes/No on offer is a fact, not a
+# willingness, and stays with the bank; "do you need relocation assistance?"
+# takes the no-assistance option, since the instruction is to be easy to
+# hire, not to make demands.
+_RELOCATION_Q = re.compile(
+    r"relocat|\bmov(e|ing) to\b|commut|\blive within\b|\bservice areas?\b|\bgeographic(al)? (areas?|preference)|"
+    r"\b(on-?site|in-?person|hybrid|in[- ]office|at (the|our) office)\b|"
+    r"\b(must|required to|need to|expected to|have to|able to|willing to|prepared to|ready to|open to|comfortable) "
+    r"(be|live|reside|work|report|be located|be based|be present|stay)\b|"
+    r"\b(be|located|based|present|living|residing|working) (in|near|within|at) \w[\w .,'-]{0,40}\b(for|during|by|throughout) "
+    r"(the |this |our )?(summer|internship|term|program|duration|start)\b", re.I)
+_RELOCATION_ASSIST_Q = re.compile(r"\b(require|need|request|expect|want|seek)\b[^?]{0,40}\brelocation (assistance|support|package|reimbursement|benefits?|help|stipend)", re.I)
+_RESIDENCE_NOW_Q = re.compile(r"\b(do you|are you) (currently |presently |now )?(live|living|reside|residing|located|based)\b", re.I)
+_LOCATION_LIST_Q = re.compile(r"\b(list|which|what|select|indicate|name)\b", re.I)
+_NEG_OPTION = re.compile(r"\b(no|not|unable|cannot|can'?t|won'?t|unwilling|decline|n/?a|none)\b", re.I)
+_NO_ASSIST_OPTION = re.compile(r"^\s*no\b|not (need|require|request)|without|own expense|on my own|not needed|not required", re.I)
+_YES_OPTION_PATTERNS = (
+    r"relocat|\bmove\b|\bmoving\b|\bwilling\b|\bopen to\b|\bable to\b|\bready to\b|\bi can\b|\bi will\b",
+    r"^\s*yes\b",
+    r"^\s*(i (agree|confirm|understand|accept|acknowledge)|agree|confirm|understood|accept)\b",
+)
+
+
+def relocation_answer(label: str, options: list[str], field: dict | None = None, widget: str = "") -> str | None:
+    """The affirmative answer to a relocation or location-requirement
+    question, in the option's own words; None when the question is not one,
+    asks only where the candidate lives today, or offers nothing affirmative."""
+    label = label or ""
+    if not _RELOCATION_Q.search(label):
+        return None
+    opts = [str(o) for o in (options or []) if str(o).strip()]
+    kind = (field or {}).get("type") or ""
+    if _RELOCATION_ASSIST_Q.search(label):
+        for o in opts:
+            if _NO_ASSIST_OPTION.search(o):
+                return o
+        return "no" if kind in ("checkbox", "yesno") and not opts else None
+    if _RESIDENCE_NOW_Q.search(label) and not any(re.search(r"relocat|\bmov(e|ing)\b|willing", o, re.I) for o in opts):
+        return None
+    if opts:
+        for pat in _YES_OPTION_PATTERNS:
+            for o in opts:
+                if re.search(pat, o, re.I) and not _NEG_OPTION.search(o):
+                    return o
+        if widget == "checkboxes" and _LOCATION_LIST_Q.search(label):
+            # "Indicate every location you would relocate to": all of them.
+            chosen = [o for o in opts if not _NEG_OPTION.search(o)]
+            return " | ".join(chosen) if chosen else None
+        return None
+    if kind in ("checkbox", "yesno"):
+        return "yes"
+    if kind in ("text", "textarea", ""):
+        if _LOCATION_LIST_Q.search(label):
+            return "Any of the role's locations; open to relocating anywhere in the United States."
+        return "Yes, open to relocating for this role."
+    return None
+
+
 def _autofill_boilerplate(label: str, field: dict, options: list[str] | None = None) -> str | None:
     """The narrow, explicitly-enumerated set of required fields safe to answer
     without a profile match, because the answer carries no factual claim about
@@ -1119,14 +1187,14 @@ def _autofill_boilerplate(label: str, field: dict, options: list[str] | None = N
         part = m.group(3).lower()
         return datetime.now().strftime("%m" if part == "month" else "%d" if part == "day" else "%Y")
     if (field.get("type") == "checkbox" and not opts_now and field.get("required") and "?" not in label and not _NO_BANK.search(label)
-            and not _SELF_ID.search(" ".join((label, field.get("option_label") or "", field.get("section") or "")))):
+            and not _SITUATION.search(label) and not _SELF_ID.search(" ".join((label, field.get("option_label") or "", field.get("section") or "")))):
         # A required lone checkbox under a statement — "Your application will
         # be reviewed for one position at a time" — is an acknowledgement box,
         # whatever words it uses. Nobody puts a real question behind one.
         # Never a box on a self-identification form: "Yes, I have a
         # disability" is a claim about the candidate, not an acknowledgement.
         return "yes"
-    if _CONSENT_WORDS.search(label):
+    if _CONSENT_WORDS.search(label) and not _SITUATION.search(label):
         opts = opts_now
         if field.get("type") in ("checkbox", "yesno") and not opts:
             return "yes"
@@ -1161,7 +1229,8 @@ def _autofill_boilerplate(label: str, field: dict, options: list[str] | None = N
         for opt in opts_now:
             if re.search(r"^\s*(none|no (knowledge|proficiency|ability|skills?)|not (applicable|proficient)|n/?a|0)\b", opt, re.I):
                 return opt
-    if field.get("required") and opts_now and "?" not in label and all(_ACK_OPTION.match(o) for o in opts_now if o.strip()):
+    if (field.get("required") and opts_now and "?" not in label and not _SITUATION.search(label)
+            and all(_ACK_OPTION.match(o) for o in opts_now if o.strip())):
         # A statement to acknowledge ("Reminder: you may apply for one role
         # only") whose every option is a form of yes: the only answer there is.
         return next(o for o in opts_now if o.strip())
@@ -1188,7 +1257,10 @@ def _autofill_boilerplate(label: str, field: dict, options: list[str] | None = N
             # option present, in order of preference.
             for want in _GENERIC_SOURCE_OPTIONS:
                 for opt in opts:
-                    if want in opt.strip().lower():
+                    # "Job Posting (LinkedIn, Indeed…)" is a category; "LinkedIn
+                    # Job Postings" is a site the candidate did not use.
+                    plain = re.sub(r"\([^)]*\)", " ", opt).strip().lower()
+                    if want in plain and not planner.NAMED_SOURCE.search(plain):
                         return opt
             return None
         if field.get("type") in ("text", "textarea", "") and not field.get("combobox"):
@@ -1234,6 +1306,10 @@ def _bank(profile: Profile, question: str, field: dict | None = None, options: l
     if answer is None or key is None:
         return None, None
     if planner.THIRD_PARTY.search(question) and key.startswith(planner.SELF_KEYS):
+        return None, None
+    if planner.CITIZENSHIP_Q.search(question) and not key.startswith("work_authorization."):
+        # "Please list all countries of citizenship" once reached
+        # address.country: the mailing address says nothing about citizenship.
         return None, None
     if key == "about.recent_reading" and not re.search(r"\b(read|reading|book|paper|article|podcast|blog)\b", question, re.I):
         # "What is the most impressive thing you've built with AI?" is not a
@@ -1604,6 +1680,11 @@ async def _decide(question: str, field: dict, options: list[str], profile: Profi
         sources[(section, question)] = "answer bank: work_authorization.requires_us_sponsorship"
         decided[key] = picked
         return picked
+    reloc = relocation_answer(question, options, field, widget)
+    if reloc is not None and _fits(reloc, field, options):
+        sources[(section, question)] = "standing rule: relocation, yes to anything"
+        decided[key] = reloc
+        return reloc
     if _CURRENT_EMPLOYER.search(question) and not options:
         # A text box or an employer search picker: "Duke University" is
         # searched and chosen like any other picker value.

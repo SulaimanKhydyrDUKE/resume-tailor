@@ -13,6 +13,11 @@ work_authorization:
   authorized_to_work_in_the_job_posting_country: ""   # "Yes" / "No" — a Yes/No, not a country name
   requires_us_visa: ""
   requires_us_sponsorship: ""
+  require_sponsorship_for_employment_visa_status: ""   # the commonest wording, for a text box; option lists are decided by the sponsorship rule
+  require_immigration_sponsorship: ""
+  only_temporarily_authorized_to_work: ""   # "No" for a citizen or permanent resident
+  citizenship_status: ""               # e.g. "U.S. citizen" / "U.S. lawful permanent resident (green card holder)"; the sponsorship rule reads it
+  country_of_citizenship: ""           # the planner refuses a citizenship question that rests on nothing here
   eu_work_authorization: ""
   legally_allowed_to_work_in_eu: ""
   requires_eu_visa: ""
@@ -87,6 +92,7 @@ search:
   company_blacklist: []
   title_blacklist: []
   location_blacklist: []
+  host_blacklist: [linkedin.com]       # sites never opened or applied through: LinkedIn forbids automation and the account matters
   apply_once_at_company: true
   # Discovery: which terms to apply for, and two safety filters. A title that
   # names another term outright ("... - Fall 2026") is left out whatever the

@@ -133,6 +133,21 @@ _SYSTEM = (
 # from the record is a fair basis for them.
 # Facts the profile alone may answer: eligibility and credentials. Reasoning
 # never fills these in; the answer bank holds the candidate's truth for them.
+# Citizenship, nationality, passport, visa or residency status: the bank's
+# to state (a work_authorization entry) or nobody's. "United States" once
+# went out for "list all countries of citizenship" on reasoning alone.
+CITIZENSHIP_Q = re.compile(r"citizen|nationalit|\bnationals? of\b|country of (origin|birth|residen)|passport|visa (status|type|category|class)|"
+                           r"immigration status|permanent resident|green card|residency status|lawful(ly)? (admitted|resident)", re.I)
+# "How did you hear about us?" — and not "if you were referred, name the
+# person", which is a different question with a factual answer.
+SOURCE_Q = re.compile(
+    r"\b(how|where|when) (did you|you)( first| originally)? (hear|heard|find|found|learn|learned)( about| of)?\b"
+    r"|\b(what|which) source\b.*\b(hear|heard|learn|learned|find|found)\b|\bsource of (this )?application\b"
+    r"|\breferral source\b|\bapplication source\b", re.I)
+# A source the candidate did not use: the postings come from a public list,
+# so a named site, a person or an event is a claim, whoever picks it.
+NAMED_SOURCE = re.compile(r"linkedin|indeed|glassdoor|handshake|ziprecruiter|monster|\bdice\b|facebook|instagram|twitter|tiktok|youtube|reddit|"
+                          r"referr|friend|employee|recruiter|agency|headhunter|career fair|professor|alumn|newspaper|radio", re.I)
 _HARD_FACT = re.compile(r"citizen|clearance|authori[sz]|sponsor|visa|degree|gpa|graduat|felon|convict|licen[cs]e|"
                         r"certif|security|passport|national", re.I)
 _PREFERENCE = re.compile(r"prefer|preference|which (team|program|track|platform|division|group|area)|team choice|"
@@ -361,6 +376,16 @@ def rails(answers: list[FieldAnswer], questions: list[dict], profile: Profile) -
             company = _title_to_company(profile, answer)
             if company:
                 answer = company
+        if CITIZENSHIP_Q.search(q["label"]) and not any(b.startswith("work_authorization.") for b in known):
+            # Citizenship, nationality, passport, visa or residency status
+            # rests on a work_authorization entry or on nothing.
+            decisions[key] = Decision(None, reason="citizenship or visa status must rest on a work_authorization entry")
+            continue
+        if SOURCE_Q.search(q["label"]) and NAMED_SOURCE.search(re.sub(r"\([^)]*\)", " ", answer)):
+            # "How did you hear about us": a named site or person is a claim
+            # the postings' real source (a public list) does not support.
+            decisions[key] = Decision(None, reason="names a source the candidate did not use")
+            continue
         if GPA_Q.search(q["label"]) and not re.search(r"scale|out of what|maximum", q["label"], re.I):
             fixed = gpa_answer(profile, q["label"], q["options"])
             if fixed is not None:

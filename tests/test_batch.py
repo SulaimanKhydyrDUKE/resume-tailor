@@ -1294,6 +1294,67 @@ _f2, _s2, _body2, _ = _mbx.unforward("Sulaiman Khydyr uulu <sulaiman.khydyruulu@
 check("mail: the HTML part read as text yields the code", _mbx.extract_code(_s2 + " " + _body2) == "482913", (_s2, _body2))
 check("mail: html_as_text drops tags and decodes entities", _mbx.html_as_text("<p>a &amp; b</p><script>x()</script>") == "a & b")
 
+# --- relocation: yes to anything (the user, 2026-10-05) ------------------------------------
+from resume_tailor.batch import relocation_answer
+check("relocation: a willingness question takes Yes", relocation_answer("Are you willing to relocate for this role?*", ["Yes", "No"]) == "Yes")
+check("relocation: the option that says relocate beats a bare Yes",
+      relocation_answer("Do you currently reside in commutable proximity to our office?", ["I currently live within commuting distance", "I am willing to relocate before starting employment"]) == "I am willing to relocate before starting employment")
+check("relocation: 'able to work in the city without assistance' is a Yes",
+      relocation_answer("Are you able to work in the internship's city without relocation assistance?*", ["Yes", "No"]) == "Yes")
+check("relocation: a city-for-the-summer requirement is met",
+      relocation_answer("For this role, candidates must be in Omaha, NE for Summer 2026. Are you able to meet this requirement?", ["Yes", "No"]) == "Yes")
+check("relocation: a service-area requirement is met",
+      relocation_answer("It is a requirement that our interns live within our service areas of Rochester, Syracuse, Buffalo, Utica, or other approved areas. Do you meet this requirement?", ["Yes", "No"]) == "Yes")
+check("relocation: an on-site requirement is accepted",
+      relocation_answer("This role requires working onsite 5 days per week at our Mountain View office. Are you able to meet this requirement?", ["Yes", "No"]) == "Yes")
+check("relocation: 'do you need relocation assistance' takes the no-assistance option",
+      relocation_answer("Will you require relocation assistance?", ["Yes", "No"]) == "No"
+      and relocation_answer("Would you need to relocate for this role?", ["No", "Yes, but I am planning to relocate on my own", "Yes, I would need relocation assistance"]) == "Yes, but I am planning to relocate on my own")
+check("relocation: where the candidate lives now, with only Yes/No, is not a willingness question",
+      relocation_answer("Do you currently live in Austin, TX?", ["Yes", "No"]) is None)
+check("relocation: a list of places to relocate to takes every one",
+      relocation_answer("Please indicate all of the locations you would be interested in relocating to", ["New York, NY", "San Francisco, CA", "None of these"], {"type": "checkbox"}, "checkboxes") == "New York, NY | San Francisco, CA")
+check("relocation: a free-text 'open to relocation? list your cities' gets an open answer",
+      "open to relocating" in (relocation_answer("Are you open to relocation? If so, please list your geographical areas/cities of choice.*", [], {"type": "textarea"}) or ""))
+check("relocation: a lone required checkbox under an on-site statement is ticked",
+      relocation_answer("I understand this role is on-site in Durham, NC", [], {"type": "checkbox", "required": True}) == "yes")
+check("relocation: an unrelated question is left alone",
+      relocation_answer("Do you require any reasonable adjustments to participate in the recruitment process?", ["Yes", "No"]) is None
+      and relocation_answer("Preferred work location", ["Austin", "Denver"]) is None)
+# --- acknowledgement rules stay off situational questions; "how did you hear" never names a site ---
+check("boilerplate: a dated availability confirmation is not an acknowledgement",
+      _autofill_boilerplate("I confirm my availability for a Summer 2026 (May/June starts) internship*", {"type": "select", "required": True}, ["Yes", "No"]) is None)
+check("boilerplate: a city-for-the-summer requirement is not an acknowledgement",
+      _autofill_boilerplate("For this role, candidates must be in Omaha, NE for Summer 2026. Are you able to meet this requirement?", {"type": "radio", "required": True}, ["Yes", "No"]) is None)
+check("boilerplate: a plain terms box still is", _autofill_boilerplate("I agree to the privacy policy", {"type": "checkbox", "required": True}, []) == "yes")
+check("how did you hear: 'LinkedIn Job Postings' is a site, not a job board",
+      _autofill_boilerplate("How Did You Hear About Us?*", {"type": "select", "required": True}, ["LinkedIn Job Postings", "Indeed", "Company Website", "Referral"]) == "Company Website")
+check("how did you hear: a job-board category that lists sites in brackets is fine",
+      _autofill_boilerplate("Where did you hear about us?*", {"type": "select", "required": True}, ["Job Posting (LinkedIn, Indeed, Handshake, etc.)", "Employee Referral", "Career Fair"]) == "Job Posting (LinkedIn, Indeed, Handshake, etc.)")
+check("how did you hear: only named sites on offer → Other, else nothing",
+      _autofill_boilerplate("How did you hear about us?", {"type": "select", "required": True}, ["LinkedIn", "Indeed", "Referral", "Other"]) == "Other"
+      and _autofill_boilerplate("How did you hear about us?", {"type": "select", "required": True}, ["LinkedIn", "Indeed", "Referral"]) is None)
+# --- rails: citizenship rests on the bank; a named source is refused ---
+_cz = [
+    {"qid": "z1", "key": planner.question_key("Please list ALL countries of citizenship:", "text"), "label": "Please list ALL countries of citizenship:",
+     "section": "", "widget": "text", "options": [], "required": True, "maxlength": None, "hint": "", "bank": ""},
+    {"qid": "z2", "key": planner.question_key("Citizenship status", "select"), "label": "Citizenship status",
+     "section": "", "widget": "select", "options": ["U.S. citizen", "U.S. permanent resident", "Other"], "required": True, "maxlength": None, "hint": "", "bank": ""},
+    {"qid": "z3", "key": planner.question_key("How did you hear about us?", "select"), "label": "How did you hear about us?",
+     "section": "", "widget": "select", "options": ["LinkedIn", "Other"], "required": True, "maxlength": None, "hint": "", "bank": ""},
+]
+_cplan = planner.rails([
+    FieldAnswer(id="z1", answer="United States", basis=["reasoning"], skip=False, essay=False, reason="the candidate works in the US"),
+    FieldAnswer(id="z2", answer="U.S. permanent resident", basis=["work_authorization.requires_us_sponsorship"], skip=False, essay=False, reason="bank"),
+    FieldAnswer(id="z3", answer="LinkedIn", basis=["reasoning"], skip=False, essay=False, reason="profile link"),
+], _cz, _pl)
+check("bank: a citizenship question never takes the mailing address",
+      _bank(_pl, "Please list ALL countries of citizenship:", {"type": "text", "required": True}, [], strong=True) == (None, None)
+      and _bank(_pl, "State", {"type": "text", "required": True}, [], strong=True)[1] == "address.state")
+check("rails: a country of citizenship on reasoning alone is refused", _cplan[_cz[0]["key"]].answer is None and "citizenship" in _cplan[_cz[0]["key"]].reason)
+check("rails: a citizenship status resting on a work_authorization entry stands", _cplan[_cz[1]["key"]].answer == "U.S. permanent resident")
+check("rails: 'how did you hear: LinkedIn' is refused", _cplan[_cz[2]["key"]].answer is None and "source" in _cplan[_cz[2]["key"]].reason)
+
 width = max(len(n) for n, _, _ in RESULTS)
 failed = 0
 for name, ok, detail in RESULTS:

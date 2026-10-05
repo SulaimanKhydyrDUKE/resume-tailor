@@ -511,6 +511,22 @@ def cmd_stop(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_audit(args: argparse.Namespace) -> int:
+    from . import audit
+    from .queue import RunState
+
+    state = RunState.load(PROJECT_ROOT / args.out / "batch-state.json")
+    try:
+        profile = Profile.load(args.profile)
+    except ProfileError:
+        profile = None
+    rows = audit.audit_answers(state.done, profile)
+    applied = sum(1 for v in state.done.values() if v.get("status") == "applied")
+    print(audit.summary(rows, applied))
+    print(f"\nevery row: {audit.write_csv(rows, PROJECT_ROOT / args.out / 'answers-audit.csv')}")
+    return 0
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     from collections import Counter
 
@@ -1005,6 +1021,12 @@ def main() -> int:
     prv.add_argument("--out", default="output")
     prv.add_argument("--profile", help=f"profile directory (default {DEFAULT_PROFILE_DIR})")
     prv.set_defaults(func=lambda a: asyncio.run(_review(a)))
+
+    pau = sub.add_parser("audit-answers", help="every submitted answer worth a second look (authorization, sponsorship, citizenship, "
+                                              "relocation, dates, GPA, degree, 'how did you hear') → output/answers-audit.csv")
+    pau.add_argument("--out", default="output")
+    pau.add_argument("--profile", default=None)
+    pau.set_defaults(func=cmd_audit)
 
     args = p.parse_args()
     return args.func(args)

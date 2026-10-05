@@ -22,6 +22,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -153,6 +154,10 @@ def title_terms(title: str) -> set[str]:
 
 
 DEFAULT_CATEGORIES = ["software", "analyst", "ai/ml", "data", "product"]
+# Sites the tool never opens, whatever list a posting came from: filling
+# LinkedIn's forms by machine is against its rules, and that account is the
+# one the user needs for referrals and recruiters.
+DEFAULT_HOST_BLACKLIST = ["linkedin.com"]
 
 
 @dataclass
@@ -161,6 +166,7 @@ class Prefs:
     title_blacklist: list[str] = field(default_factory=list)
     company_blacklist: list[str] = field(default_factory=list)
     location_blacklist: list[str] = field(default_factory=list)
+    host_blacklist: list[str] = field(default_factory=lambda: list(DEFAULT_HOST_BLACKLIST))
     require_us: bool = True
     exclude_phd_only: bool = True
     apply_once_at_company: bool = True
@@ -191,6 +197,7 @@ class Prefs:
             title_blacklist=list(s.get("title_blacklist") or []),
             company_blacklist=list(s.get("company_blacklist") or []),
             location_blacklist=list(s.get("location_blacklist") or []),
+            host_blacklist=[str(h).lower() for h in (s["host_blacklist"] if s.get("host_blacklist") is not None else DEFAULT_HOST_BLACKLIST)],
             require_us=bool(s.get("require_us", True)),
             exclude_phd_only=bool(s.get("exclude_phd_only", True)),
             apply_once_at_company=_apply_once(s_all),
@@ -445,6 +452,10 @@ def evaluate(listing: dict, prefs: Prefs) -> str:
     """Empty string when the listing is worth applying to; otherwise why not."""
     if not listing.get("active", True):
         return "inactive"
+    host = urlsplit(listing.get("url") or "").netloc.lower()
+    if any(h and (host == h or host.endswith("." + h)) for h in prefs.host_blacklist):
+        # Before the hand-added branch: a LinkedIn link pasted in is still LinkedIn.
+        return "host blacklist"
     if listing.get("source") == "added by hand":
         # The user put this link in the pool themselves (`resume-tailor add`):
         # the title and category gates are for feeds, not for a choice made

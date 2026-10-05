@@ -381,6 +381,19 @@ check("by hand: the same role at the same company, applied to under a listing no
 check("by hand: a different role there still goes", "ig:other" in {e.id for e in _rsel})
 
 
+# --- LinkedIn is never opened --------------------------------------------------------------
+check("host blacklist: a linkedin.com posting is left out by default",
+      evaluate(L(url="https://www.linkedin.com/jobs/view/4472185634"), Prefs(max_posting_age_days=0)) == "host blacklist")
+check("host blacklist: a hand-added LinkedIn link is still LinkedIn",
+      evaluate(L(url="https://linkedin.com/jobs/view/1", source="added by hand"), Prefs(max_posting_age_days=0)) == "host blacklist")
+check("host blacklist: other hosts pass; a subdomain of a listed host does not",
+      evaluate(L(url="https://jobs.ashbyhq.com/x/y"), Prefs(max_posting_age_days=0)) != "host blacklist"
+      and evaluate(L(url="https://careers.linkedin.com/x"), Prefs(max_posting_age_days=0)) == "host blacklist")
+check("host blacklist: answers.yaml can widen or (knowingly) empty it",
+      Prefs.from_profile(type("P", (), {"answers": {"search": {"host_blacklist": ["linkedin.com", "example.org"]}}})()).host_blacklist == ["linkedin.com", "example.org"]
+      and Prefs.from_profile(type("P", (), {"answers": {"search": {"host_blacklist": []}}})()).host_blacklist == []
+      and Prefs.from_profile(type("P", (), {"answers": {"search": {}}})()).host_blacklist == ["linkedin.com"])
+
 width = max(len(n) for n, _, _ in RESULTS)
 failed = 0
 for name, ok, detail in RESULTS:

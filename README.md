@@ -292,6 +292,7 @@ collapse to one.
 
 ```bash
 resume-tailor discover                   # what it would apply to right now, and why the rest was left out
+resume-tailor audit-answers              # every submitted answer worth a second look (authorization, sponsorship, citizenship, dates, GPA…) → output/answers-audit.csv
 resume-tailor watch --once --dry-run     # one pass: tailor, fill, screenshot — never submit
 resume-tailor watch                      # every 30 min, apply to whatever is new; Ctrl-C stops it
 ```

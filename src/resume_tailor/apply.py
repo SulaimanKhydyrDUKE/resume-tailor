@@ -1164,6 +1164,8 @@ class ApplySession:
             return
         cookies: list[dict] = []
         for path in self.LOGINS_DIR.glob("*.json"):
+            if "linkedin" in path.name.lower():
+                continue  # LinkedIn's session never rides along: automation there is against its rules
             try:
                 cookies.extend(json.loads(path.read_text(encoding="utf-8")))
             except Exception:
