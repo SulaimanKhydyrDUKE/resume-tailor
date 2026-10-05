@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -64,6 +64,10 @@ class Profile:
     # The résumé skeleton every tailored résumé keeps (resume/base.yaml):
     # roles in order with their own bullets, projects, skills, honors.
     base_resume: dict | None = None
+    # Other skeletons (resume/variants/<name>.yaml): a robotics résumé, an AI
+    # one, a mobile one — chosen per posting by `search.resume_variants` in
+    # answers.yaml (see resume_variant_for); base.yaml stays the default.
+    base_variants: dict = field(default_factory=dict)
 
     @classmethod
     def load(cls, root: str | Path | None = None) -> "Profile":
@@ -75,12 +79,52 @@ class Profile:
                 base = _prune(yaml.safe_load(base_path.read_text(encoding="utf-8")) or {}) or None
             except yaml.YAMLError as e:
                 raise ProfileError(f"{base_path} is not valid YAML: {e}") from e
+        variants: dict[str, dict] = {}
+        vdir = root / "resume" / "variants"
+        if vdir.is_dir():
+            for vp in sorted(vdir.glob("*.yaml")):
+                try:
+                    v = _prune(yaml.safe_load(vp.read_text(encoding="utf-8")) or {}) or None
+                except yaml.YAMLError as e:
+                    raise ProfileError(f"{vp} is not valid YAML: {e}") from e
+                if v and v.get("roles"):
+                    variants[vp.stem] = v
         return cls(
             career=_prune(_load(root / "career.yaml")),
             answers=_prune(_load(root / "answers.yaml")),
             root=root,
             base_resume=base,
+            base_variants=variants,
         )
+
+    def resume_variant_for(self, title: str, category: str = "") -> str:
+        """Which skeleton variant a posting gets, by `search.resume_variants`
+        in answers.yaml: an ordered mapping of variant name → words, matched
+        as whole words (case-insensitive) against the posting's title and
+        the list's category. The first rule that matches names a variant
+        that exists under resume/variants/; otherwise '' — base.yaml."""
+        search = self.answers.get("search") if isinstance(self.answers.get("search"), dict) else {}
+        rules = search.get("resume_variants") if isinstance(search, dict) else None
+        if not isinstance(rules, dict) or not self.base_variants:
+            return ""
+        hay = f" {title or ''} {category or ''} ".lower()
+        for name, words in rules.items():
+            if name not in self.base_variants:
+                continue
+            for w in (words if isinstance(words, list) else [words]):
+                w = str(w or "").strip().lower()
+                if w and re.search(r"(?<![a-z0-9])" + re.escape(w) + r"(?![a-z0-9])", hay):
+                    return str(name)
+        return ""
+
+    def for_resume_variant(self, title: str, category: str = "") -> "Profile":
+        """This profile with the skeleton variant the posting calls for, or
+        itself when no rule matches."""
+        name = self.resume_variant_for(title, category)
+        if not name:
+            return self
+        return Profile(career=self.career, answers=self.answers, root=self.root,
+                       base_resume=self.base_variants[name], base_variants=self.base_variants)
 
     # --- career -----------------------------------------------------------
 
@@ -173,7 +217,7 @@ class Profile:
                 if re.search(rf"(?<![A-Za-z]){re.escape(term)}(?![A-Za-z])", text, flags):
                     merged = {**base, **{k: v for k, v in alt.items() if k != "when_location_matches"}}
                     merged.pop("alternates", None)
-                    return Profile(career=self.career, answers={**self.answers, "address": merged}, root=self.root,
+                    return Profile(career=self.career, answers={**self.answers, "address": merged}, root=self.root, base_variants=self.base_variants,
                                    base_resume=self.base_resume)
         return self
 
@@ -216,7 +260,7 @@ class Profile:
         answers = copy.deepcopy(self.answers)
         answers["availability"].update({k: v for k, v in override.items() if isinstance(v, (str, int, float, bool))})
         answers["availability"]["target_term"] = term
-        return Profile(career=self.career, answers=answers, root=self.root, base_resume=self.base_resume)
+        return Profile(career=self.career, answers=answers, root=self.root, base_resume=self.base_resume, base_variants=self.base_variants)
 
     def flat_answers(self) -> dict[str, str]:
         flat: dict[str, str] = {}

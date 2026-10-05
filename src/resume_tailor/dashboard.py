@@ -99,11 +99,13 @@ def watch_status(profile_dir: Path = DEFAULT_PROFILE_DIR) -> dict:
         processes.append({"worker": m.group(1) if m else "0", "pid": p, "alive": bool(p)})
     if (profile_dir / "fresh.pid").is_file():
         processes.append({"worker": "fresh", "pid": fresh_pid, "alive": bool(fresh_pid)})
+    supervisor = _alive(profile_dir / "overnight.pid") if (profile_dir / "overnight.pid").is_file() else None
     return {"running": running, "pid": pid if running else None, "last_pass": last_pass, "log_tail": tail,
             "pass_running": pass_running, "pass_pid": pass_pid, "workers": len(up), "workers_expected": len(worker_pids),
-            "processes": processes, "worker_logs": worker_logs, "fresh_running": bool(fresh_pid),
+            "processes": processes, "worker_logs": worker_logs, "fresh_running": bool(fresh_pid), "supervisor_running": bool(supervisor),
             "label": ("loop running" + workers_label + (" + fresh lane" if fresh_pid else "")) if running
-                     else ("retry pass running (the loop resumes when it ends)" if pass_running else "loop stopped")}
+                     else ("retry pass running (the loop resumes when it ends)" if pass_running
+                           else ("supervisor up; the workers follow in a moment" if supervisor else "loop stopped"))}
 
 
 def pool_status(out_dir: Path) -> dict:
@@ -561,6 +563,10 @@ class _Handler(BaseHTTPRequestHandler):
             return {"ok": True, **result}
         if action == "restart":
             return {"ok": True, **settings.restart_workers(self.out_dir)}
+        if action == "stop":
+            return {"ok": True, **settings.stop_workers()}
+        if action == "start":
+            return {"ok": True, **settings.start_workers(self.out_dir, workers=int(body.get("workers") or 0) or None)}
         raise ValueError(f"unknown settings action {action!r}")
 
     def do_GET(self):

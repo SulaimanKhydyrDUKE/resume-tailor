@@ -479,6 +479,46 @@ def resume_file_name(profile: Profile) -> str:
     return f"{stem}_resume.pdf"
 
 
+def fixed_pdf_path(profile: Profile) -> Path | None:
+    """The exact PDF a skeleton names (`pdf:` in resume/base.yaml or a
+    variant): sent as it is, never reworded or re-rendered. A relative path
+    is taken from the profile's resume/ directory."""
+    raw = str((profile.base_resume or {}).get("pdf") or "").strip()
+    if not raw:
+        return None
+    p = Path(raw).expanduser()
+    return p if p.is_absolute() else (Path(profile.root) / "resume" / p)
+
+
+def _send_fixed_pdf(profile: Profile, job: JobSpec, out_dir: str | Path, label: str, variant: str, say) -> TailorResult:
+    """The user's own PDF, copied under the upload name into the same place a
+    tailored one would go, with its text layer read for the judges and the
+    coverage score. Nothing is reworded: the user asked for the résumé as
+    they wrote it."""
+    import shutil
+
+    src = fixed_pdf_path(profile)
+    if src is None or not src.is_file():
+        raise FileNotFoundError(f"the skeleton names a PDF that is not there: {src}")
+    file_name = resume_file_name(profile)
+    slug = (re.sub(r"[^a-z0-9]+", "-", f"{job.company}-{job.role_title}".lower()).strip("-") or label) + variant
+    target = Path(out_dir) / "resumes" / slug / file_name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(src, target)
+    pdf_text = extract_pdf_text(target)
+    try:
+        from pypdf import PdfReader
+        pages = len(PdfReader(str(target)).pages)
+    except Exception:
+        pages = 1
+    say(f"sending {src.name} as it is — no rewording ({pages} page{'s' if pages != 1 else ''})")
+    selection = Selection(matches=[], role_plans=[], include_project_ids=[], gaps=[],
+                          positioning="the résumé as the applicant wrote it, sent unchanged")
+    return TailorResult(pdf_path=target, html="", job=job, selection=selection,
+                        coverage=score_coverage(job, pdf_text), pages=pages,
+                        roles_included=len((profile.base_resume or {}).get("roles") or []))
+
+
 async def _tailor_on_base(profile: Profile, job: JobSpec, out_dir: str | Path, label: str,
                           revision: str | None, variant: str, say) -> TailorResult:
     """The résumé on its skeleton (resume/base.yaml): the same roles in the
@@ -593,6 +633,8 @@ async def tailor(profile: Profile, job_description: str, style: str = "clean",
         job = await read_posting(job_description)
     say(f"{job.role_title}{' at ' + job.company if job.company else ''} — "
         f"{len(job.requirements)} requirements found; selecting evidence…")
+    if fixed_pdf_path(profile):
+        return _send_fixed_pdf(profile, job, out_dir, label, variant, say)
     if profile.base_resume:
         return await _tailor_on_base(profile, job, out_dir, label, revision, variant, say)
     selection = await select_evidence(profile, job, revision)

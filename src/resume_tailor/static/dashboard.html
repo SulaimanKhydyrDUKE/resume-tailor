@@ -187,6 +187,11 @@
   .btn.small { padding: 5px 12px; font-size: 12.5px; }
   .btn.warn { background: #f97316; border-color: #f97316; }
   .btn.warn:hover { background: #ea580c; border-color: #ea580c; }
+  .btn.danger { background: #dc2626; border-color: #dc2626; }
+  .btn.danger:hover { background: #b91c1c; border-color: #b91c1c; }
+  .loopctl { display: inline-flex; gap: 8px; align-items: center; font-size: 12.5px; }
+  .loopctl .ok { color: var(--accent-ink); }
+  .loopctl .bad { color: #b91c1c; }
   .btn:disabled { opacity: .5; cursor: default; }
   .sfoot { display: flex; align-items: center; gap: 12px; margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); flex-wrap: wrap; }
   .sfoot .note { color: var(--muted); font-size: 12.5px; }
@@ -501,18 +506,18 @@ function Flows({ flows }) {
 
 // One card per process the supervisor runs: what it is doing this minute,
 // its last outcomes, and the last lines it wrote to the log.
-function Workers({ data, onPick }) {
+function Workers({ data, onPick, reload }) {
   const w = data?.watch || {};
   const procs = w.processes || [];
   const nowBy = {};
   for (const n of data?.workers_now || []) nowBy[String(n.worker ?? "")] = n;
   const apps = data?.applications || [];
-  if (!procs.length) return <div className="empty">no workers are running (start the loop with overnight.sh)</div>;
+  if (!procs.length) return <div className="empty">{loopRunning(w) ? "the supervisor is up; the workers follow in a moment" : "no workers are running"}<div style={{ marginTop: 14 }}><LoopControls running={loopRunning(w)} onDone={reload} /></div></div>;
   return (
     <div>
       <div className="workers-head">
         <h3>Where each worker is</h3>
-        <span className="watch">{w.label}{data?.pool && data.pool.new != null ? ` · ${data.pool.new} postings waiting in the pool` : ""}</span>
+        <span className="watch">{w.label}{data?.pool && data.pool.new != null ? ` · ${data.pool.new} postings waiting in the pool` : ""} <LoopControls running={loopRunning(w)} onDone={reload} /></span>
       </div>
       <div className="workers">
         {procs.map(p => {
@@ -545,7 +550,7 @@ function Workers({ data, onPick }) {
   );
 }
 
-function Header({ data, err }) {
+function Header({ data, err, reload }) {
   const w = data?.watch || {};
   const busy = (data?.workers_now || []).filter(n => n.stage && n.stage !== "idle").length;
   const procs = (w.processes || []).filter(p => p.alive).length;
@@ -560,6 +565,7 @@ function Header({ data, err }) {
         {data ? <span> · refreshed {new Date(data.generated_at).toLocaleTimeString()}</span> : null}
         {err ? <span className="err"> · {err}</span> : null}
       </span>
+      {data ? <LoopControls running={loopRunning(w)} onDone={reload} /> : null}
     </header>
   );
 }
@@ -1056,6 +1062,27 @@ function useSave() {
   };
   return [st, run];
 }
+// The Stop / Start button: the whole loop off (supervisor, every worker, the
+// fresh lane) or on again. `onDone` re-reads the page so the header follows at once.
+function LoopControls({ running, onDone }) {
+  const [st, run] = useSave();
+  const after = async (url) => { const r = await postJson(url); if (onDone) onDone(); return r; };
+  const doStop = () => {
+    if (!window.confirm("Stop applying? Every worker, the fresh lane and the supervisor stop now; an application in progress is abandoned and retried later.")) return;
+    run(() => after("/api/settings/stop"), r => r.note || "Stopped");
+  };
+  const doStart = () => run(() => after("/api/settings/start"), r => r.note || "Started");
+  return (
+    <span className="loopctl">
+      {running
+        ? <button className="btn small danger" disabled={st.busy} onClick={doStop}>{st.busy ? "Stopping…" : "Stop"}</button>
+        : <button className="btn small" disabled={st.busy} onClick={doStart}>{st.busy ? "Starting…" : "Start"}</button>}
+      {st.ok ? <span className="ok">{st.ok}</span> : null}
+      {st.err ? <span className="bad">{st.err}</span> : null}
+    </span>
+  );
+}
+const loopRunning = w => !!(w && (w.running || w.fresh_running || w.supervisor_running || w.pass_running));
 
 function Field({ label, help, code, wide, children }) {
   return <div className={"f" + (wide ? " wide" : "")}><label>{label}{code ? <code>{code}</code> : null}</label>{children}{help ? <div className="help">{help}</div> : null}</div>;
@@ -1608,7 +1635,10 @@ function SettingsTab() {
           <div><b>{w.alive} of {w.workers}</b> worker{w.workers === 1 ? "" : "s"} running{w.fresh ? " + fresh lane" : ""}{w.started ? <div>since {new Date(w.started).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</div> : null}</div>
           {w.stale.length ? <div style={{ color: "#9a3412" }}>Changed since then: {w.stale.join(", ")}</div> : <div>Running on the saved settings.</div>}
           {w.supervisor_pid ? <div>Supervisor on: it relaunches what stops.</div> : null}
-          <button className={"btn small" + (w.stale.length ? " warn" : " quiet")} disabled={restart.busy} onClick={doRestart}>{restart.busy ? "Restarting…" : "Restart workers"}</button>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            <button className={"btn small" + (w.stale.length ? " warn" : " quiet")} disabled={restart.busy} onClick={doRestart}>{restart.busy ? "Restarting…" : "Restart workers"}</button>
+            <LoopControls running={!!(w.alive || w.fresh || w.supervisor_pid)} onDone={load} />
+          </div>
           {restart.ok ? <div className="ok" style={{ color: "var(--accent-ink)" }}>{restart.ok}</div> : null}
           {restart.err ? <div className="bad" style={{ color: "#b91c1c" }}>{restart.err}</div> : null}
         </div>
@@ -1637,6 +1667,7 @@ function App() {
 
   const [core, setCore] = useState(null);   // /api/index: the list, counts, flows — cached server-side, 304 when unchanged
   const [live, setLive] = useState(null);   // /api/now: what the workers are doing right now — small, every 8 s
+  const reloadRef = React.useRef(null);     // the Stop / Start buttons re-read the page through it
   useEffect(() => {
     let alive = true;
     const loadCore = async () => {
@@ -1656,10 +1687,12 @@ function App() {
       } catch (e) { /* the next tick tries again */ }
     };
     loadCore(); loadLive();
+    reloadRef.current = () => { loadCore(); loadLive(); };
     const t1 = setInterval(loadCore, 20000);
     const t2 = setInterval(loadLive, 8000);
     return () => { alive = false; clearInterval(t1); clearInterval(t2); };
   }, []);
+  const reload = () => { if (reloadRef.current) reloadRef.current(); };
   useEffect(() => { setData(core ? { ...core, ...(live || {}) } : null); }, [core, live]);
 
   const apps = useMemo(() => (core?.applications || []).filter(a =>
@@ -1671,7 +1704,7 @@ function App() {
 
   return (
     <div className="app">
-      <Header data={data} err={err} />
+      <Header data={data} err={err} reload={reload} />
       <Tabs tab={tab} setTab={setTab} data={data} />
       {tab === "applications" ? <AppsToolbar data={data} filter={filter} setFilter={s => { setFilter(s); setSel(null); }} q={q} setQ={setQ} /> : <div className="toolbar"></div>}
       {tab === "applications" ? (
@@ -1702,7 +1735,7 @@ function App() {
         <div className="body single">
           <main>
             {tab === "calendar" ? <Calendar onOpen={open} /> : null}
-            {tab === "workers" ? <Workers data={data} onPick={open} /> : null}
+            {tab === "workers" ? <Workers data={data} onPick={open} reload={reload} /> : null}
             {tab === "files" ? <FilesTab onOpen={open} /> : null}
             {tab === "settings" ? <SettingsTab /> : null}
           </main>
