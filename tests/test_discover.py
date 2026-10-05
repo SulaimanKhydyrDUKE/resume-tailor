@@ -381,6 +381,28 @@ check("by hand: the same role at the same company, applied to under a listing no
 check("by hand: a different role there still goes", "ig:other" in {e.id for e in _rsel})
 
 
+# --- a hand sign-in at a host lifts the login-wall cap for every posting there ---
+from resume_tailor import discover as _D
+_real_logins = _D.LOGINS_DIR
+_D.LOGINS_DIR = Path(tempfile.mkdtemp())
+try:
+    _wall = {"status": "needs_login", "attempts": 2, "when": "2026-10-01T10:00:00-04:00", "detail": "this site wants an account"}
+    check("login cap: two tries at a wall and no sign-in since → worn out", _D._worn_out(_wall, True, "https://careers-berkley.icims.com/jobs/1/x/login"))
+    (_D.LOGINS_DIR / "careers-berkley.icims.com.json").write_text("[]")   # cookies alone say nothing
+    check("login cap: a cookie file alone does not lift it (every session rewrites them)", _D._worn_out(_wall, True, "https://careers-berkley.icims.com/jobs/1/x/login"))
+    import json as _json, time as _tm2
+    (_D.LOGINS_DIR / "signed-in.json").write_text(_json.dumps({"careers-berkley.icims.com": _tm2.time()}))
+    check("login cap: a hand sign-in at the host after the attempt lifts it", not _D._worn_out(_wall, True, "https://careers-berkley.icims.com/jobs/2/y/login"))
+    check("login cap: another host's sign-in does not", _D._worn_out(_wall, True, "https://careers-westernsouthern.icims.com/jobs/3/z"))
+    _old = dict(_wall, when="2099-12-01T10:00:00-04:00")
+    check("login cap: a sign-in older than the attempt does not", _D._worn_out(_old, True, "https://careers-berkley.icims.com/jobs/2/y"))
+    _cap = {"status": "blocked", "attempts": 3, "when": "2026-10-01T10:00:00-04:00", "detail": "a captcha guards this site's sign-in"}
+    check("login cap: a captcha block is lifted by the same sign-in", not _D._worn_out(_cap, True, "https://careers-berkley.icims.com/jobs/4/w")
+          and _D._worn_out(_cap, True, "https://jobs.example.com/4"))
+    check("login cap: the record's own url serves when the listing has none", not _D._worn_out(dict(_wall, url="https://careers-berkley.icims.com/jobs/5"), True))
+finally:
+    _D.LOGINS_DIR = _real_logins
+
 # --- LinkedIn is never opened --------------------------------------------------------------
 check("host blacklist: a linkedin.com posting is left out by default",
       evaluate(L(url="https://www.linkedin.com/jobs/view/4472185634"), Prefs(max_posting_age_days=0)) == "host blacklist")

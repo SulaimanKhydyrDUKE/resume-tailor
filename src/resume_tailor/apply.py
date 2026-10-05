@@ -1135,10 +1135,17 @@ class ApplySession:
 
     LOGINS_DIR = DEFAULT_PROFILE_DIR.parent / "logins"  # ~/.resume-tailor/logins/<host>.json
 
-    async def save_logins(self) -> int:
+    SIGNED_IN = LOGINS_DIR / "signed-in.json"  # host → when a wall there was last passed (epoch seconds)
+
+    async def save_logins(self, record: bool = True) -> int:
         """Keep this browser's cookies — the sign-in the user just did — so
         every later browser, headless included, starts signed in there.
-        One file per site host; returns how many cookies were saved."""
+        One file per site host; returns how many cookies were saved. With
+        `record` (the default: every caller saves right after a wall was
+        passed), the page's host is noted in signed-in.json with the time,
+        which is what lifts the retry cap on the host's other postings
+        (discover.logged_in_since) — the cookie files themselves say nothing,
+        since every session rewrites all of them on every save."""
         state = await self._ctx.storage_state()
         cookies = [c for c in state.get("cookies", []) if c.get("domain")]
         self.LOGINS_DIR.mkdir(parents=True, exist_ok=True)
@@ -1156,6 +1163,15 @@ class ApplySession:
             keep = {(c["name"], c.get("path", "/")): c for c in old}
             keep.update({(c["name"], c.get("path", "/")): c for c in cs})
             path.write_text(json.dumps(list(keep.values())), encoding="utf-8")
+        if record:
+            host = (urlsplit(self._page.url or "").netloc or "").lower() if self._page else ""
+            if host:
+                try:
+                    seen = json.loads(self.SIGNED_IN.read_text(encoding="utf-8")) if self.SIGNED_IN.is_file() else {}
+                except Exception:
+                    seen = {}
+                seen[host] = time.time()
+                self.SIGNED_IN.write_text(json.dumps(seen, indent=0, sort_keys=True), encoding="utf-8")
         return len(cookies)
 
     async def _load_logins(self) -> None:

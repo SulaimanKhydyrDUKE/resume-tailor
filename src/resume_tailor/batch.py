@@ -3279,7 +3279,7 @@ async def login_site(url: str, timeout_s: float = 30 * 60) -> int:
             try:
                 if session._page.is_closed():
                     break
-                saved = await session.save_logins()
+                saved = await session.save_logins(record=False)  # every five seconds while the window is open: not yet a passed wall
             except Exception:
                 break
         try:

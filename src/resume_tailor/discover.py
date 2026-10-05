@@ -26,6 +26,8 @@ from urllib.parse import urlsplit
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
+
+from .profile import DEFAULT_PROFILE_DIR
 from typing import Any
 
 from . import ats
@@ -616,16 +618,45 @@ def shard_of(listing: dict, workers: int) -> int:
     return int(hashlib.sha1(key.encode("utf-8")).hexdigest(), 16) % max(1, workers)
 
 
-def _worn_out(rec: dict, inbox: bool | None = None) -> bool:
+LOGINS_DIR = DEFAULT_PROFILE_DIR / "logins"  # ~/.resume-tailor/logins/: cookies per host, and signed-in.json
+
+
+def logged_in_since(url: str, when: str) -> bool:
+    """Whether a wall on this posting's host was passed after the attempt at
+    `when`: ApplySession.save_logins notes the host and the time in
+    logins/signed-in.json whenever a sign-in, an account creation or the
+    dashboard's hand Log in got through. Exact host: a sign-in at one Workday
+    or iCIMS tenant says nothing about another."""
+    host = (urlsplit(url or "").netloc or "").lower()
+    if not host:
+        return False
+    try:
+        seen = json.loads((LOGINS_DIR / "signed-in.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    try:
+        since = datetime.fromisoformat(when).timestamp() if when else 0.0
+    except ValueError:
+        since = 0.0
+    at = seen.get(host) or seen.get(host.removeprefix("www.")) or seen.get("www." + host)
+    return bool(at) and float(at) > since
+
+
+def _worn_out(rec: dict, inbox: bool | None = None, url: str = "") -> bool:
     """Three attempts that all ended in needs_review or blocked, or two that
     ended at a login wall — none of them a hand re-queue. A wall only a
     person can pass (a sign-in, an e-mailed link) costs minutes of browser
     time per retry and does not change on its own; `review` re-queues it.
 
-    A wall that only wants the applicant's inbox is worn out for exactly as
-    long as the inbox is unconfigured (`inbox`, read once by the caller): the
-    moment RESUME_TAILOR_IMAP_PASSWORD is set, every such posting is worth a
-    try, whatever its count says — the passes it sat out were not attempts."""
+    Two things do change it from outside, and lift the cap on their own:
+    - A wall that only wants the applicant's inbox is worn out for exactly as
+      long as the inbox is unconfigured (`inbox`, read once by the caller): the
+      moment RESUME_TAILOR_IMAP_PASSWORD is set, every such posting is worth a
+      try, whatever its count says — the passes it sat out were not attempts.
+    - A hand sign-in at the host after the last attempt (`logged_in_since`):
+      the dashboard's Log in on one posting of an iCIMS tenant solves its
+      captcha and keeps the session, and with it every other posting of that
+      tenant is worth a try. Without this, one hand login un-stuck one posting."""
     from . import mailbox
 
     if (rec.get("detail") or "").startswith(("re-queued", "retry:")):
@@ -634,6 +665,8 @@ def _worn_out(rec: dict, inbox: bool | None = None) -> bool:
         # lifts only the attempt cap.
         return False
     attempts = int(rec.get("attempts") or 0)
+    if rec.get("status") in ("needs_login", "blocked") and logged_in_since(url or rec.get("url") or "", str(rec.get("when") or "")):
+        return False
     if rec.get("status") == "needs_login":
         if mailbox.waiting_for_inbox(rec):
             return not (mailbox.configured() if inbox is None else inbox)
@@ -811,15 +844,16 @@ def select(listings: list[dict], prefs: Prefs, state: RunState | None = None,
     # Errors and login walls keep retrying: a network blip or a login by
     # the user changes them without any code change.
     inbox = mailbox.configured()  # once per pass, not once per record: it reads the env file
-    retries = [l for l in kept if stage(l) == 2 and not _worn_out(attempted.get(l.get("id") or l.get("url")) or {}, inbox)]
+    retries = [l for l in kept if stage(l) == 2 and not _worn_out(attempted.get(l.get("id") or l.get("url")) or {}, inbox, l.get("url") or "")]
     # The least-tried first: a posting never retried since the last fix to
     # the form layer goes before one that just failed again a pass ago.
     retries.sort(key=lambda l: int((attempted.get(l.get("id") or l.get("url")) or {}).get("attempts") or 0))
     for l in kept:
         rec = attempted.get(l.get("id") or l.get("url")) or {}
-        if stage(l) == 2 and _worn_out(rec, inbox):
+        if stage(l) == 2 and _worn_out(rec, inbox, l.get("url") or ""):
             why = ("waiting for the inbox (set RESUME_TAILOR_IMAP_PASSWORD)" if mailbox.waiting_for_inbox(rec)
-                   else "needs review, three attempts")
+                   else ("login wall or captcha, two tries (a hand Log in there lifts this)" if rec.get("status") in ("needs_login", "blocked")
+                         else "needs review, three attempts"))
             excluded[why] = excluded.get(why, 0) + 1
     kept = ready
     if retries_first:
