@@ -164,7 +164,10 @@ class Outcome:
 #     (resume/variants/*.yaml); every earlier PDF is on the old wording.
 # 10: the user's own PDFs are sent as they are (`pdf:` in the skeleton) — no rewording,
 #     no re-rendering; a retry on an older, reworded PDF swaps it for the fixed one.
-RESUME_VERSION = 10
+# 11: one résumé for every posting — the user's SWE PDF of 2026-10-05 (GPA and
+#     relocation line in the header, Noted in place of Resume-tailor, skills regrouped);
+#     variants off. A cached PDF from the variant days is the wrong file to send.
+RESUME_VERSION = 11
 
 
 # Wording that says a control is not the one that sends the application,
