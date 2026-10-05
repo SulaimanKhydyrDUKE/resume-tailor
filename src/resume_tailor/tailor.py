@@ -375,6 +375,19 @@ def deterministic_gate(index: dict[str, str], exp_drafts: list[RoleDraft]) -> di
     return out
 
 
+def _plain(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
+
+
+def _quote_supports(quote: str, cited_text: str) -> bool:
+    """The auditor's quote, found in the cited text it claims to come from:
+    letters and digits compared, so punctuation, case and line breaks do not
+    matter. An empty quote supports nothing — "supported" without the words
+    is the model vouching for itself."""
+    q = _plain(quote)
+    return bool(q) and q in _plain(cited_text)
+
+
 async def audit_claim(cited_text: str, claim: str) -> bool:
     """The JD-blind check. Its entire context is one claim and the verbatim
     evidence it cites — no posting, no career file, no other bullets, no writer
@@ -396,7 +409,10 @@ Does the source text state or plainly entail the claim? Quote the supporting \
 words verbatim if so.""",
         AuditVerdict, effort="low", role="audit",
     )
-    return v.supported
+    # The verdict counts only with its quote in the source: a "supported"
+    # whose quote is not there is the one kind of rationalisation the
+    # JD-blind design cannot see on its own.
+    return v.supported and _quote_supports(v.quote, cited_text)
 
 
 async def audit_and_repair(index: dict[str, str], exp_drafts: list[RoleDraft],

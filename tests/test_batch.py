@@ -1351,6 +1351,26 @@ _cplan = planner.rails([
 check("bank: a citizenship question never takes the mailing address",
       _bank(_pl, "Please list ALL countries of citizenship:", {"type": "text", "required": True}, [], strong=True) == (None, None)
       and _bank(_pl, "State", {"type": "text", "required": True}, [], strong=True)[1] == "address.state")
+_fq = [
+    {"qid": "f1", "key": planner.question_key("How many years of industry experience do you have?", "select"), "label": "How many years of industry experience do you have?",
+     "section": "", "widget": "select", "options": ["0-1", "2-3", "4+"], "required": True, "maxlength": None, "hint": "", "bank": ""},
+    {"qid": "f2", "key": planner.question_key("Which team interests you most?", "select"), "label": "Which team interests you most?",
+     "section": "", "widget": "select", "options": ["Backend", "Design", "Sales"], "required": True, "maxlength": None, "hint": "", "bank": ""},
+    {"qid": "f3", "key": planner.question_key("Are you at least 18 years of age?", "select"), "label": "Are you at least 18 years of age?",
+     "section": "", "widget": "select", "options": ["Yes", "No"], "required": True, "maxlength": None, "hint": "", "bank": ""},
+    {"qid": "f4", "key": planner.question_key("The car wash is two blocks away. Walk or drive?", "text"), "label": "The car wash is two blocks away. Walk or drive?",
+     "section": "", "widget": "text", "options": [], "required": True, "maxlength": None, "hint": "", "bank": ""},
+]
+_fplan = planner.rails([
+    FieldAnswer(id="f1", answer="2-3", basis=["reasoning"], skip=False, essay=False, reason="internships add up"),
+    FieldAnswer(id="f2", answer="Backend", basis=["reasoning"], skip=False, essay=False, reason="closest to the record"),
+    FieldAnswer(id="f3", answer="Yes", basis=["reasoning"], skip=False, essay=False, reason="a college junior"),
+    FieldAnswer(id="f4", answer="Walk", basis=["reasoning"], skip=False, essay=False, reason="two blocks"),
+], _fq, _pl)
+check("rails: a quantity about the candidate on reasoning alone is refused", _fplan[_fq[0]["key"]].answer is None and "fact" in _fplan[_fq[0]["key"]].reason)
+check("rails: a preference on reasoning stands", _fplan[_fq[1]["key"]].answer == "Backend")
+check("rails: an age question on reasoning alone is refused (the bank's to answer)", _fplan[_fq[2]["key"]].answer is None)
+check("rails: a puzzle on reasoning still stands", _fplan[_fq[3]["key"]].answer == "Walk")
 check("rails: a country of citizenship on reasoning alone is refused", _cplan[_cz[0]["key"]].answer is None and "citizenship" in _cplan[_cz[0]["key"]].reason)
 check("rails: a citizenship status resting on a work_authorization entry stands", _cplan[_cz[1]["key"]].answer == "U.S. permanent resident")
 check("rails: 'how did you hear: LinkedIn' is refused", _cplan[_cz[2]["key"]].answer is None and "source" in _cplan[_cz[2]["key"]].reason)

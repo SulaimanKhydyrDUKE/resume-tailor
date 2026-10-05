@@ -150,6 +150,13 @@ NAMED_SOURCE = re.compile(r"linkedin|indeed|glassdoor|handshake|ziprecruiter|mon
                           r"referr|friend|employee|recruiter|agency|headhunter|career fair|professor|alumn|newspaper|radio", re.I)
 _HARD_FACT = re.compile(r"citizen|clearance|authori[sz]|sponsor|visa|degree|gpa|graduat|felon|convict|licen[cs]e|"
                         r"certif|security|passport|national", re.I)
+# A quantity, a date or a credential about the candidate is a fact, never an
+# opinion: "how many years of industry experience" once got "2.5" on
+# reasoning alone. Reasoning answers a puzzle, a preference, or a required
+# question of the safe-default kind the prompt lists — never one of these.
+_FACT_Q = re.compile(r"\b(how (many|much|long)|number of|years?|months?|hours?|salary|wage|compensation|pay|gpa|grade|score|"
+                     r"date|when|licen[cs]e|certif|degree|diploma|graduat|age|years? old|birth|employ(ed|er|ment)|job title|"
+                     r"position title|company name|experience (with|in|using))\b", re.I)
 _PREFERENCE = re.compile(r"prefer|preference|which (team|program|track|platform|division|group|area)|team choice|"
                          r"important (factors? )?to you|factors|matters? (the )?most|what (would|do) you (like|want|hope|look for)|"
                          r"most (interested|excited)|interested in (working|joining)", re.I)
@@ -354,16 +361,21 @@ def rails(answers: list[FieldAnswer], questions: list[dict], profile: Profile) -
         if not known and ("posting" in a.basis or "reasoning" in a.basis) and _ABOUT_POSTING.search(q["label"]):
             known = ["posting"]  # a fact about the job, read off the posting
         if not known and "reasoning" in a.basis and (
-                not re.search(r"\byou(r|rs|rself)?\b", q["label"], re.I) or _PREFERENCE.search(q["label"])
-                or (q.get("required") and not _HARD_FACT.search(q["label"])
-                    and not re.search(r"\b(read|reading|favou?rite|book|paper|article|podcast|hobby|hobbies)\b", q["label"], re.I))):
+                _PREFERENCE.search(q["label"])
+                or (not _FACT_Q.search(q["label"]) and (
+                    not re.search(r"\byou(r|rs|rself)?\b", q["label"], re.I)
+                    or (q.get("required") and not _HARD_FACT.search(q["label"])
+                        and not re.search(r"\b(read|reading|favou?rite|book|paper|article|podcast|hobby|hobbies)\b", q["label"], re.I))))):
             # Reasoning carries a puzzle, a preference, or a required question
-            # that is not a hard eligibility fact — never a credential, and
-            # never a personal fact like what the candidate has read (that
-            # must rest on a record id or a bank key).
+            # that is not a hard eligibility fact — never a credential, never
+            # a quantity, date or title about the candidate (_FACT_Q: the
+            # bank's or nobody's), and never a personal fact like what the
+            # candidate has read (that must rest on a record id or a bank key).
             known = ["reasoning"]
         if not known and not (_SILENCE.search(q["label"]) and _NO_LIKE.match(answer)):
-            decisions[key] = Decision(None, reason="rests on nothing in the profile")
+            decisions[key] = Decision(None, reason=("a fact about the candidate the bank does not hold"
+                                                    if "reasoning" in a.basis and _FACT_Q.search(q["label"])
+                                                    else "rests on nothing in the profile"))
             continue
         if (known and THIRD_PARTY.search(q["label"]) and all(b.startswith(SELF_KEYS) for b in known)
                 and not _ASKS_IF_REFERRED.search(q["label"]) and not _ASKS_ABOUT_OWN_TIES.search(q["label"])):

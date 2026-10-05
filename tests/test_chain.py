@@ -167,6 +167,16 @@ async def main():
     check("fixed PDF: a relative path resolves under the profile's resume/ directory",
           T.fixed_pdf_path(Profile(career=CAREER, answers=ANSWERS, root=Path("/tmp/prof"), base_resume={"pdf": "variants/x.pdf"})) == Path("/tmp/prof/resume/variants/x.pdf"))
 
+    # --- the auditor's quote must be in the cited text ---
+    from resume_tailor.tailor import _quote_supports
+    check("audit: a supported verdict needs its quote in the cited text",
+          _quote_supports("cut p99 latency from 840ms to 190ms", "Cut p99 latency from 840ms to 190ms by caching."))
+    check("audit: punctuation, case and line breaks do not matter",
+          _quote_supports("CUT P99 LATENCY,\nfrom 840ms", "cut p99 latency from 840ms to 190ms"))
+    check("audit: a quote the source does not contain is no support",
+          not _quote_supports("led a team of 12", "cut p99 latency from 840ms to 190ms"))
+    check("audit: an empty quote supports nothing", not _quote_supports("", "anything at all") and not _quote_supports("   ", "anything"))
+
     width = max(len(n) for n, _, _ in checks)
     failed = 0
     for name, ok, detail in checks:

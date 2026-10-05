@@ -63,7 +63,7 @@ TZ = ZoneInfo("America/New_York")
 SUBJECT = "{role}, Summer 2027 - quick hello"
 BODY = """Hi {greeting},
 
-This is Sulaiman, Duke CS and Math junior. I just applied for the {role} role and wanted to put a name to the application. {project}
+This is Sulaiman, a Duke CS and Math junior. I just applied for the {role} role and wanted to put a name to the application. {project}
 
 If you have 15 minutes in the next couple of weeks I'd really like to hear what the team is looking for this summer. Happy to work around your schedule.
 

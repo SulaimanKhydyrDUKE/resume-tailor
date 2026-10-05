@@ -190,6 +190,8 @@ documents:
   essay: ""
 
 about:
+  at_least_18_years_old: ""           # "Yes" — a bank fact, so no form ever gets a guess at your age
+  18_or_older: ""
   name_pronunciation: ""        # a short phonetic guide, e.g. "soo-lay-MAHN"
   preferred_contact_method: ""  # "Email"
   applied_here_before: ""       # "No"
