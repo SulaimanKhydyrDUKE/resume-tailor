@@ -399,7 +399,8 @@ def sources_view(answers: dict, out_dir: Path) -> list[dict]:
     simplify_count = max(0, total - sum(int(v) for v in table_counts.values())) if total else 0
     labels = {"simplify": "SimplifyJobs · Summer 2027 Internships", "jobright-swe": "jobright-ai · Software Engineer internships",
               "jobright-ba": "jobright-ai · Business Analyst internships", "speedyapply": "speedyapply · SWE college jobs",
-              "vanshb03": "vanshb03 · Summer internships"}
+              "speedyapply-ai": "speedyapply · AI college jobs", "vanshb03": "vanshb03 · Summer internships",
+              "sndsh404": "sndsh404 · Summer 2027 internships"}
     out = [{"name": "simplify", "label": labels["simplify"], "url": DEFAULT_URL, "builtin": True, "kind": "json",
             "enabled": bool(flags.get("simplify", True)), "count": simplify_count}]
     for name, url in TABLE_SOURCES:

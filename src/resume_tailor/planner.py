@@ -138,6 +138,16 @@ _SYSTEM = (
 # went out for "list all countries of citizenship" on reasoning alone.
 CITIZENSHIP_Q = re.compile(r"citizen|nationalit|\bnationals? of\b|country of (origin|birth|residen)|passport|visa (status|type|category|class)|"
                            r"immigration status|permanent resident|green card|residency status|lawful(ly)? (admitted|resident)", re.I)
+# A question built to tell a person from a program — "if you are a human,
+# answer: how many R's are in strawberry", "type the word apple to prove you
+# are not a bot" — is never answered, right or wrong: a correct answer is still
+# an automated system passing a human check under the candidate's name. The
+# field stays empty and the posting goes to the user (needs_review).
+HUMAN_CHECK = re.compile(
+    r"if you are (a |an )?(human|person|real person)\b|\bare you (a )?(human|robot|bot)\b|"
+    r"(prove|confirm|verify|show|demonstrate) (that )?you('re| are| are not| aren'?t) (a |an )?(human|person|robot|bot|ai)\b|"
+    r"\bnot (a |an )?(bot|robot|ai|automated|language model)\b[^.?]{0,40}\b(answer|type|enter|write|solve)\b|"
+    r"\bhuman (check|verification|test)\b|\banti-?bot\b|\b(bot|robot) (check|test|detection)\b", re.I)
 # "How did you hear about us?" — and not "if you were referred, name the
 # person", which is a different question with a factual answer.
 SOURCE_Q = re.compile(
@@ -345,6 +355,11 @@ def rails(answers: list[FieldAnswer], questions: list[dict], profile: Profile) -
         if q is None:
             continue
         key = q["key"]
+        if HUMAN_CHECK.search(q["label"]):
+            # Before anything else: a human check is never answered, whatever
+            # the model proposed and however it would have been grounded.
+            decisions[key] = Decision(None, reason="a human check: left for the user, never answered by the tool")
+            continue
         if a.essay:
             decisions[key] = Decision(None, essay=True, reason=a.reason)
             continue

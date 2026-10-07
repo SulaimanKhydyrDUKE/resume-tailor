@@ -593,7 +593,8 @@ _SUCCESS_TEXT = re.compile(
 # "the form is gone" alone is not proof of anything.
 _FAILURE_TEXT = re.compile(
     r"couldn'?t submit|could not submit|unable to submit|was not submitted|flagged as (possible )?spam"
-    r"|something went wrong|error (occurred|submitting)|submit(ting)? your application again|submission (failed|was rejected)",
+    r"|something went wrong|error (occurred|submitting)|submit(ting)? your application again|submission (failed|was rejected)"
+    r"|submission is (currently |temporarily )?unavailable",  # Ashby: clears on its own within minutes; the batch retries it next pass
     re.I,
 )
 _YES_WORDS = ("1", "true", "yes", "on", "checked")
@@ -1028,6 +1029,7 @@ class ApplySession:
     _declined: set = field(default_factory=set, repr=False)  # lone checkboxes answered No: unticked on purpose
     _gh_slugs: set = field(default_factory=set, repr=False)  # Greenhouse boards the pages loaded talked to
     _uploaded: set = field(default_factory=set, repr=False)  # file fields (selector or label) that took a file
+    dialogs: list = field(default_factory=list, repr=False)  # alert/confirm messages the page raised this posting (Work at a Startup announces its weekly cap in one)
     injection_notes: list = field(default_factory=list, repr=False)  # third-party text aimed at an automated reader, removed (untrusted.py)
 
     @property
@@ -1035,6 +1037,24 @@ class ApplySession:
         """Where the form lives: the page, or the embedded frame that holds it
         (a Greenhouse board inside a company's own careers page)."""
         return self._frame or self._page
+
+    def _watch_dialogs(self, page) -> None:
+        """Every alert or confirm the page raises is kept (its text is what
+        Work at a Startup uses to announce its 25-a-week cap mid-submit) and
+        dismissed, so a dialog never hangs a worker."""
+        async def on_dialog(d):
+            try:
+                self.dialogs.append(d.message or "")
+            except Exception:
+                pass
+            try:
+                await d.dismiss()
+            except Exception:
+                pass
+        try:
+            page.on("dialog", lambda d: asyncio.ensure_future(on_dialog(d)))
+        except Exception:
+            pass
 
     async def _pick_frame(self) -> None:
         """The document to work in: the page, or the frame that holds the
@@ -1115,6 +1135,11 @@ class ApplySession:
         self._page = page
         # An element that a re-render removed should fail in seconds, not 30.
         self._page.set_default_timeout(10000)
+        self._watch_dialogs(page)
+        try:
+            self._ctx.on("page", self._watch_dialogs)
+        except Exception:
+            pass
         await self._load_logins()
         # A company careers page that embeds a Greenhouse board fetches it by
         # board slug; noting those calls tells greenhouse_embed_url() the
@@ -1211,6 +1236,7 @@ class ApplySession:
         self._frame = None
         self._declined.clear()
         self._uploaded.clear()
+        self.dialogs.clear()
         try:
             await self._page.goto("about:blank", timeout=5000)
         except Exception:

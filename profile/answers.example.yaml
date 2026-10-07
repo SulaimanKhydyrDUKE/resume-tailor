@@ -71,6 +71,11 @@ self_identification:
   ethnicity: ""
 
 # Targeting rules for the discovery half.
+# The essay writer's floor, on top of the built-in list (freetext.BANNED_DEFAULT):
+# a phrase here never appears in an essay or cover letter the tool writes.
+writing:
+  banned_phrases: []                   # e.g. [synergy, "I would love to", "dream job"]
+
 search:
   positions: []                        # title words worth applying to, e.g. ["Software Engineer", "Backend", "Data Analyst"]
   locations: []
@@ -93,6 +98,14 @@ search:
   title_blacklist: []
   location_blacklist: []
   host_blacklist: [linkedin.com]       # sites never opened or applied through: LinkedIn forbids automation and the account matters
+  # Firms by quality. `first` are dealt before every other posting, `then`
+  # after them, unlisted firms after those; `never` is not applied to at all.
+  # Whole-word match on the company name. Order and floor only: eligibility
+  # and the judges still decide.
+  company_tiers:
+    first: []                          # e.g. [Stripe, Databricks, Anthropic]
+    then: []
+    never: []                          # e.g. [Acme Staffing]
   apply_once_at_company: true
   # Discovery: which terms to apply for, and two safety filters. A title that
   # names another term outright ("... - Fall 2026") is left out whatever the

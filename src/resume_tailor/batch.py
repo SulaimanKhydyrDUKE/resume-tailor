@@ -1542,6 +1542,11 @@ async def _fill_form(session: ApplySession, profile: Profile, pdf_path: Path, po
         after = len(unresolved) + len(await session.unfilled_required(force_required))
         if not unresolved or after >= before:
             break
+    # Every field against the value decided for it, before anything is sent.
+    try:
+        unresolved = await _sweep_intended(session, decided, unresolved)
+    except Exception as e:
+        print(f"  sweep skipped ({_brief(e)})", file=sys.stderr, flush=True)
     return unresolved, _snapshot(await session.describe_form(), unresolved, sources)
 
 
@@ -1634,6 +1639,12 @@ async def _decide(question: str, field: dict, options: list[str], profile: Profi
     key = (section, question, tuple(options))
     if key in decided:
         return decided[key]
+    if planner.HUMAN_CHECK.search(question):
+        # Built to unmask an automated applicant; answered by nobody but the
+        # user. Required, it holds the application for review.
+        decided[key] = None
+        sources[(section, question)] = "human check: left for the user"
+        return None
     if _TEXT_CONSENT.search(question):
         # "Check Yes or No to indicate your agreement to receive text message
         # updates from … Reply STOP to opt out" (Rippling): a paragraph the
@@ -2026,6 +2037,125 @@ async def _repair(session: ApplySession, profile: Profile, posting_text: str,
 # Questions whose answer is a hard fact the bank holds, where a value a page
 # already shows may be an earlier attempt's mistake rather than the truth.
 _HARD_FACT_Q = re.compile(r"sponsor|visa|authori[sz]|citizen|clearance|relocat|18 years|drug|background check|eligib", re.I)
+# A site's résumé parser fills these from the PDF and gets them wrong in ways
+# nobody sees — a first name cut short, "NC" in County, the school's e-mail —
+# so a prefilled identity field is checked against the bank, exactly, and
+# corrected. Whole-label patterns, so "Name of the person who referred you"
+# is not one of them.
+_IDENTITY_Q = re.compile(
+    r"^\s*((first|given|last|family|sur|full|legal|preferred)\s*name|name|e-?mail( address)?|(primary |mobile |cell |home )?(phone|telephone)( number)?|"
+    r"street( address)?|address( line\s*1)?|city|state( ?/ ?province)?|province|zip( code)?|postal code|"
+    r"linkedin( url| profile| profile url)?|github( url| profile)?|website|portfolio( url)?)\s*[*✱:]?\s*$", re.I)
+_BREEZY_STEP = re.compile(r"one more step|check your (e-?mail|inbox)[^.]{0,60}(code|confirm|complete)|enter the code we (sent|e-?mailed)", re.I)
+_CAP_DIALOG = re.compile(r"(limit|maximum|cap|quota)\b[^.]{0,60}\bapplications?\b|\bapplications? (per|this|a|each) (rolling )?(week|day|month)\b|\b\d+ applications\b", re.I)
+
+
+def _same_identity(answer: str, held: str, label: str) -> bool:
+    """An identity field agrees with the bank only when it holds exactly the
+    bank's value (case and spacing aside; digits alone for a phone). "Sulai"
+    is not "Sulaiman" because one contains the other, and a doubled e-mail
+    address contains the right one and is wrong."""
+    a, h = " ".join(str(answer).split()).lower(), " ".join(str(held).split()).lower()
+    if re.search(r"phone|telephone|mobile|zip|postal", label, re.I):
+        return re.sub(r"\D", "", a)[-10:] == re.sub(r"\D", "", h)[-10:] and bool(re.sub(r"\D", "", h))
+    if re.search(r"linkedin|github|website|portfolio", label, re.I):
+        strip = lambda u: re.sub(r"^https?://(www\.)?|/+$", "", u)  # noqa: E731
+        return strip(a) == strip(h)
+    return a == h
+
+
+def _breezy_pending(url: str, why: str, page_text: str) -> bool:
+    """Whether a submit that looked complete still wants Breezy's e-mailed
+    code: a breezy.hr host, or the page saying so."""
+    return "breezy.hr" in (url or "").lower() or bool(_BREEZY_STEP.search(" ".join((why or "", page_text or ""))))
+
+
+async def _finish_breezy(session: ApplySession, entry: QueueEntry, since: float, why: str) -> tuple[bool, str]:
+    """Breezy's last step: the tenant mails "One more step! … code: NNNN" with
+    a breezy.hr/q/<id> link; the application counts once the code is entered
+    there. Read the mail, follow the link, type the code. Without the mail,
+    the submit is not complete and the posting is a review item."""
+    if not mailbox.configured():
+        return False, why + "; Breezy wants an e-mailed code entered at its link and the inbox is not configured"
+    found = await mailbox.fetch_secret_async(since, [entry.company_hint, "breezy", "one more step", "code"], timeout_s=150)
+    code, link = (found or {}).get("code"), (found or {}).get("link")
+    if not code:
+        return False, why + "; Breezy's 'one more step' code did not arrive in 150 s — the application does not count until it is entered"
+    if link and "breezy" in link:
+        try:
+            await session.goto(link)
+            await session._page.wait_for_timeout(2000)
+        except Exception:
+            pass
+    if await _enter_code(session, code):
+        await session._page.wait_for_timeout(2500)
+        text = (await session.read_text()).lower()
+        if not await _code_fields(session) or re.search(r"thank you|confirmed|complete|received", text):
+            return True, why + "; Breezy's e-mailed code entered"
+    return False, why + "; Breezy's e-mailed code arrived but could not be entered — finish at the link in that mail"
+
+
+def _deviates(intended: str | None, field: dict, options: list[str]) -> str | None:
+    """Whether the page holds something other than the intended answer for a
+    field, and what: None when it agrees (or nothing was intended). The check
+    is against the intended value, never against non-emptiness — a value can
+    be present and wrong (a neighbour's text, search-box residue, a doubled
+    e-mail) and a field can pass an emptiness check while blank."""
+    if intended is None or not str(intended).strip():
+        return None
+    kind = field.get("type") or ""
+    label = field.get("label") or ""
+    if kind == "file" or field.get("search") or re.search(r"\b(date|month|year|day)\b", label, re.I):
+        return None  # dates and search pickers render in their own formats; the repair pass owns them
+    if kind == "checkbox":
+        want = str(intended).strip().lower() in _YES_WORDS
+        return None if bool(field.get("checked")) == want else f"{'ticked' if field.get('checked') else 'unticked'} instead of {'yes' if want else 'no'}"
+    held = str(field.get("value") or "")
+    if not held.strip():
+        return "empty"
+    if _IDENTITY_Q.search(label):
+        return None if _same_identity(str(intended), held, label) else f"holds {held!r}"
+    return None if _same_answer(str(intended), held, options) else f"holds {held!r}"
+
+
+async def _sweep_intended(session: ApplySession, decided: dict[tuple, str | None], unresolved: list[str]) -> list[str]:
+    """Before any submit: every field against the value decided for it. A
+    deviation is filled once more; what still deviates goes on the
+    unresolved list, which holds the application for review rather than
+    sending a form that does not say what was decided."""
+    want: dict[tuple[str, str], str | None] = {}
+    for (section, question, _opts), answer in decided.items():
+        if answer is not None:
+            want[(section or "", question)] = answer
+    if not want:
+        return unresolved
+    fields = await session.describe_form()
+    groups, grouped = _group(fields)
+    deviations: list[tuple[dict, str, str]] = []
+    for f in fields:
+        if f["id"] in grouped or f.get("type") in ("file", "radio", "password"):
+            continue
+        intended = want.get((f.get("section") or "", f.get("label") or ""))
+        what = _deviates(intended, f, list(f.get("options") or []))
+        if what:
+            deviations.append((f, intended, what))
+    if not deviations:
+        return unresolved
+    for f, intended, _ in deviations:
+        try:
+            await session.fill(f["selector"], intended, f)
+        except Exception:
+            pass
+    fields = await session.describe_form()
+    by_key = {(f.get("section") or "", f.get("label") or ""): f for f in fields if f["id"] not in grouped}
+    for f, intended, _ in deviations:
+        now = by_key.get((f.get("section") or "", f.get("label") or ""), f)
+        what = _deviates(intended, now, list(now.get("options") or []))
+        if what:
+            label = f.get("label") or f.get("name") or "a field"
+            if not any(u.startswith(label[:40]) for u in unresolved):
+                unresolved.append(f"{label[:80]} — {what}, not the intended {str(intended)[:60]!r}")
+    return unresolved
 
 
 def _same_answer(answer: str, held: str, options: list[str]) -> bool:
@@ -2127,7 +2257,8 @@ async def _fill_pass(session: ApplySession, profile: Profile, fields: list[dict]
         # a draft that contradicts the bank is corrected, never kept.
         if (f.get("checked") if f.get("type") in ("checkbox", "radio") else f.get("value")):
             label_now = f.get("label") or ""
-            if f.get("type") in ("checkbox", "radio") or not (_HARD_FACT_Q.search(label_now) or _CURRENT_EMPLOYER.search(label_now)):
+            identity = bool(_IDENTITY_Q.search(label_now))
+            if f.get("type") in ("checkbox", "radio") or not (_HARD_FACT_Q.search(label_now) or _CURRENT_EMPLOYER.search(label_now) or identity):
                 continue
             held = str(f.get("value") or "")
             opts_now = f.get("options") or []
@@ -2155,9 +2286,9 @@ async def _fill_pass(session: ApplySession, profile: Profile, fields: list[dict]
                 d = plan.get(planner.question_key(f["label"], planner.widget_of(f), f.get("section") or ""))
                 if d is not None and d.answer and not d.essay:
                     answer, why = d.answer, "form plan" + (f": {d.reason}" if d.reason else "")
-            if answer is None or _same_answer(answer, held, opts_now):
+            if answer is None or (_same_identity(answer, held, label_now) if identity else _same_answer(answer, held, opts_now)):
                 continue
-            sources[(f.get("section") or "", f["label"])] = f"{why} (over a saved draft of {held!r})"
+            sources[(f.get("section") or "", f["label"])] = f"{why} (over {'the parser' if identity else 'a saved draft'}'s {held!r})"
             try:
                 await session.fill(f["selector"], answer, f)
             except Exception as e:
@@ -3016,6 +3147,15 @@ async def _process_one_inner(session: ApplySession, profile: Profile, entry: Que
         rounds += 1
         demanded = await _demanded_by_page(session)
         if not demanded:
+            # No complaint, form still standing: a required field that
+            # rendered only on the first attempt (a work-authorization pair
+            # drawn after the click) — whatever is required and empty now is
+            # what the page wants.
+            try:
+                demanded = {(f.get("label") or "").strip() for f in await session.unfilled_required()} - {""}
+            except Exception:
+                demanded = set()
+        if not demanded:
             break
         _now(f"repairing the form (round {rounds})", entry, url=apply_url)
         try:
@@ -3059,13 +3199,35 @@ async def _process_one_inner(session: ApplySession, profile: Profile, entry: Que
                     why += "; the e-mailed security code was entered but the page still shows the form"
             else:
                 why += "; the page asked for an e-mailed security code and none arrived in time"
+    if submitted and _breezy_pending(_page_url(session) or apply_url, why, " ".join(await session.read_text() for _ in [0])[:4000]):
+        # Breezy counts an application only once the 4-digit code it e-mails
+        # after Submit is entered at the link in that mail. "Submitted" on the
+        # page is not the end of it.
+        _now("finishing Breezy's e-mailed code step", entry, url=apply_url)
+        submitted, why = await _finish_breezy(session, entry, submit_started, why)
     post_shot = await session.screenshot(shots_dir / f"{_safe(entry.id)}-post-submit.png")
     o.screenshot = str(post_shot)
+    cap = next((m for m in session.dialogs if _CAP_DIALOG.search(m)), None)
+    if not submitted and cap:
+        # Work at a Startup caps candidates at 25 applications a rolling week
+        # and says so in a browser alert mid-submit. Not this posting's fault:
+        # blocked, and left alone for a week (discover._worn_out).
+        o.status = "blocked"
+        o.detail = f"weekly application cap: the site said {cap.strip()[:160]!r}"
+        return o
+    if not submitted and re.search(r"submission is (currently |temporarily )?unavailable", why, re.I):
+        # Ashby's transient; it clears within minutes. An error, so the next
+        # pass simply tries again.
+        o.status, o.detail = "error", f"the site said submission is unavailable right now (it clears on its own) — {why[:200]}"
+        return o
     if not submitted:
-        # A spam or bot verdict is the site's, not the form's: blocked, and
-        # worth another try from a more convincing browser later.
+        # A spam or bot verdict is the site's, not the form's: blocked. A
+        # spam flag in particular is never retried by the loop — repeated
+        # flags hurt the applicant's standing with that vendor (Ashby keys
+        # it on the tenant) — so it is named for discover._worn_out; a hand
+        # sign-in there lifts it like any other wall.
         o.status = "blocked" if re.search(r"spam|bot\b|captcha|robot|verif", why, re.I) else "needs_review"
-        o.detail = why
+        o.detail = ("spam flag: " + why) if re.search(r"spam", why, re.I) else why
         return o
     o.status, o.detail = "applied", f"submitted — {why}"
     if apply_once:

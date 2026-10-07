@@ -95,7 +95,7 @@ check("scalar: the strings PyYAML would turn into something else are quoted, pla
 # --- the sources setting, as discovery reads it -----------------------------------
 feed, tables = sources_from_profile(back)
 check("sources: a built-in switched off is left out; the owner's list is added; the feed stays on",
-      feed and [n for n, _ in tables] == ["jobright-swe", "speedyapply", "vanshb03", "mine"], str(tables))
+      feed and [n for n, _ in tables] == ["jobright-swe", "speedyapply", "speedyapply-ai", "vanshb03", "sndsh404", "mine"], str(tables))
 check("sources: no setting at all means every built-in", sources_from_profile({}) == (True, __import__("resume_tailor.discover", fromlist=["TABLE_SOURCES"]).TABLE_SOURCES))
 check("sources: the feed can be switched off", sources_from_profile({"search": {"sources": {"simplify": False}}})[0] is False)
 out = root / "out"
@@ -103,8 +103,8 @@ out.mkdir()
 (out / "discover-state.json").write_text(json.dumps({"count": 1000, "table_sources": {"jobright-swe": 100, "speedyapply": 300}}))
 sv = S.sources_view(back, out)
 check("sources view: counts per list, the feed's by subtraction, the off switch and the extra list shown",
-      [s["name"] for s in sv] == ["simplify", "jobright-swe", "jobright-ba", "speedyapply", "vanshb03", "mine"] and sv[0]["count"] == 600
-      and sv[2]["enabled"] is False and sv[3]["count"] == 300 and sv[5]["builtin"] is False, str(sv))
+      [s["name"] for s in sv] == ["simplify", "jobright-swe", "jobright-ba", "speedyapply", "speedyapply-ai", "vanshb03", "sndsh404", "mine"] and sv[0]["count"] == 600
+      and sv[2]["enabled"] is False and sv[3]["count"] == 300 and sv[7]["builtin"] is False and sv[4]["label"] == "speedyapply · AI college jobs", str(sv))
 
 # --- the basics: one form, three files ---------------------------------------------
 (root / "career.yaml").write_text(

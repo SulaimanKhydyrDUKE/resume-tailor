@@ -44,9 +44,14 @@ DEFAULT_URL = (
 TABLE_SOURCES = [
     ("jobright-swe", "https://raw.githubusercontent.com/jobright-ai/2026-Software-Engineer-Internship/master/README.md"),
     ("jobright-ba", "https://raw.githubusercontent.com/jobright-ai/2026-Business-Analyst-Internship/master/README.md"),
-    ("speedyapply", "https://raw.githubusercontent.com/speedyapply/2026-SWE-College-Jobs/main/README.md"),
-    ("vanshb03", "https://raw.githubusercontent.com/vanshb03/Summer2026-Internships/main/README.md"),
+    ("speedyapply", "https://raw.githubusercontent.com/speedyapply/2027-SWE-College-Jobs/main/README.md"),
+    ("speedyapply-ai", "https://raw.githubusercontent.com/speedyapply/2027-AI-College-Jobs/main/README.md"),
+    ("vanshb03", "https://raw.githubusercontent.com/vanshb03/Summer2027-Internships/main/README.md"),
+    ("sndsh404", "https://raw.githubusercontent.com/sndsh404/summer-2027-internships/main/README.md"),
 ]
+# The category a table source's rows carry (the lists have no category column);
+# the title gate still decides what is software.
+SOURCE_CATEGORY = {"jobright-ba": "Business Analyst", "speedyapply-ai": "AI/ML"}
 
 
 def sources_from_profile(answers: dict) -> tuple[bool, list[tuple[str, str]]]:
@@ -169,6 +174,13 @@ class Prefs:
     company_blacklist: list[str] = field(default_factory=list)
     location_blacklist: list[str] = field(default_factory=list)
     host_blacklist: list[str] = field(default_factory=lambda: list(DEFAULT_HOST_BLACKLIST))
+    # Firms by quality, from answers.yaml → search.company_tiers: `first` are
+    # dealt before anything else, `then` after them, unlisted firms after
+    # those, and `never` is not applied to at all. Order and floor only;
+    # eligibility and the judges still decide.
+    tier_first: list[str] = field(default_factory=list)
+    tier_then: list[str] = field(default_factory=list)
+    tier_never: list[str] = field(default_factory=list)
     require_us: bool = True
     exclude_phd_only: bool = True
     apply_once_at_company: bool = True
@@ -200,6 +212,9 @@ class Prefs:
             company_blacklist=list(s.get("company_blacklist") or []),
             location_blacklist=list(s.get("location_blacklist") or []),
             host_blacklist=[str(h).lower() for h in (s["host_blacklist"] if s.get("host_blacklist") is not None else DEFAULT_HOST_BLACKLIST)],
+            tier_first=[str(c).lower() for c in ((s.get("company_tiers") or {}).get("first") or [])],
+            tier_then=[str(c).lower() for c in ((s.get("company_tiers") or {}).get("then") or [])],
+            tier_never=[str(c).lower() for c in ((s.get("company_tiers") or {}).get("never") or [])],
             require_us=bool(s.get("require_us", True)),
             exclude_phd_only=bool(s.get("exclude_phd_only", True)),
             apply_once_at_company=_apply_once(s_all),
@@ -294,7 +309,7 @@ def parse_table(markdown: str, source: str) -> list[dict]:
             "locations": [location] if location else [], "date_posted": _date_epoch(cells[-1]),
             "source": source, "active": True, "is_visible": True,
             "terms": sorted(title_terms(title)) or ["Summer 2027"], "degrees": [],
-            "category": "Software Engineering" if source != "jobright-ba" else "Business Analyst",
+            "category": SOURCE_CATEGORY.get(source, "Software Engineering"),
         })
     return out
 
@@ -494,6 +509,8 @@ def evaluate(listing: dict, prefs: Prefs) -> str:
     company = (listing.get("company_name") or "").lower()
     if any(b.lower() in company for b in prefs.company_blacklist):
         return "company blacklist"
+    if any(_named(c, company) for c in prefs.tier_never):
+        return "company tier: never"
     locations = listing.get("locations") or []
     if prefs.require_us and is_us(locations) is False:
         return "outside US"
@@ -511,6 +528,23 @@ def evaluate(listing: dict, prefs: Prefs) -> str:
 
 def _posted_day(listing: dict) -> int:
     return int(listing.get("date_posted") or 0) // 86400
+
+
+def _named(tier_entry: str, company: str) -> bool:
+    """A tier entry names a firm when it is the company name, or a whole word
+    of it ("amazon" names "Amazon Web Services", not "Amazonia Labs")."""
+    e = tier_entry.strip().lower()
+    return bool(e) and (company == e or re.search(r"(?<![a-z0-9])" + re.escape(e) + r"(?![a-z0-9])", company) is not None)
+
+
+def tier_rank(listing: dict, prefs: Prefs) -> int:
+    """0 for a `first` firm, 1 for `then`, 2 for every other."""
+    company = (listing.get("company_name") or "").lower()
+    if any(_named(c, company) for c in prefs.tier_first):
+        return 0
+    if any(_named(c, company) for c in prefs.tier_then):
+        return 1
+    return 2
 
 
 def _fit_rank(listing: dict) -> int:
@@ -667,6 +701,13 @@ def _worn_out(rec: dict, inbox: bool | None = None, url: str = "") -> bool:
     attempts = int(rec.get("attempts") or 0)
     if rec.get("status") in ("needs_login", "blocked") and logged_in_since(url or rec.get("url") or "", str(rec.get("when") or "")):
         return False
+    if rec.get("status") == "blocked" and (rec.get("detail") or "").lower().startswith("spam flag"):
+        return True  # a spam-flagged submit is never retried on its own: repeated flags hurt the applicant's standing
+    if rec.get("status") == "blocked" and (rec.get("detail") or "").lower().startswith("weekly application cap"):
+        try:
+            return datetime.fromisoformat(str(rec.get("when"))).timestamp() + 7 * 86400 > time.time()  # the cap is per rolling week
+        except ValueError:
+            return True
     if rec.get("status") == "needs_login":
         if mailbox.waiting_for_inbox(rec):
             return not (mailbox.configured() if inbox is None else inbox)
@@ -832,7 +873,7 @@ def select(listings: list[dict], prefs: Prefs, state: RunState | None = None,
     # week often is not. Within a day, the roles the user is actually after
     # first (software before analyst before AI/ML/Data before product), then
     # the hosts with a direct form.
-    kept.sort(key=lambda l: (stage(l), -_posted_day(l), _fit_rank(l), _rank(l["url"]), -(l.get("date_posted") or 0)))
+    kept.sort(key=lambda l: (stage(l), tier_rank(l, prefs), -_posted_day(l), _fit_rank(l), _rank(l["url"]), -(l.get("date_posted") or 0)))
     # Retries are cheap (resume and verdicts cached) and usually follow a fix
     # to the form layer, so they are dealt in — one after every three new
     # postings — rather than left behind the whole never-attempted pool.

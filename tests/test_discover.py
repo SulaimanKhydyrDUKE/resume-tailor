@@ -403,6 +403,36 @@ try:
 finally:
     _D.LOGINS_DIR = _real_logins
 
+# --- two more lists, each row's category by source ---
+from resume_tailor.discover import TABLE_SOURCES as _TS, SOURCE_CATEGORY, parse_table as _pt
+check("sources: the AI and sndsh404 lists are read, and the 2027 names are used",
+      {n for n, _ in _TS} >= {"speedyapply", "speedyapply-ai", "vanshb03", "sndsh404", "jobright-swe", "jobright-ba"}
+      and all("2027" in u for n, u in _TS if n in ("speedyapply", "speedyapply-ai", "vanshb03", "sndsh404")))
+_md = "| Company | Position | Location | Salary | Posting | Age |\n|---|---|---|---|---|---|\n| <a href=\"https://www.figma.com\"><strong>Figma</strong></a> | AI Applied Scientist Intern - Summer 2027 | SF | $60/hr | <a href=\"https://boards.greenhouse.io/figma/jobs/1\">apply</a> | 2d |\n"
+check("sources: a speedyapply-ai row carries the AI/ML category, a SWE-list row Software Engineering",
+      _pt(_md, "speedyapply-ai")[0]["category"] == "AI/ML" and _pt(_md, "speedyapply")[0]["category"] == "Software Engineering" and SOURCE_CATEGORY["jobright-ba"] == "Business Analyst")
+
+# --- company tiers: order and floor ---
+from resume_tailor.discover import tier_rank, _named
+_tp = Prefs(max_posting_age_days=0, tier_first=["stripe", "amazon"], tier_then=["cencora"], tier_never=["acme staffing"])
+check("tiers: a `never` firm is left out", evaluate(L(company_name="Acme Staffing LLC"), _tp) == "company tier: never")
+check("tiers: whole-word match — Amazonia is not Amazon", tier_rank(L(company_name="Amazon Web Services"), _tp) == 0 and tier_rank(L(company_name="Amazonia Labs"), _tp) == 2
+      and tier_rank(L(company_name="Cencora"), _tp) == 1 and _named("stripe", "stripe"))
+_tiered = [L(id="t3", company_name="Zed Co", url="https://jobs.lever.co/z/1", date_posted=300),
+           L(id="t1", company_name="Stripe", url="https://jobs.lever.co/s/1", date_posted=100),
+           L(id="t2", company_name="Cencora", url="https://jobs.lever.co/c/1", date_posted=200)]
+check("tiers: first, then, the rest — ahead of posting date", [e.id for e in select(_tiered, _tp, None)[0]] == ["t1", "t2", "t3"])
+check("tiers: from the profile", Prefs.from_profile(type("P", (), {"answers": {"search": {"company_tiers": {"first": ["Stripe"], "never": ["X"]}}}})()).tier_first == ["stripe"])
+
+# --- a spam-flagged submit is never retried on its own ---
+check("spam flag: a blocked record whose detail names it is worn out at once, whatever its count",
+      _D._worn_out({"status": "blocked", "attempts": 1, "when": "2026-10-01T10:00:00-04:00", "detail": "spam flag: the site flagged the submission as possible spam"}, True, "https://jobs.ashbyhq.com/x/1")
+      and not _D._worn_out({"status": "blocked", "attempts": 1, "when": "2026-10-01T10:00:00-04:00", "detail": "a bot check was on the page"}, True, "https://jobs.ashbyhq.com/x/1"))
+
+check("weekly cap: a capped record rests a week, then is worth a try",
+      _D._worn_out({"status": "blocked", "attempts": 1, "when": __import__("datetime").datetime.now().astimezone().isoformat(), "detail": "weekly application cap: 25 per week"}, True, "https://www.workatastartup.com/jobs/1")
+      and not _D._worn_out({"status": "blocked", "attempts": 1, "when": "2026-09-01T10:00:00-04:00", "detail": "weekly application cap: 25 per week"}, True, "https://www.workatastartup.com/jobs/1"))
+
 # --- LinkedIn is never opened --------------------------------------------------------------
 check("host blacklist: a linkedin.com posting is left out by default",
       evaluate(L(url="https://www.linkedin.com/jobs/view/4472185634"), Prefs(max_posting_age_days=0)) == "host blacklist")

@@ -1371,6 +1371,57 @@ check("rails: a quantity about the candidate on reasoning alone is refused", _fp
 check("rails: a preference on reasoning stands", _fplan[_fq[1]["key"]].answer == "Backend")
 check("rails: an age question on reasoning alone is refused (the bank's to answer)", _fplan[_fq[2]["key"]].answer is None)
 check("rails: a puzzle on reasoning still stands", _fplan[_fq[3]["key"]].answer == "Walk")
+# --- parser-filled identity fields, the pre-submit sweep, the portal quirks ---
+from resume_tailor.batch import _same_identity, _IDENTITY_Q, _deviates, _CAP_DIALOG, _breezy_pending
+from resume_tailor.apply import _FAILURE_TEXT as _FAIL
+check("identity: whole-label match — First Name yes, 'Name of the person who referred you' no",
+      _IDENTITY_Q.search("First Name*") and _IDENTITY_Q.search("Email") and _IDENTITY_Q.search("LinkedIn Profile URL") and _IDENTITY_Q.search("Zip Code")
+      and not _IDENTITY_Q.search("Name of the person who referred you") and not _IDENTITY_Q.search("Emergency contact phone") and not _IDENTITY_Q.search("Company name"))
+check("identity: a truncated first name is not the same name", not _same_identity("Sulaiman", "Sulai", "First Name") and _same_identity("Sulaiman", " sulaiman ", "First Name"))
+check("identity: a doubled e-mail is wrong although it contains the right one",
+      not _same_identity("a@duke.edu", "a@duke.edua@duke.edu", "Email") and _same_identity("a@duke.edu", "A@duke.edu", "Email*"))
+check("identity: phones compare by digits, links without scheme or slash",
+      _same_identity("+1 910-336-0632", "(910) 336-0632", "Phone") and not _same_identity("+1 910-336-0632", "910-336-0633", "Phone")
+      and _same_identity("https://www.linkedin.com/in/x/", "linkedin.com/in/x", "LinkedIn"))
+check("sweep: an empty field with an intended answer deviates; an agreeing one does not; dates and search pickers are left alone",
+      _deviates("Yes", {"type": "select", "label": "Authorized?", "value": ""}, ["Yes", "No"]) == "empty"
+      and _deviates("Yes", {"type": "select", "label": "Authorized?", "value": "Yes"}, ["Yes", "No"]) is None
+      and _deviates("No", {"type": "select", "label": "Sponsorship?", "value": "Yes"}, ["Yes", "No"]) == "holds 'Yes'"
+      and _deviates("05/2028", {"type": "text", "label": "Graduation date", "value": "2028-05"}, []) is None
+      and _deviates("Durham, NC", {"type": "text", "label": "Location", "value": "", "search": True}, []) is None
+      and _deviates(None, {"type": "text", "label": "x", "value": ""}, []) is None)
+check("sweep: a checkbox is judged by state, an identity field exactly",
+      _deviates("yes", {"type": "checkbox", "label": "I agree", "checked": False}, []) == "unticked instead of yes"
+      and _deviates("yes", {"type": "checkbox", "label": "I agree", "checked": True}, []) is None
+      and _deviates("Sulaiman", {"type": "text", "label": "First Name", "value": "Sulai"}, []) == "holds 'Sulai'")
+check("weekly cap: the alert's wording is recognised, a plain confirm is not",
+      _CAP_DIALOG.search("You have reached the limit of 25 applications per week.") and _CAP_DIALOG.search("Maximum applications for this week reached")
+      and not _CAP_DIALOG.search("Are you sure you want to leave this page?"))
+check("breezy: a breezy.hr submit, or a page saying 'one more step', still wants the e-mailed code",
+      _breezy_pending("https://acme.breezy.hr/p/123/apply", "form gone after submit", "") and _breezy_pending("https://jobs.lever.co/x", "", "One more step! Check your email for the code")
+      and not _breezy_pending("https://jobs.lever.co/x", "form gone after submit", "Thank you for applying"))
+check("ashby: 'submission is unavailable at this time' reads as a refusal (then an error to retry), not a submit",
+      _FAIL.search("Application submission is unavailable at this time. Please try again later."))
+
+# --- a human check is never answered ---
+_hc = [{"qid": "h1", "key": planner.question_key("If you are a human, answer: how many R's are in strawberry?", "text"),
+        "label": "If you are a human, answer: how many R's are in strawberry?", "section": "", "widget": "text", "options": [], "required": True,
+        "maxlength": None, "hint": "", "bank": ""},
+       {"qid": "h2", "key": planner.question_key("To prove you are not a bot, type the word apple", "text"),
+        "label": "To prove you are not a bot, type the word apple", "section": "", "widget": "text", "options": [], "required": True,
+        "maxlength": None, "hint": "", "bank": ""}]
+_hplan = planner.rails([FieldAnswer(id="h1", answer="3", basis=["reasoning"], skip=False, essay=False, reason="count"),
+                        FieldAnswer(id="h2", answer="apple", basis=["reasoning"], skip=False, essay=False, reason="asked")], _hc, _pl)
+check("human check: the strawberry question is left empty however right the answer", _hplan[_hc[0]["key"]].answer is None and "human check" in _hplan[_hc[0]["key"]].reason)
+check("human check: 'type the word apple to prove you are not a bot' too", _hplan[_hc[1]["key"]].answer is None)
+check("human check: the pattern leaves ordinary questions alone",
+      not planner.HUMAN_CHECK.search("Are you legally authorized to work in the United States?") and not planner.HUMAN_CHECK.search("Describe a robot you built")
+      and not planner.HUMAN_CHECK.search("What is your GPA?") and planner.HUMAN_CHECK.search("Are you a human?") and planner.HUMAN_CHECK.search("Human verification: enter the code"))
+from resume_tailor.batch import _decide as _decide_q
+_dd, _ss = {}, {}
+check("human check: the field-by-field path leaves it empty and says why",
+      _aio.run(_decide_q("If you are a human, answer: how many R's are in strawberry?", {"type": "text", "required": True, "section": ""}, [], _pl, "", _dd, _ss, None, "text")) is None
+      and _ss.get(("", "If you are a human, answer: how many R's are in strawberry?")) == "human check: left for the user")
 check("rails: a country of citizenship on reasoning alone is refused", _cplan[_cz[0]["key"]].answer is None and "citizenship" in _cplan[_cz[0]["key"]].reason)
 check("rails: a citizenship status resting on a work_authorization entry stands", _cplan[_cz[1]["key"]].answer == "U.S. permanent resident")
 check("rails: 'how did you hear: LinkedIn' is refused", _cplan[_cz[2]["key"]].answer is None and "source" in _cplan[_cz[2]["key"]].reason)

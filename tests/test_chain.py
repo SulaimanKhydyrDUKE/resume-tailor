@@ -177,6 +177,19 @@ async def main():
           not _quote_supports("led a team of 12", "cut p99 latency from 840ms to 190ms"))
     check("audit: an empty quote supports nothing", not _quote_supports("", "anything at all") and not _quote_supports("   ", "anything"))
 
+    # --- the essay floor ---
+    from resume_tailor import freetext
+    _fp = type("P", (), {"answers": {"writing": {"banned_phrases": ["dream job"]}}})()
+    check("essay floor: a banned phrase is named", freetext.violations("I am excited to leverage my skills.", _fp) != [])
+    check("essay floor: the file's own phrase counts", any("dream job" in v for v in freetext.violations("This is my dream job.", _fp)))
+    check("essay floor: a volunteered weakness is caught",
+          any("weakness" in v for v in freetext.violations("Although I have not used Rust in production, I learn fast.", _fp))
+          and any("weakness" in v for v in freetext.violations("I should be honest that I am still learning Kubernetes.", _fp)))
+    check("essay floor: plain prose passes",
+          freetext.violations("I built the ingestion pipeline at Duke OIT and cut token use 40% by caching responses.", _fp) == [])
+    check("essay floor: word boundaries — 'realm' does not flag 'realms of'... but 'landscape' alone does",
+          freetext.violations("The real metric was latency.", _fp) == [] and freetext.violations("the evolving landscape of AI", _fp) != [])
+
     width = max(len(n) for n, _, _ in checks)
     failed = 0
     for name, ok, detail in checks:
