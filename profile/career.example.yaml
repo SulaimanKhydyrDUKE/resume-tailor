@@ -54,7 +54,10 @@ projects:
     bullets: []                  # one line each; rendered verbatim, never rewritten
     description: ""              # used only if there are no bullets
 
-# Skills you claim independently of any one role — your resume's skills section.
+# Skills you claim independently of any one role — your resume's skills section,
+# and the list "do you have experience with X?" is answered from: a tool missing
+# here is an automatic No on a form, so list everything you can honestly claim,
+# not only what fits on one page (HTML, CSS, Git, a test framework, CI).
 # Group them however you like; group names become the labels on the resume.
 skills:
   Languages: []

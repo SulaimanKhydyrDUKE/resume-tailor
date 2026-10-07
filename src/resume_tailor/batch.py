@@ -107,12 +107,16 @@ _SOCIO = re.compile(r"household earner|free school meals|highest level of educat
 _LANG_SKILL = re.compile(r"language skills in|proficiency in (reading|writing|speaking)|indicate your language|skills in reading, written and spoken", re.I)
 _CONSENT_WORDS = re.compile(r"\b(certify|agree|confirm|accura|consent|acknowledge|terms|policy|code of conduct|i understand|scheduling tool|"
                             r"please note|reminder that|we will only consider|first preference|one (role|position|application)s? at a time)\b", re.I)
-# "How did you hear about us?" — and not "if you were referred, name the
-# person", which is a different question with a factual answer.
-_SOURCE_FIELD = re.compile(
-    r"\b(how|where|when) (did you|you)( first| originally)? (hear|heard|find|found|learn|learned)( about| of)?\b"
-    r"|\b(what|which) source\b.*\b(hear|heard|learn|learned|find|found)\b|\bsource of (this )?application\b"
-    r"|\breferral source\b|\bapplication source\b", re.I)
+# "How did you hear about us?" (planner.SOURCE_Q, which its rails share).
+_SOURCE_FIELD = planner.SOURCE_Q
+# A year, a season, a place or a requirement in a question makes it about the
+# candidate's situation — "I confirm my availability for a Summer 2026
+# internship", "candidates must be in Omaha, NE for the summer; can you meet
+# this requirement?" — not a statement to acknowledge, whatever consent words
+# it carries. Those went out as Yes under the acknowledgement rules (2026-09).
+_SITUATION = re.compile(r"\b(19|20)\d\d\b|\b(summer|spring|fall|autumn|winter)\b|\b(requirement|must (be|live|reside|work)|"
+                        r"able to (meet|work|commute|relocate|be)|availability|available (to|for|on|from)|located in|live within|live in|"
+                        r"reside|relocat|commut|on-?site|in-?person)\b", re.I)
 # In order of preference: the postings come from a job board (the SimplifyJobs
 # list), so those options are true; "Other" is true of anything; LinkedIn is not.
 # Honest, generic answers to "how did you hear about us", in order of
@@ -1098,6 +1102,70 @@ async def _add_entries_for(session: ApplySession, errors: list[str]) -> int:
     return pressed
 
 
+# Relocation and location requirements: yes to anything (the user, 2026-10-05:
+# "just get me to the interview"). The one answer about the candidate's
+# situation that comes from a standing instruction rather than the bank:
+# willingness or ability to relocate, move, commute, work on site or in
+# person, be in the posting's city for the term, or live in its area takes
+# the affirmative option. Two limits keep it honest: a question about where
+# the candidate lives *now* with only Yes/No on offer is a fact, not a
+# willingness, and stays with the bank; "do you need relocation assistance?"
+# takes the no-assistance option, since the instruction is to be easy to
+# hire, not to make demands.
+_RELOCATION_Q = re.compile(
+    r"relocat|\bmov(e|ing) to\b|commut|\blive within\b|\bservice areas?\b|\bgeographic(al)? (areas?|preference)|"
+    r"\b(on-?site|in-?person|hybrid|in[- ]office|at (the|our) office)\b|"
+    r"\b(must|required to|need to|expected to|have to|able to|willing to|prepared to|ready to|open to|comfortable) "
+    r"(be|live|reside|work|report|be located|be based|be present|stay)\b|"
+    r"\b(be|located|based|present|living|residing|working) (in|near|within|at) \w[\w .,'-]{0,40}\b(for|during|by|throughout) "
+    r"(the |this |our )?(summer|internship|term|program|duration|start)\b", re.I)
+_RELOCATION_ASSIST_Q = re.compile(r"\b(require|need|request|expect|want|seek)\b[^?]{0,40}\brelocation (assistance|support|package|reimbursement|benefits?|help|stipend)", re.I)
+_RESIDENCE_NOW_Q = re.compile(r"\b(do you|are you) (currently |presently |now )?(live|living|reside|residing|located|based)\b", re.I)
+_LOCATION_LIST_Q = re.compile(r"\b(list|which|what|select|indicate|name)\b", re.I)
+_NEG_OPTION = re.compile(r"\b(no|not|unable|cannot|can'?t|won'?t|unwilling|decline|n/?a|none)\b", re.I)
+_NO_ASSIST_OPTION = re.compile(r"^\s*no\b|not (need|require|request)|without|own expense|on my own|not needed|not required", re.I)
+_YES_OPTION_PATTERNS = (
+    r"relocat|\bmove\b|\bmoving\b|\bwilling\b|\bopen to\b|\bable to\b|\bready to\b|\bi can\b|\bi will\b",
+    r"^\s*yes\b",
+    r"^\s*(i (agree|confirm|understand|accept|acknowledge)|agree|confirm|understood|accept)\b",
+)
+
+
+def relocation_answer(label: str, options: list[str], field: dict | None = None, widget: str = "") -> str | None:
+    """The affirmative answer to a relocation or location-requirement
+    question, in the option's own words; None when the question is not one,
+    asks only where the candidate lives today, or offers nothing affirmative."""
+    label = label or ""
+    if not _RELOCATION_Q.search(label):
+        return None
+    opts = [str(o) for o in (options or []) if str(o).strip()]
+    kind = (field or {}).get("type") or ""
+    if _RELOCATION_ASSIST_Q.search(label):
+        for o in opts:
+            if _NO_ASSIST_OPTION.search(o):
+                return o
+        return "no" if kind in ("checkbox", "yesno") and not opts else None
+    if _RESIDENCE_NOW_Q.search(label) and not any(re.search(r"relocat|\bmov(e|ing)\b|willing", o, re.I) for o in opts):
+        return None
+    if opts:
+        for pat in _YES_OPTION_PATTERNS:
+            for o in opts:
+                if re.search(pat, o, re.I) and not _NEG_OPTION.search(o):
+                    return o
+        if widget == "checkboxes" and _LOCATION_LIST_Q.search(label):
+            # "Indicate every location you would relocate to": all of them.
+            chosen = [o for o in opts if not _NEG_OPTION.search(o)]
+            return " | ".join(chosen) if chosen else None
+        return None
+    if kind in ("checkbox", "yesno"):
+        return "yes"
+    if kind in ("text", "textarea", ""):
+        if _LOCATION_LIST_Q.search(label):
+            return "Any of the role's locations; open to relocating anywhere in the United States."
+        return "Yes, open to relocating for this role."
+    return None
+
+
 def _autofill_boilerplate(label: str, field: dict, options: list[str] | None = None) -> str | None:
     """The narrow, explicitly-enumerated set of required fields safe to answer
     without a profile match, because the answer carries no factual claim about
@@ -1119,14 +1187,14 @@ def _autofill_boilerplate(label: str, field: dict, options: list[str] | None = N
         part = m.group(3).lower()
         return datetime.now().strftime("%m" if part == "month" else "%d" if part == "day" else "%Y")
     if (field.get("type") == "checkbox" and not opts_now and field.get("required") and "?" not in label and not _NO_BANK.search(label)
-            and not _SELF_ID.search(" ".join((label, field.get("option_label") or "", field.get("section") or "")))):
+            and not _SITUATION.search(label) and not _SELF_ID.search(" ".join((label, field.get("option_label") or "", field.get("section") or "")))):
         # A required lone checkbox under a statement — "Your application will
         # be reviewed for one position at a time" — is an acknowledgement box,
         # whatever words it uses. Nobody puts a real question behind one.
         # Never a box on a self-identification form: "Yes, I have a
         # disability" is a claim about the candidate, not an acknowledgement.
         return "yes"
-    if _CONSENT_WORDS.search(label):
+    if _CONSENT_WORDS.search(label) and not _SITUATION.search(label):
         opts = opts_now
         if field.get("type") in ("checkbox", "yesno") and not opts:
             return "yes"
@@ -1161,7 +1229,8 @@ def _autofill_boilerplate(label: str, field: dict, options: list[str] | None = N
         for opt in opts_now:
             if re.search(r"^\s*(none|no (knowledge|proficiency|ability|skills?)|not (applicable|proficient)|n/?a|0)\b", opt, re.I):
                 return opt
-    if field.get("required") and opts_now and "?" not in label and all(_ACK_OPTION.match(o) for o in opts_now if o.strip()):
+    if (field.get("required") and opts_now and "?" not in label and not _SITUATION.search(label)
+            and all(_ACK_OPTION.match(o) for o in opts_now if o.strip())):
         # A statement to acknowledge ("Reminder: you may apply for one role
         # only") whose every option is a form of yes: the only answer there is.
         return next(o for o in opts_now if o.strip())
@@ -1188,7 +1257,10 @@ def _autofill_boilerplate(label: str, field: dict, options: list[str] | None = N
             # option present, in order of preference.
             for want in _GENERIC_SOURCE_OPTIONS:
                 for opt in opts:
-                    if want in opt.strip().lower():
+                    # "Job Posting (LinkedIn, Indeed…)" is a category; "LinkedIn
+                    # Job Postings" is a site the candidate did not use.
+                    plain = re.sub(r"\([^)]*\)", " ", opt).strip().lower()
+                    if want in plain and not planner.NAMED_SOURCE.search(plain):
                         return opt
             return None
         if field.get("type") in ("text", "textarea", "") and not field.get("combobox"):
@@ -1234,6 +1306,10 @@ def _bank(profile: Profile, question: str, field: dict | None = None, options: l
     if answer is None or key is None:
         return None, None
     if planner.THIRD_PARTY.search(question) and key.startswith(planner.SELF_KEYS):
+        return None, None
+    if planner.CITIZENSHIP_Q.search(question) and not key.startswith("work_authorization."):
+        # "Please list all countries of citizenship" once reached
+        # address.country: the mailing address says nothing about citizenship.
         return None, None
     if key == "about.recent_reading" and not re.search(r"\b(read|reading|book|paper|article|podcast|blog)\b", question, re.I):
         # "What is the most impressive thing you've built with AI?" is not a
@@ -1466,6 +1542,11 @@ async def _fill_form(session: ApplySession, profile: Profile, pdf_path: Path, po
         after = len(unresolved) + len(await session.unfilled_required(force_required))
         if not unresolved or after >= before:
             break
+    # Every field against the value decided for it, before anything is sent.
+    try:
+        unresolved = await _sweep_intended(session, decided, unresolved)
+    except Exception as e:
+        print(f"  sweep skipped ({_brief(e)})", file=sys.stderr, flush=True)
     return unresolved, _snapshot(await session.describe_form(), unresolved, sources)
 
 
@@ -1558,6 +1639,12 @@ async def _decide(question: str, field: dict, options: list[str], profile: Profi
     key = (section, question, tuple(options))
     if key in decided:
         return decided[key]
+    if planner.HUMAN_CHECK.search(question):
+        # Built to unmask an automated applicant; answered by nobody but the
+        # user. Required, it holds the application for review.
+        decided[key] = None
+        sources[(section, question)] = "human check: left for the user"
+        return None
     if _TEXT_CONSENT.search(question):
         # "Check Yes or No to indicate your agreement to receive text message
         # updates from … Reply STOP to opt out" (Rippling): a paragraph the
@@ -1604,6 +1691,11 @@ async def _decide(question: str, field: dict, options: list[str], profile: Profi
         sources[(section, question)] = "answer bank: work_authorization.requires_us_sponsorship"
         decided[key] = picked
         return picked
+    reloc = relocation_answer(question, options, field, widget)
+    if reloc is not None and _fits(reloc, field, options):
+        sources[(section, question)] = "standing rule: relocation, yes to anything"
+        decided[key] = reloc
+        return reloc
     if _CURRENT_EMPLOYER.search(question) and not options:
         # A text box or an employer search picker: "Duke University" is
         # searched and chosen like any other picker value.
@@ -1945,6 +2037,125 @@ async def _repair(session: ApplySession, profile: Profile, posting_text: str,
 # Questions whose answer is a hard fact the bank holds, where a value a page
 # already shows may be an earlier attempt's mistake rather than the truth.
 _HARD_FACT_Q = re.compile(r"sponsor|visa|authori[sz]|citizen|clearance|relocat|18 years|drug|background check|eligib", re.I)
+# A site's résumé parser fills these from the PDF and gets them wrong in ways
+# nobody sees — a first name cut short, "NC" in County, the school's e-mail —
+# so a prefilled identity field is checked against the bank, exactly, and
+# corrected. Whole-label patterns, so "Name of the person who referred you"
+# is not one of them.
+_IDENTITY_Q = re.compile(
+    r"^\s*((first|given|last|family|sur|full|legal|preferred)\s*name|name|e-?mail( address)?|(primary |mobile |cell |home )?(phone|telephone)( number)?|"
+    r"street( address)?|address( line\s*1)?|city|state( ?/ ?province)?|province|zip( code)?|postal code|"
+    r"linkedin( url| profile| profile url)?|github( url| profile)?|website|portfolio( url)?)\s*[*✱:]?\s*$", re.I)
+_BREEZY_STEP = re.compile(r"one more step|check your (e-?mail|inbox)[^.]{0,60}(code|confirm|complete)|enter the code we (sent|e-?mailed)", re.I)
+_CAP_DIALOG = re.compile(r"(limit|maximum|cap|quota)\b[^.]{0,60}\bapplications?\b|\bapplications? (per|this|a|each) (rolling )?(week|day|month)\b|\b\d+ applications\b", re.I)
+
+
+def _same_identity(answer: str, held: str, label: str) -> bool:
+    """An identity field agrees with the bank only when it holds exactly the
+    bank's value (case and spacing aside; digits alone for a phone). "Sulai"
+    is not "Sulaiman" because one contains the other, and a doubled e-mail
+    address contains the right one and is wrong."""
+    a, h = " ".join(str(answer).split()).lower(), " ".join(str(held).split()).lower()
+    if re.search(r"phone|telephone|mobile|zip|postal", label, re.I):
+        return re.sub(r"\D", "", a)[-10:] == re.sub(r"\D", "", h)[-10:] and bool(re.sub(r"\D", "", h))
+    if re.search(r"linkedin|github|website|portfolio", label, re.I):
+        strip = lambda u: re.sub(r"^https?://(www\.)?|/+$", "", u)  # noqa: E731
+        return strip(a) == strip(h)
+    return a == h
+
+
+def _breezy_pending(url: str, why: str, page_text: str) -> bool:
+    """Whether a submit that looked complete still wants Breezy's e-mailed
+    code: a breezy.hr host, or the page saying so."""
+    return "breezy.hr" in (url or "").lower() or bool(_BREEZY_STEP.search(" ".join((why or "", page_text or ""))))
+
+
+async def _finish_breezy(session: ApplySession, entry: QueueEntry, since: float, why: str) -> tuple[bool, str]:
+    """Breezy's last step: the tenant mails "One more step! … code: NNNN" with
+    a breezy.hr/q/<id> link; the application counts once the code is entered
+    there. Read the mail, follow the link, type the code. Without the mail,
+    the submit is not complete and the posting is a review item."""
+    if not mailbox.configured():
+        return False, why + "; Breezy wants an e-mailed code entered at its link and the inbox is not configured"
+    found = await mailbox.fetch_secret_async(since, [entry.company_hint, "breezy", "one more step", "code"], timeout_s=150)
+    code, link = (found or {}).get("code"), (found or {}).get("link")
+    if not code:
+        return False, why + "; Breezy's 'one more step' code did not arrive in 150 s — the application does not count until it is entered"
+    if link and "breezy" in link:
+        try:
+            await session.goto(link)
+            await session._page.wait_for_timeout(2000)
+        except Exception:
+            pass
+    if await _enter_code(session, code):
+        await session._page.wait_for_timeout(2500)
+        text = (await session.read_text()).lower()
+        if not await _code_fields(session) or re.search(r"thank you|confirmed|complete|received", text):
+            return True, why + "; Breezy's e-mailed code entered"
+    return False, why + "; Breezy's e-mailed code arrived but could not be entered — finish at the link in that mail"
+
+
+def _deviates(intended: str | None, field: dict, options: list[str]) -> str | None:
+    """Whether the page holds something other than the intended answer for a
+    field, and what: None when it agrees (or nothing was intended). The check
+    is against the intended value, never against non-emptiness — a value can
+    be present and wrong (a neighbour's text, search-box residue, a doubled
+    e-mail) and a field can pass an emptiness check while blank."""
+    if intended is None or not str(intended).strip():
+        return None
+    kind = field.get("type") or ""
+    label = field.get("label") or ""
+    if kind == "file" or field.get("search") or re.search(r"\b(date|month|year|day)\b", label, re.I):
+        return None  # dates and search pickers render in their own formats; the repair pass owns them
+    if kind == "checkbox":
+        want = str(intended).strip().lower() in _YES_WORDS
+        return None if bool(field.get("checked")) == want else f"{'ticked' if field.get('checked') else 'unticked'} instead of {'yes' if want else 'no'}"
+    held = str(field.get("value") or "")
+    if not held.strip():
+        return "empty"
+    if _IDENTITY_Q.search(label):
+        return None if _same_identity(str(intended), held, label) else f"holds {held!r}"
+    return None if _same_answer(str(intended), held, options) else f"holds {held!r}"
+
+
+async def _sweep_intended(session: ApplySession, decided: dict[tuple, str | None], unresolved: list[str]) -> list[str]:
+    """Before any submit: every field against the value decided for it. A
+    deviation is filled once more; what still deviates goes on the
+    unresolved list, which holds the application for review rather than
+    sending a form that does not say what was decided."""
+    want: dict[tuple[str, str], str | None] = {}
+    for (section, question, _opts), answer in decided.items():
+        if answer is not None:
+            want[(section or "", question)] = answer
+    if not want:
+        return unresolved
+    fields = await session.describe_form()
+    groups, grouped = _group(fields)
+    deviations: list[tuple[dict, str, str]] = []
+    for f in fields:
+        if f["id"] in grouped or f.get("type") in ("file", "radio", "password"):
+            continue
+        intended = want.get((f.get("section") or "", f.get("label") or ""))
+        what = _deviates(intended, f, list(f.get("options") or []))
+        if what:
+            deviations.append((f, intended, what))
+    if not deviations:
+        return unresolved
+    for f, intended, _ in deviations:
+        try:
+            await session.fill(f["selector"], intended, f)
+        except Exception:
+            pass
+    fields = await session.describe_form()
+    by_key = {(f.get("section") or "", f.get("label") or ""): f for f in fields if f["id"] not in grouped}
+    for f, intended, _ in deviations:
+        now = by_key.get((f.get("section") or "", f.get("label") or ""), f)
+        what = _deviates(intended, now, list(now.get("options") or []))
+        if what:
+            label = f.get("label") or f.get("name") or "a field"
+            if not any(u.startswith(label[:40]) for u in unresolved):
+                unresolved.append(f"{label[:80]} — {what}, not the intended {str(intended)[:60]!r}")
+    return unresolved
 
 
 def _same_answer(answer: str, held: str, options: list[str]) -> bool:
@@ -2046,7 +2257,8 @@ async def _fill_pass(session: ApplySession, profile: Profile, fields: list[dict]
         # a draft that contradicts the bank is corrected, never kept.
         if (f.get("checked") if f.get("type") in ("checkbox", "radio") else f.get("value")):
             label_now = f.get("label") or ""
-            if f.get("type") in ("checkbox", "radio") or not (_HARD_FACT_Q.search(label_now) or _CURRENT_EMPLOYER.search(label_now)):
+            identity = bool(_IDENTITY_Q.search(label_now))
+            if f.get("type") in ("checkbox", "radio") or not (_HARD_FACT_Q.search(label_now) or _CURRENT_EMPLOYER.search(label_now) or identity):
                 continue
             held = str(f.get("value") or "")
             opts_now = f.get("options") or []
@@ -2074,9 +2286,9 @@ async def _fill_pass(session: ApplySession, profile: Profile, fields: list[dict]
                 d = plan.get(planner.question_key(f["label"], planner.widget_of(f), f.get("section") or ""))
                 if d is not None and d.answer and not d.essay:
                     answer, why = d.answer, "form plan" + (f": {d.reason}" if d.reason else "")
-            if answer is None or _same_answer(answer, held, opts_now):
+            if answer is None or (_same_identity(answer, held, label_now) if identity else _same_answer(answer, held, opts_now)):
                 continue
-            sources[(f.get("section") or "", f["label"])] = f"{why} (over a saved draft of {held!r})"
+            sources[(f.get("section") or "", f["label"])] = f"{why} (over {'the parser' if identity else 'a saved draft'}'s {held!r})"
             try:
                 await session.fill(f["selector"], answer, f)
             except Exception as e:
@@ -2935,6 +3147,15 @@ async def _process_one_inner(session: ApplySession, profile: Profile, entry: Que
         rounds += 1
         demanded = await _demanded_by_page(session)
         if not demanded:
+            # No complaint, form still standing: a required field that
+            # rendered only on the first attempt (a work-authorization pair
+            # drawn after the click) — whatever is required and empty now is
+            # what the page wants.
+            try:
+                demanded = {(f.get("label") or "").strip() for f in await session.unfilled_required()} - {""}
+            except Exception:
+                demanded = set()
+        if not demanded:
             break
         _now(f"repairing the form (round {rounds})", entry, url=apply_url)
         try:
@@ -2978,13 +3199,35 @@ async def _process_one_inner(session: ApplySession, profile: Profile, entry: Que
                     why += "; the e-mailed security code was entered but the page still shows the form"
             else:
                 why += "; the page asked for an e-mailed security code and none arrived in time"
+    if submitted and _breezy_pending(_page_url(session) or apply_url, why, " ".join(await session.read_text() for _ in [0])[:4000]):
+        # Breezy counts an application only once the 4-digit code it e-mails
+        # after Submit is entered at the link in that mail. "Submitted" on the
+        # page is not the end of it.
+        _now("finishing Breezy's e-mailed code step", entry, url=apply_url)
+        submitted, why = await _finish_breezy(session, entry, submit_started, why)
     post_shot = await session.screenshot(shots_dir / f"{_safe(entry.id)}-post-submit.png")
     o.screenshot = str(post_shot)
+    cap = next((m for m in session.dialogs if _CAP_DIALOG.search(m)), None)
+    if not submitted and cap:
+        # Work at a Startup caps candidates at 25 applications a rolling week
+        # and says so in a browser alert mid-submit. Not this posting's fault:
+        # blocked, and left alone for a week (discover._worn_out).
+        o.status = "blocked"
+        o.detail = f"weekly application cap: the site said {cap.strip()[:160]!r}"
+        return o
+    if not submitted and re.search(r"submission is (currently |temporarily )?unavailable", why, re.I):
+        # Ashby's transient; it clears within minutes. An error, so the next
+        # pass simply tries again.
+        o.status, o.detail = "error", f"the site said submission is unavailable right now (it clears on its own) — {why[:200]}"
+        return o
     if not submitted:
-        # A spam or bot verdict is the site's, not the form's: blocked, and
-        # worth another try from a more convincing browser later.
+        # A spam or bot verdict is the site's, not the form's: blocked. A
+        # spam flag in particular is never retried by the loop — repeated
+        # flags hurt the applicant's standing with that vendor (Ashby keys
+        # it on the tenant) — so it is named for discover._worn_out; a hand
+        # sign-in there lifts it like any other wall.
         o.status = "blocked" if re.search(r"spam|bot\b|captcha|robot|verif", why, re.I) else "needs_review"
-        o.detail = why
+        o.detail = ("spam flag: " + why) if re.search(r"spam", why, re.I) else why
         return o
     o.status, o.detail = "applied", f"submitted — {why}"
     if apply_once:
@@ -3198,7 +3441,7 @@ async def login_site(url: str, timeout_s: float = 30 * 60) -> int:
             try:
                 if session._page.is_closed():
                     break
-                saved = await session.save_logins()
+                saved = await session.save_logins(record=False)  # every five seconds while the window is open: not yet a passed wall
             except Exception:
                 break
         try:

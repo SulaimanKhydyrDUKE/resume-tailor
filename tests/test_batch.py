@@ -1294,6 +1294,138 @@ _f2, _s2, _body2, _ = _mbx.unforward("Sulaiman Khydyr uulu <sulaiman.khydyruulu@
 check("mail: the HTML part read as text yields the code", _mbx.extract_code(_s2 + " " + _body2) == "482913", (_s2, _body2))
 check("mail: html_as_text drops tags and decodes entities", _mbx.html_as_text("<p>a &amp; b</p><script>x()</script>") == "a & b")
 
+# --- relocation: yes to anything (the user, 2026-10-05) ------------------------------------
+from resume_tailor.batch import relocation_answer
+check("relocation: a willingness question takes Yes", relocation_answer("Are you willing to relocate for this role?*", ["Yes", "No"]) == "Yes")
+check("relocation: the option that says relocate beats a bare Yes",
+      relocation_answer("Do you currently reside in commutable proximity to our office?", ["I currently live within commuting distance", "I am willing to relocate before starting employment"]) == "I am willing to relocate before starting employment")
+check("relocation: 'able to work in the city without assistance' is a Yes",
+      relocation_answer("Are you able to work in the internship's city without relocation assistance?*", ["Yes", "No"]) == "Yes")
+check("relocation: a city-for-the-summer requirement is met",
+      relocation_answer("For this role, candidates must be in Omaha, NE for Summer 2026. Are you able to meet this requirement?", ["Yes", "No"]) == "Yes")
+check("relocation: a service-area requirement is met",
+      relocation_answer("It is a requirement that our interns live within our service areas of Rochester, Syracuse, Buffalo, Utica, or other approved areas. Do you meet this requirement?", ["Yes", "No"]) == "Yes")
+check("relocation: an on-site requirement is accepted",
+      relocation_answer("This role requires working onsite 5 days per week at our Mountain View office. Are you able to meet this requirement?", ["Yes", "No"]) == "Yes")
+check("relocation: 'do you need relocation assistance' takes the no-assistance option",
+      relocation_answer("Will you require relocation assistance?", ["Yes", "No"]) == "No"
+      and relocation_answer("Would you need to relocate for this role?", ["No", "Yes, but I am planning to relocate on my own", "Yes, I would need relocation assistance"]) == "Yes, but I am planning to relocate on my own")
+check("relocation: where the candidate lives now, with only Yes/No, is not a willingness question",
+      relocation_answer("Do you currently live in Austin, TX?", ["Yes", "No"]) is None)
+check("relocation: a list of places to relocate to takes every one",
+      relocation_answer("Please indicate all of the locations you would be interested in relocating to", ["New York, NY", "San Francisco, CA", "None of these"], {"type": "checkbox"}, "checkboxes") == "New York, NY | San Francisco, CA")
+check("relocation: a free-text 'open to relocation? list your cities' gets an open answer",
+      "open to relocating" in (relocation_answer("Are you open to relocation? If so, please list your geographical areas/cities of choice.*", [], {"type": "textarea"}) or ""))
+check("relocation: a lone required checkbox under an on-site statement is ticked",
+      relocation_answer("I understand this role is on-site in Durham, NC", [], {"type": "checkbox", "required": True}) == "yes")
+check("relocation: an unrelated question is left alone",
+      relocation_answer("Do you require any reasonable adjustments to participate in the recruitment process?", ["Yes", "No"]) is None
+      and relocation_answer("Preferred work location", ["Austin", "Denver"]) is None)
+# --- acknowledgement rules stay off situational questions; "how did you hear" never names a site ---
+check("boilerplate: a dated availability confirmation is not an acknowledgement",
+      _autofill_boilerplate("I confirm my availability for a Summer 2026 (May/June starts) internship*", {"type": "select", "required": True}, ["Yes", "No"]) is None)
+check("boilerplate: a city-for-the-summer requirement is not an acknowledgement",
+      _autofill_boilerplate("For this role, candidates must be in Omaha, NE for Summer 2026. Are you able to meet this requirement?", {"type": "radio", "required": True}, ["Yes", "No"]) is None)
+check("boilerplate: a plain terms box still is", _autofill_boilerplate("I agree to the privacy policy", {"type": "checkbox", "required": True}, []) == "yes")
+check("how did you hear: 'LinkedIn Job Postings' is a site, not a job board",
+      _autofill_boilerplate("How Did You Hear About Us?*", {"type": "select", "required": True}, ["LinkedIn Job Postings", "Indeed", "Company Website", "Referral"]) == "Company Website")
+check("how did you hear: a job-board category that lists sites in brackets is fine",
+      _autofill_boilerplate("Where did you hear about us?*", {"type": "select", "required": True}, ["Job Posting (LinkedIn, Indeed, Handshake, etc.)", "Employee Referral", "Career Fair"]) == "Job Posting (LinkedIn, Indeed, Handshake, etc.)")
+check("how did you hear: only named sites on offer → Other, else nothing",
+      _autofill_boilerplate("How did you hear about us?", {"type": "select", "required": True}, ["LinkedIn", "Indeed", "Referral", "Other"]) == "Other"
+      and _autofill_boilerplate("How did you hear about us?", {"type": "select", "required": True}, ["LinkedIn", "Indeed", "Referral"]) is None)
+# --- rails: citizenship rests on the bank; a named source is refused ---
+_cz = [
+    {"qid": "z1", "key": planner.question_key("Please list ALL countries of citizenship:", "text"), "label": "Please list ALL countries of citizenship:",
+     "section": "", "widget": "text", "options": [], "required": True, "maxlength": None, "hint": "", "bank": ""},
+    {"qid": "z2", "key": planner.question_key("Citizenship status", "select"), "label": "Citizenship status",
+     "section": "", "widget": "select", "options": ["U.S. citizen", "U.S. permanent resident", "Other"], "required": True, "maxlength": None, "hint": "", "bank": ""},
+    {"qid": "z3", "key": planner.question_key("How did you hear about us?", "select"), "label": "How did you hear about us?",
+     "section": "", "widget": "select", "options": ["LinkedIn", "Other"], "required": True, "maxlength": None, "hint": "", "bank": ""},
+]
+_cplan = planner.rails([
+    FieldAnswer(id="z1", answer="United States", basis=["reasoning"], skip=False, essay=False, reason="the candidate works in the US"),
+    FieldAnswer(id="z2", answer="U.S. permanent resident", basis=["work_authorization.requires_us_sponsorship"], skip=False, essay=False, reason="bank"),
+    FieldAnswer(id="z3", answer="LinkedIn", basis=["reasoning"], skip=False, essay=False, reason="profile link"),
+], _cz, _pl)
+check("bank: a citizenship question never takes the mailing address",
+      _bank(_pl, "Please list ALL countries of citizenship:", {"type": "text", "required": True}, [], strong=True) == (None, None)
+      and _bank(_pl, "State", {"type": "text", "required": True}, [], strong=True)[1] == "address.state")
+_fq = [
+    {"qid": "f1", "key": planner.question_key("How many years of industry experience do you have?", "select"), "label": "How many years of industry experience do you have?",
+     "section": "", "widget": "select", "options": ["0-1", "2-3", "4+"], "required": True, "maxlength": None, "hint": "", "bank": ""},
+    {"qid": "f2", "key": planner.question_key("Which team interests you most?", "select"), "label": "Which team interests you most?",
+     "section": "", "widget": "select", "options": ["Backend", "Design", "Sales"], "required": True, "maxlength": None, "hint": "", "bank": ""},
+    {"qid": "f3", "key": planner.question_key("Are you at least 18 years of age?", "select"), "label": "Are you at least 18 years of age?",
+     "section": "", "widget": "select", "options": ["Yes", "No"], "required": True, "maxlength": None, "hint": "", "bank": ""},
+    {"qid": "f4", "key": planner.question_key("The car wash is two blocks away. Walk or drive?", "text"), "label": "The car wash is two blocks away. Walk or drive?",
+     "section": "", "widget": "text", "options": [], "required": True, "maxlength": None, "hint": "", "bank": ""},
+]
+_fplan = planner.rails([
+    FieldAnswer(id="f1", answer="2-3", basis=["reasoning"], skip=False, essay=False, reason="internships add up"),
+    FieldAnswer(id="f2", answer="Backend", basis=["reasoning"], skip=False, essay=False, reason="closest to the record"),
+    FieldAnswer(id="f3", answer="Yes", basis=["reasoning"], skip=False, essay=False, reason="a college junior"),
+    FieldAnswer(id="f4", answer="Walk", basis=["reasoning"], skip=False, essay=False, reason="two blocks"),
+], _fq, _pl)
+check("rails: a quantity about the candidate on reasoning alone is refused", _fplan[_fq[0]["key"]].answer is None and "fact" in _fplan[_fq[0]["key"]].reason)
+check("rails: a preference on reasoning stands", _fplan[_fq[1]["key"]].answer == "Backend")
+check("rails: an age question on reasoning alone is refused (the bank's to answer)", _fplan[_fq[2]["key"]].answer is None)
+check("rails: a puzzle on reasoning still stands", _fplan[_fq[3]["key"]].answer == "Walk")
+# --- parser-filled identity fields, the pre-submit sweep, the portal quirks ---
+from resume_tailor.batch import _same_identity, _IDENTITY_Q, _deviates, _CAP_DIALOG, _breezy_pending
+from resume_tailor.apply import _FAILURE_TEXT as _FAIL
+check("identity: whole-label match — First Name yes, 'Name of the person who referred you' no",
+      _IDENTITY_Q.search("First Name*") and _IDENTITY_Q.search("Email") and _IDENTITY_Q.search("LinkedIn Profile URL") and _IDENTITY_Q.search("Zip Code")
+      and not _IDENTITY_Q.search("Name of the person who referred you") and not _IDENTITY_Q.search("Emergency contact phone") and not _IDENTITY_Q.search("Company name"))
+check("identity: a truncated first name is not the same name", not _same_identity("Sulaiman", "Sulai", "First Name") and _same_identity("Sulaiman", " sulaiman ", "First Name"))
+check("identity: a doubled e-mail is wrong although it contains the right one",
+      not _same_identity("a@duke.edu", "a@duke.edua@duke.edu", "Email") and _same_identity("a@duke.edu", "A@duke.edu", "Email*"))
+check("identity: phones compare by digits, links without scheme or slash",
+      _same_identity("+1 910-336-0632", "(910) 336-0632", "Phone") and not _same_identity("+1 910-336-0632", "910-336-0633", "Phone")
+      and _same_identity("https://www.linkedin.com/in/x/", "linkedin.com/in/x", "LinkedIn"))
+check("sweep: an empty field with an intended answer deviates; an agreeing one does not; dates and search pickers are left alone",
+      _deviates("Yes", {"type": "select", "label": "Authorized?", "value": ""}, ["Yes", "No"]) == "empty"
+      and _deviates("Yes", {"type": "select", "label": "Authorized?", "value": "Yes"}, ["Yes", "No"]) is None
+      and _deviates("No", {"type": "select", "label": "Sponsorship?", "value": "Yes"}, ["Yes", "No"]) == "holds 'Yes'"
+      and _deviates("05/2028", {"type": "text", "label": "Graduation date", "value": "2028-05"}, []) is None
+      and _deviates("Durham, NC", {"type": "text", "label": "Location", "value": "", "search": True}, []) is None
+      and _deviates(None, {"type": "text", "label": "x", "value": ""}, []) is None)
+check("sweep: a checkbox is judged by state, an identity field exactly",
+      _deviates("yes", {"type": "checkbox", "label": "I agree", "checked": False}, []) == "unticked instead of yes"
+      and _deviates("yes", {"type": "checkbox", "label": "I agree", "checked": True}, []) is None
+      and _deviates("Sulaiman", {"type": "text", "label": "First Name", "value": "Sulai"}, []) == "holds 'Sulai'")
+check("weekly cap: the alert's wording is recognised, a plain confirm is not",
+      _CAP_DIALOG.search("You have reached the limit of 25 applications per week.") and _CAP_DIALOG.search("Maximum applications for this week reached")
+      and not _CAP_DIALOG.search("Are you sure you want to leave this page?"))
+check("breezy: a breezy.hr submit, or a page saying 'one more step', still wants the e-mailed code",
+      _breezy_pending("https://acme.breezy.hr/p/123/apply", "form gone after submit", "") and _breezy_pending("https://jobs.lever.co/x", "", "One more step! Check your email for the code")
+      and not _breezy_pending("https://jobs.lever.co/x", "form gone after submit", "Thank you for applying"))
+check("ashby: 'submission is unavailable at this time' reads as a refusal (then an error to retry), not a submit",
+      _FAIL.search("Application submission is unavailable at this time. Please try again later."))
+
+# --- a human check is never answered ---
+_hc = [{"qid": "h1", "key": planner.question_key("If you are a human, answer: how many R's are in strawberry?", "text"),
+        "label": "If you are a human, answer: how many R's are in strawberry?", "section": "", "widget": "text", "options": [], "required": True,
+        "maxlength": None, "hint": "", "bank": ""},
+       {"qid": "h2", "key": planner.question_key("To prove you are not a bot, type the word apple", "text"),
+        "label": "To prove you are not a bot, type the word apple", "section": "", "widget": "text", "options": [], "required": True,
+        "maxlength": None, "hint": "", "bank": ""}]
+_hplan = planner.rails([FieldAnswer(id="h1", answer="3", basis=["reasoning"], skip=False, essay=False, reason="count"),
+                        FieldAnswer(id="h2", answer="apple", basis=["reasoning"], skip=False, essay=False, reason="asked")], _hc, _pl)
+check("human check: the strawberry question is left empty however right the answer", _hplan[_hc[0]["key"]].answer is None and "human check" in _hplan[_hc[0]["key"]].reason)
+check("human check: 'type the word apple to prove you are not a bot' too", _hplan[_hc[1]["key"]].answer is None)
+check("human check: the pattern leaves ordinary questions alone",
+      not planner.HUMAN_CHECK.search("Are you legally authorized to work in the United States?") and not planner.HUMAN_CHECK.search("Describe a robot you built")
+      and not planner.HUMAN_CHECK.search("What is your GPA?") and planner.HUMAN_CHECK.search("Are you a human?") and planner.HUMAN_CHECK.search("Human verification: enter the code"))
+from resume_tailor.batch import _decide as _decide_q
+_dd, _ss = {}, {}
+check("human check: the field-by-field path leaves it empty and says why",
+      _aio.run(_decide_q("If you are a human, answer: how many R's are in strawberry?", {"type": "text", "required": True, "section": ""}, [], _pl, "", _dd, _ss, None, "text")) is None
+      and _ss.get(("", "If you are a human, answer: how many R's are in strawberry?")) == "human check: left for the user")
+check("rails: a country of citizenship on reasoning alone is refused", _cplan[_cz[0]["key"]].answer is None and "citizenship" in _cplan[_cz[0]["key"]].reason)
+check("rails: a citizenship status resting on a work_authorization entry stands", _cplan[_cz[1]["key"]].answer == "U.S. permanent resident")
+check("rails: 'how did you hear: LinkedIn' is refused", _cplan[_cz[2]["key"]].answer is None and "source" in _cplan[_cz[2]["key"]].reason)
+
 width = max(len(n) for n, _, _ in RESULTS)
 failed = 0
 for name, ok, detail in RESULTS:

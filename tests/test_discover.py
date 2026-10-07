@@ -381,6 +381,71 @@ check("by hand: the same role at the same company, applied to under a listing no
 check("by hand: a different role there still goes", "ig:other" in {e.id for e in _rsel})
 
 
+# --- a hand sign-in at a host lifts the login-wall cap for every posting there ---
+from resume_tailor import discover as _D
+_real_logins = _D.LOGINS_DIR
+_D.LOGINS_DIR = Path(tempfile.mkdtemp())
+try:
+    _wall = {"status": "needs_login", "attempts": 2, "when": "2026-10-01T10:00:00-04:00", "detail": "this site wants an account"}
+    check("login cap: two tries at a wall and no sign-in since → worn out", _D._worn_out(_wall, True, "https://careers-berkley.icims.com/jobs/1/x/login"))
+    (_D.LOGINS_DIR / "careers-berkley.icims.com.json").write_text("[]")   # cookies alone say nothing
+    check("login cap: a cookie file alone does not lift it (every session rewrites them)", _D._worn_out(_wall, True, "https://careers-berkley.icims.com/jobs/1/x/login"))
+    import json as _json, time as _tm2
+    (_D.LOGINS_DIR / "signed-in.json").write_text(_json.dumps({"careers-berkley.icims.com": _tm2.time()}))
+    check("login cap: a hand sign-in at the host after the attempt lifts it", not _D._worn_out(_wall, True, "https://careers-berkley.icims.com/jobs/2/y/login"))
+    check("login cap: another host's sign-in does not", _D._worn_out(_wall, True, "https://careers-westernsouthern.icims.com/jobs/3/z"))
+    _old = dict(_wall, when="2099-12-01T10:00:00-04:00")
+    check("login cap: a sign-in older than the attempt does not", _D._worn_out(_old, True, "https://careers-berkley.icims.com/jobs/2/y"))
+    _cap = {"status": "blocked", "attempts": 3, "when": "2026-10-01T10:00:00-04:00", "detail": "a captcha guards this site's sign-in"}
+    check("login cap: a captcha block is lifted by the same sign-in", not _D._worn_out(_cap, True, "https://careers-berkley.icims.com/jobs/4/w")
+          and _D._worn_out(_cap, True, "https://jobs.example.com/4"))
+    check("login cap: the record's own url serves when the listing has none", not _D._worn_out(dict(_wall, url="https://careers-berkley.icims.com/jobs/5"), True))
+finally:
+    _D.LOGINS_DIR = _real_logins
+
+# --- two more lists, each row's category by source ---
+from resume_tailor.discover import TABLE_SOURCES as _TS, SOURCE_CATEGORY, parse_table as _pt
+check("sources: the AI and sndsh404 lists are read, and the 2027 names are used",
+      {n for n, _ in _TS} >= {"speedyapply", "speedyapply-ai", "vanshb03", "sndsh404", "jobright-swe", "jobright-ba"}
+      and all("2027" in u for n, u in _TS if n in ("speedyapply", "speedyapply-ai", "vanshb03", "sndsh404")))
+_md = "| Company | Position | Location | Salary | Posting | Age |\n|---|---|---|---|---|---|\n| <a href=\"https://www.figma.com\"><strong>Figma</strong></a> | AI Applied Scientist Intern - Summer 2027 | SF | $60/hr | <a href=\"https://boards.greenhouse.io/figma/jobs/1\">apply</a> | 2d |\n"
+check("sources: a speedyapply-ai row carries the AI/ML category, a SWE-list row Software Engineering",
+      _pt(_md, "speedyapply-ai")[0]["category"] == "AI/ML" and _pt(_md, "speedyapply")[0]["category"] == "Software Engineering" and SOURCE_CATEGORY["jobright-ba"] == "Business Analyst")
+
+# --- company tiers: order and floor ---
+from resume_tailor.discover import tier_rank, _named
+_tp = Prefs(max_posting_age_days=0, tier_first=["stripe", "amazon"], tier_then=["cencora"], tier_never=["acme staffing"])
+check("tiers: a `never` firm is left out", evaluate(L(company_name="Acme Staffing LLC"), _tp) == "company tier: never")
+check("tiers: whole-word match — Amazonia is not Amazon", tier_rank(L(company_name="Amazon Web Services"), _tp) == 0 and tier_rank(L(company_name="Amazonia Labs"), _tp) == 2
+      and tier_rank(L(company_name="Cencora"), _tp) == 1 and _named("stripe", "stripe"))
+_tiered = [L(id="t3", company_name="Zed Co", url="https://jobs.lever.co/z/1", date_posted=300),
+           L(id="t1", company_name="Stripe", url="https://jobs.lever.co/s/1", date_posted=100),
+           L(id="t2", company_name="Cencora", url="https://jobs.lever.co/c/1", date_posted=200)]
+check("tiers: first, then, the rest — ahead of posting date", [e.id for e in select(_tiered, _tp, None)[0]] == ["t1", "t2", "t3"])
+check("tiers: from the profile", Prefs.from_profile(type("P", (), {"answers": {"search": {"company_tiers": {"first": ["Stripe"], "never": ["X"]}}}})()).tier_first == ["stripe"])
+
+# --- a spam-flagged submit is never retried on its own ---
+check("spam flag: a blocked record whose detail names it is worn out at once, whatever its count",
+      _D._worn_out({"status": "blocked", "attempts": 1, "when": "2026-10-01T10:00:00-04:00", "detail": "spam flag: the site flagged the submission as possible spam"}, True, "https://jobs.ashbyhq.com/x/1")
+      and not _D._worn_out({"status": "blocked", "attempts": 1, "when": "2026-10-01T10:00:00-04:00", "detail": "a bot check was on the page"}, True, "https://jobs.ashbyhq.com/x/1"))
+
+check("weekly cap: a capped record rests a week, then is worth a try",
+      _D._worn_out({"status": "blocked", "attempts": 1, "when": __import__("datetime").datetime.now().astimezone().isoformat(), "detail": "weekly application cap: 25 per week"}, True, "https://www.workatastartup.com/jobs/1")
+      and not _D._worn_out({"status": "blocked", "attempts": 1, "when": "2026-09-01T10:00:00-04:00", "detail": "weekly application cap: 25 per week"}, True, "https://www.workatastartup.com/jobs/1"))
+
+# --- LinkedIn is never opened --------------------------------------------------------------
+check("host blacklist: a linkedin.com posting is left out by default",
+      evaluate(L(url="https://www.linkedin.com/jobs/view/4472185634"), Prefs(max_posting_age_days=0)) == "host blacklist")
+check("host blacklist: a hand-added LinkedIn link is still LinkedIn",
+      evaluate(L(url="https://linkedin.com/jobs/view/1", source="added by hand"), Prefs(max_posting_age_days=0)) == "host blacklist")
+check("host blacklist: other hosts pass; a subdomain of a listed host does not",
+      evaluate(L(url="https://jobs.ashbyhq.com/x/y"), Prefs(max_posting_age_days=0)) != "host blacklist"
+      and evaluate(L(url="https://careers.linkedin.com/x"), Prefs(max_posting_age_days=0)) == "host blacklist")
+check("host blacklist: answers.yaml can widen or (knowingly) empty it",
+      Prefs.from_profile(type("P", (), {"answers": {"search": {"host_blacklist": ["linkedin.com", "example.org"]}}})()).host_blacklist == ["linkedin.com", "example.org"]
+      and Prefs.from_profile(type("P", (), {"answers": {"search": {"host_blacklist": []}}})()).host_blacklist == []
+      and Prefs.from_profile(type("P", (), {"answers": {"search": {}}})()).host_blacklist == ["linkedin.com"])
+
 width = max(len(n) for n, _, _ in RESULTS)
 failed = 0
 for name, ok, detail in RESULTS:

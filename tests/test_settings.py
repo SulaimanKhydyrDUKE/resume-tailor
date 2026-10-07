@@ -95,7 +95,7 @@ check("scalar: the strings PyYAML would turn into something else are quoted, pla
 # --- the sources setting, as discovery reads it -----------------------------------
 feed, tables = sources_from_profile(back)
 check("sources: a built-in switched off is left out; the owner's list is added; the feed stays on",
-      feed and [n for n, _ in tables] == ["jobright-swe", "speedyapply", "vanshb03", "mine"], str(tables))
+      feed and [n for n, _ in tables] == ["jobright-swe", "speedyapply", "speedyapply-ai", "vanshb03", "sndsh404", "mine"], str(tables))
 check("sources: no setting at all means every built-in", sources_from_profile({}) == (True, __import__("resume_tailor.discover", fromlist=["TABLE_SOURCES"]).TABLE_SOURCES))
 check("sources: the feed can be switched off", sources_from_profile({"search": {"sources": {"simplify": False}}})[0] is False)
 out = root / "out"
@@ -103,8 +103,8 @@ out.mkdir()
 (out / "discover-state.json").write_text(json.dumps({"count": 1000, "table_sources": {"jobright-swe": 100, "speedyapply": 300}}))
 sv = S.sources_view(back, out)
 check("sources view: counts per list, the feed's by subtraction, the off switch and the extra list shown",
-      [s["name"] for s in sv] == ["simplify", "jobright-swe", "jobright-ba", "speedyapply", "vanshb03", "mine"] and sv[0]["count"] == 600
-      and sv[2]["enabled"] is False and sv[3]["count"] == 300 and sv[5]["builtin"] is False, str(sv))
+      [s["name"] for s in sv] == ["simplify", "jobright-swe", "jobright-ba", "speedyapply", "speedyapply-ai", "vanshb03", "sndsh404", "mine"] and sv[0]["count"] == 600
+      and sv[2]["enabled"] is False and sv[3]["count"] == 300 and sv[7]["builtin"] is False and sv[4]["label"] == "speedyapply · AI college jobs", str(sv))
 
 # --- the basics: one form, three files ---------------------------------------------
 (root / "career.yaml").write_text(
@@ -293,6 +293,36 @@ finally:
     S.subprocess.run = real_run
 check("start: without a supervisor script, `start` runs the asked number of workers and the fresh lane",
       res["started"] is True and res["launcher"] == "start" and len(ran) == 1 and ran[0][-5:] == ["--workers", "3", "--fresh", "--out", str(out)] and "resume_tailor.cli" in ran[0], str(ran))
+
+# --- the launchd agent ----------------------------------------------------------
+calls = []
+real_launchctl, real_path = S._launchctl, S.launch_agent_path
+S._launchctl = lambda *a: (calls.append(a), type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})())[1]
+S.launch_agent_path = lambda: root / "LaunchAgents" / "com.resume-tailor.loop.plist"
+try:
+    (root / "overnight.sh").write_text("#!/bin/bash\necho hi\n")
+    res = S.autostart(True, out, root)
+    plist = (root / "LaunchAgents" / "com.resume-tailor.loop.plist").read_text()
+    check("autostart on: the agent file names the supervisor script, runs at login and is kept alive",
+          res["autostart"] and str(root / "overnight.sh") in plist and "<key>RunAtLoad</key><true/>" in plist and "<key>KeepAlive</key><true/>" in plist, res.get("note"))
+    check("autostart on: enabled and bootstrapped", calls[-2][0] == "enable" and calls[-1][0] == "bootstrap", str(calls))
+    calls.clear()
+    res = S.stop_workers(root, stop_loop=lambda: None)
+    check("stop under launchd: the agent is booted out and disabled so it stays stopped", [c[0] for c in calls] == ["bootout", "disable"], str(calls))
+    calls.clear()
+    res = S.start_workers(out, root)
+    check("start under launchd: the agent is enabled and bootstrapped, not the script run by hand",
+          res["launcher"] == "launchd" and res["started"] and [c[0] for c in calls] == ["enable", "bootstrap"], str(res))
+    calls.clear()
+    res = S.autostart(False, out, root)
+    check("autostart off: booted out and the file removed", not res["autostart"] and calls[0][0] == "bootout" and not (root / "LaunchAgents" / "com.resume-tailor.loop.plist").exists())
+    (root / "overnight.sh").unlink()
+    try:
+        S.autostart(True, out, root); check("autostart on without a supervisor script is refused", False)
+    except ValueError:
+        check("autostart on without a supervisor script is refused", True)
+finally:
+    S._launchctl, S.launch_agent_path = real_launchctl, real_path
 
 view = S.settings_view(out, root)
 check("settings view: every part present, no secret in it", set(view) >= {"env", "sources", "answers", "basics", "resume", "workers"} and "sk-ant-abcdefghijkl" not in json.dumps(view))

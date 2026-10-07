@@ -28,6 +28,48 @@ ATTEMPTS = 2  # the model is stochastic; one draft that fails a gate is not a ve
 _INLINE_ID = re.compile(r"\s*\(\s*(?:exp|skill|edu|lang|proj)\d[\w.]*(?:\s*,\s*(?:exp|skill|edu|lang|proj)\d[\w.]*)*\s*\)")
 
 
+# The writing floor. Every phrase here has the statistical signature of
+# machine prose — a recruiter reads it as such — or restates the question.
+# `answers.yaml → writing.banned_phrases` extends the list without a code
+# change; the owner adds a word, the next essay obeys.
+BANNED_DEFAULT = (
+    "innovative", "robust", "scalable", "cutting-edge", "cutting edge", "real-world", "fast-paced", "aligns with", "aligns perfectly",
+    "passion", "passionate", "thrive", "leverage", "delve", "tapestry", "landscape", "meticulous", "pivotal", "underscore",
+    "intricate", "interplay", "garner", "bolster", "enduring", "fostering", "cultivating", "encompassing", "showcasing", "nestled",
+    "vibrant", "profound", "groundbreaking", "renowned", "indelible", "multifaceted", "realm", "nuanced", "serves as a testament",
+    "stands as", "marks a shift", "setting the stage", "a key turning point", "evolving landscape", "focal point", "deeply rooted",
+    "it's important to note", "it is important to note", "it's worth noting", "it is worth noting", "diverse array", "resonates with",
+    "valuable insights", "in conclusion", "all in all", "this experience taught me", "not only", "furthermore", "moreover",
+    "additionally,", "i am confident that", "i'm confident that", "i am excited", "i'm excited", "i am eager", "i'm eager",
+    "i am thrilled", "i'm thrilled", "i am passionate", "i'm passionate", "i am drawn", "i'm drawn", "i am driven", "i'm driven",
+    "excited to", "eager to", "thrilled to",
+)
+# A sentence that says what the candidate lacks, has not done or would be
+# learning. Honesty governs what is asserted, never what must be confessed:
+# a gap is raised with the user, not written into the application.
+_WEAKNESS = re.compile(
+    r"\bI (have not|haven'?t|had not|hadn'?t|lack|am not (yet )?(familiar|experienced|proficient|an expert)|do not (yet )?have|don'?t (yet )?have|"
+    r"have (little|limited|no|not yet)|am still learning|am new to|would (need|have) to learn|have yet to|never (worked|used|built))\b|"
+    r"\b(although|though|while|even if) I (lack|have not|haven'?t|am not|do not|don'?t)\b|\bmy (weakness|weaker|limited experience)\b|"
+    r"\bI should be (honest|straight|upfront|candid)\b", re.I)
+
+
+def banned_phrases(profile: Profile) -> list[str]:
+    extra = ((profile.answers.get("writing") or {}).get("banned_phrases") or []) if isinstance(profile.answers.get("writing"), dict) else []
+    return list(BANNED_DEFAULT) + [str(p).strip() for p in extra if str(p).strip()]
+
+
+def violations(text: str, profile: Profile) -> list[str]:
+    """Every rule of the floor the text breaks, named: a banned phrase, or a
+    volunteered weakness. Empty means it may go."""
+    low = " " + " ".join(text.lower().split()) + " "
+    out = [f"banned phrase {p!r}" for p in banned_phrases(profile) if re.search(r"(?<![a-z])" + re.escape(p.lower()) + r"(?![a-z])", low)]
+    m = _WEAKNESS.search(text)
+    if m:
+        out.append(f"volunteers a weakness: {m.group(0)!r}")
+    return out
+
+
 async def answer_question(question: str, posting_text: str, profile: Profile,
                           max_chars: int | None = None, words: int | None = None) -> str | None:
     from .tailor import _career_system, _cited_text, _parse
@@ -68,9 +110,10 @@ a team, a technology it lists, a problem it describes — and one concrete resul
 from the record with its number. An answer that could be sent to any company \
 unchanged is wrong.
 - Do not open with "I am" or "I'm" followed by excited, drawn, passionate, eager, \
-thrilled or driven. Do not use the words innovative, robust, scalable, cutting-edge, \
-real-world, fast-paced, aligns, passion, thrive or leverage. Write the way a \
-student writes to one engineer, not the way a cover-letter template reads.
+thrilled or driven. Never use any of these: {', '.join(banned_phrases(profile)[:60])}. \
+Write the way a student writes to one engineer, not the way a cover-letter template reads.
+- Never say what the candidate lacks, has not done, or would be learning. When the \
+role reaches past the record, lead with the closest real strength and stop there.
 - No flattery padding, no "I am confident that", no restating the question.""",
             FreeTextAnswer, effort="medium",
         )
@@ -86,8 +129,7 @@ student writes to one engineer, not the way a cover-letter template reads.
         cited = _cited_text(index, ids) + " " + posting_text
         if gates.check_numerals(text, cited, []) or gates.check_entities(text, allow):
             continue
-        if re.match(r"\s*I(’|')?(m| am)\s+(really |very |truly |genuinely |so )?(excited|drawn|passionate|eager|thrilled|driven)\b", text, re.I) \
-                or re.search(r"\b(innovative|cutting-edge|fast-paced|aligns? (perfectly )?with|leverage|thrive in)\b", text, re.I):
-            continue  # the template voice; try again
+        if violations(text, profile):
+            continue  # the template voice, or a confessed gap; try again
         return text
     return None
