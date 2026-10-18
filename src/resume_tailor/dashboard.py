@@ -99,6 +99,11 @@ def watch_status(profile_dir: Path = DEFAULT_PROFILE_DIR) -> dict:
         processes.append({"worker": m.group(1) if m else "0", "pid": p, "alive": bool(p)})
     if (profile_dir / "fresh.pid").is_file():
         processes.append({"worker": "fresh", "pid": fresh_pid, "alive": bool(fresh_pid)})
+    for lane in ("mail", "instagram", "outreach"):
+        # The supervisor's other lanes, by their pid files, so the Workers tab shows them.
+        if (profile_dir / f"{lane}.pid").is_file():
+            lp = _alive(profile_dir / f"{lane}.pid")
+            processes.append({"worker": lane, "pid": lp, "alive": bool(lp)})
     supervisor = _alive(profile_dir / "overnight.pid") if (profile_dir / "overnight.pid").is_file() else None
     return {"running": running, "pid": pid if running else None, "last_pass": last_pass, "log_tail": tail,
             "pass_running": pass_running, "pass_pid": pass_pid, "workers": len(up), "workers_expected": len(worker_pids),

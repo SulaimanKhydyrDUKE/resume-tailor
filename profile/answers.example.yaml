@@ -71,6 +71,16 @@ self_identification:
   ethnicity: ""
 
 # Targeting rules for the discovery half.
+# The outreach lane (`resume-tailor outreach watch`, run by the supervisor):
+# in-thread replies to recruiters who wrote, then notes to named recruiters
+# from the address cache, then — only with fallback_team — to recruiting
+# mailboxes. Weekdays 8-18 Eastern, 15 a day, 4 an hour. `enabled: false`
+# (or touching ~/.resume-tailor/outreach.off) pauses sending; lookups go on.
+outreach:
+  enabled: true
+  fallback_team: false                 # also write to careers@/recruiting@ mailboxes when no named person is known
+  per_tick: 5                          # at most this many notes per 15-minute tick
+
 # The essay writer's floor, on top of the built-in list (freetext.BANNED_DEFAULT):
 # a phrase here never appears in an essay or cover letter the tool writes.
 writing:

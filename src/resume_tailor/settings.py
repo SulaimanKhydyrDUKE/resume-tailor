@@ -916,7 +916,8 @@ def workers_snapshot(profile_dir: Path = DEFAULT_PROFILE_DIR) -> dict:
     stale = [name for name, p in watched.items() if started and p.is_file() and p.stat().st_mtime > started]
     fresh = _pid_alive(Path(profile_dir) / "fresh.pid") if (Path(profile_dir) / "fresh.pid").is_file() else None
     supervisor = _pid_alive(Path(profile_dir) / "overnight.pid") if (Path(profile_dir) / "overnight.pid").is_file() else None
-    return {"workers": len(pid_files), "alive": len(alive), "fresh": bool(fresh), "supervisor_pid": supervisor,
+    outreach = _pid_alive(Path(profile_dir) / "outreach.pid") if (Path(profile_dir) / "outreach.pid").is_file() else None
+    return {"workers": len(pid_files), "alive": len(alive), "fresh": bool(fresh), "supervisor_pid": supervisor, "outreach": bool(outreach),
             "started": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(started)) if started else None, "stale": stale}
 
 
@@ -996,12 +997,15 @@ def stop_workers(profile_dir: Path = DEFAULT_PROFILE_DIR, stop_loop=None) -> dic
             break
         time.sleep(0.25)
     _kill_pid_file(Path(profile_dir) / "caffeinate.pid")
+    outreach = _kill_pid_file(Path(profile_dir) / "outreach.pid")  # it sends mail, so Stop stops it; the mail lane only reads
     (stop_loop or (lambda: cli.cmd_stop(argparse.Namespace())))()
     what = [f"{snap['alive']} worker{'' if snap['alive'] == 1 else 's'}"]
     if snap["fresh"]:
         what.append("the fresh lane")
     if supervisor:
         what.append("the supervisor")
+    if outreach:
+        what.append("the outreach lane")
     return {"stopped": snap["alive"], "fresh": snap["fresh"], "supervisor": bool(supervisor),
             "note": "Stopped " + ", ".join(what) + ". Nothing applies until Start."}
 

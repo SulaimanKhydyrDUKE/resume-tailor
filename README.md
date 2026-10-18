@@ -293,6 +293,11 @@ collapse to one.
 ```bash
 resume-tailor discover                   # what it would apply to right now, and why the rest was left out
 resume-tailor audit-answers              # every submitted answer worth a second look (authorization, sponsorship, citizenship, dates, GPA…) → output/answers-audit.csv
+resume-tailor outreach audit             # what the next outreach run would send and why the rest is left out → output/outreach-plan.json (seconds; no web)
+resume-tailor outreach send --only Acme --to you@example.com   # the real note for one company, delivered to yourself; `outreach verify` reads it back
+resume-tailor outreach follow-plan|follow-send   # in-thread replies to the recruiters who wrote (interview invitations, assessments taken)
+resume-tailor outreach watch             # the unattended lane: replies, then named recruiters, every 15 min in the window; lookups every 3 h
+resume-tailor outreach status [--within 20]      # is the lane alive, when did it last tick, is the switch on
 resume-tailor watch --once --dry-run     # one pass: tailor, fill, screenshot — never submit
 resume-tailor watch                      # every 30 min, apply to whatever is new; Ctrl-C stops it
 ```

@@ -60,6 +60,30 @@ check("not a forward: a company's own mail passes through untouched",
 check("the user's own outgoing mail is not a forward", unforward("Me <sulaiman.khydyruulu@duke.edu>", "Question about the role", "Hi, I applied last week.", _own)[3] is False)
 check("a forwarded confirmation is classified as one", _rule_stage(_s, _b) == "applied")
 
+# --- the company matcher: a product name in a body is not the sender ----------------
+from resume_tailor.mailscan import _match_company, new_company_from_sender
+_idx = {"microsoft": {"key": "microsoft", "names": {"Microsoft"}, "domains": {"microsoft.com"}, "slugs": {"microsoft"}},
+        "td": {"key": "td", "names": {"TD", "TD Bank"}, "domains": set(), "slugs": {"td"}},
+        "united": {"key": "united", "names": {"United", "United Airlines"}, "domains": {"united.com"}, "slugs": {"united"}},
+        "chicago trading company": {"key": "chicago trading company", "names": {"Chicago Trading Company"}, "domains": set(), "slugs": {"chicagotrading"}}}
+_teams = "When: Sunday 9:00 PM. Where: Microsoft Teams Meeting. Join: https://teams.microsoft.com/meet/1"
+check("matcher: a Teams link in a recruiter's mail is not Microsoft",
+      _match_company(_idx, "Ashlee Ruiz <ashleer@palantir.com>", "", "Palantir | Interview Confirmation", _teams) is None)
+check("matcher: Workday mail for TD naming 'Microsoft Transcription' in its body is TD",
+      _match_company(_idx, "TD@myworkday.com", "", "TD Careers: Thank you for your job application!", "If you are invited to interview, we may use Microsoft Transcription") == "td")
+check("matcher: a newsletter about interview questions 'at Microsoft' is nobody's",
+      _match_company(_idx, "Exponent <support@tryexponent.com>", "", "New interview questions recently asked at Microsoft", "") is None)
+check("matcher: Microsoft's own mail, by domain", _match_company(_idx, "Microsoft Careers <donotreply@email.careers.microsoft.com>", "", "Thank you for your application!", "") == "microsoft")
+check("matcher: 'United States' in a rejection body is not United", _match_company(_idx, "Voyager <recruiting@voyagertechnologies.com>", "", "Update on your application to Voyager Technologies", "work in the United States") is None)
+check("matcher: an ATS mail naming a distinctive company only in its body still matches",
+      _match_company(_idx, "no-reply@greenhouse.io", "", "Your application", "Thank you for applying to Chicago Trading Company.") == "chicago trading company")
+check("new company: a recruiter's own domain with an interview confirmation gets its own bucket",
+      new_company_from_sender(_idx, "Ashlee Ruiz <ashleer@palantir.com>", "", "Palantir | Interview Confirmation", "Your interview has been confirmed") == "palantir" and "palantir" in _idx)
+check("new company: not from gmail, an ATS, or for a mere confirmation",
+      new_company_from_sender(_idx, "someone@gmail.com", "", "Interview Confirmation", "interview has been confirmed") is None
+      and new_company_from_sender(_idx, "no-reply@greenhouse.io", "", "Interview Confirmation", "interview has been confirmed") is None
+      and new_company_from_sender(_idx, "jobs@acmecorp.com", "", "Thank you for applying", "we received your application") is None)
+
 width = max(len(n) for n, _, _ in RESULTS)
 failed = 0
 for name, ok, detail in RESULTS:

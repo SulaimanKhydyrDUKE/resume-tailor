@@ -1003,7 +1003,7 @@ def main() -> int:
     pc.set_defaults(func=lambda a: __import__("resume_tailor.calendar", fromlist=["run_cli"]).run_cli(a))
 
     po = sub.add_parser("outreach", help="e-mail the recruiting team of each company applied to: a short note, the résumé attached")
-    po.add_argument("action", choices=["lookup", "plan", "send", "log"],
+    po.add_argument("action", choices=["lookup", "plan", "send", "audit", "log", "follow-plan", "follow-send", "verify", "watch", "status"],
                     help="lookup = fill the address cache for every company, plan = show what would be sent, send = send it, log = what was sent")
     po.add_argument("--out", default="output")
     po.add_argument("--max", type=int, default=15, help="at most this many e-mails this run (and 15 a day)")
@@ -1061,3 +1061,14 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+    po.add_argument("--to", default=None, help="send: deliver ONE company's note (--only) to one of your own addresses instead — the self-test; never logged as sent")
+    po.add_argument("--web", action="store_true", help="plan/send: also search the web for addresses (slow); by default they read the cache and the inbox only")
+    po.add_argument("--self-test", action="store_true", help="follow-send: reply to the newest mail you sent yourself with '[resume-tailor self-test]' in the subject")
+    po.add_argument("--message-id", default=None, help="verify: the Message-ID to look for (default: the last test send or reply)")
+    po.add_argument("--wait", type=int, default=180, help="verify: seconds to wait for the copy to appear")
+    po.add_argument("--interval", type=float, default=15.0, help="watch: minutes between send ticks")
+    po.add_argument("--lookup-interval", type=float, default=180.0, help="watch: minutes between address-lookup passes")
+    po.add_argument("--lookup-batch", type=int, default=20, help="watch: companies looked up per pass (0 = never)")
+    po.add_argument("--dry-run", action="store_true", help="watch: plan every tick, send nothing")
+    po.add_argument("--ticks", type=int, default=None, help="watch: stop after this many ticks (tests)")
+    po.add_argument("--within", type=float, default=None, help="status: PASS only if the lane ticked within this many minutes")

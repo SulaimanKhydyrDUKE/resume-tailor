@@ -93,9 +93,19 @@ RULES = (
         r"we'?ve got your application|application update|your recent application", re.I)),
 )
 
+# A company name that is also a product, a platform or a plain word: it
+# turns up in other companies' mail ("Microsoft Teams meeting", "Microsoft
+# Transcription", "United States", "Google Meet"), so it matches only when an
+# ATS sender vouches for it AND it stands in the subject or the sender's
+# name, never on a body mention. Palantir's interview confirmation was filed
+# under Microsoft for its Teams link, and a Voyager rejection under United.
 AMBIGUOUS_NAME = re.compile(r"^(apple|scale|primer|cox|oscar|serval|netic|pylon|kastle|phoebe|valon|exa|hp|n1|apex|"
                             r"target|dell|intel|meta|square|block|stripe|ramp|brex|plaid|bolt|lyft|uber|dime|nash|"
-                            r"paragon|abundant|magna|simon|humana|pilot|vertiv|verisk|premier|allegion|medline)$", re.I)
+                            r"paragon|abundant|magna|simon|humana|pilot|vertiv|verisk|premier|allegion|medline|"
+                            r"microsoft|google|amazon|united|zoom|slack|salesforce|oracle|adobe|workday|greenhouse|lever|"
+                            r"teams|ibm|cisco|box|notion|figma|atlassian|calendly|docusign|okta)$", re.I)
+GENERIC_MAIL = re.compile(r"^(gmail|googlemail|outlook|hotmail|live|yahoo|icloud|me|aol|proton|protonmail|duke)\.", re.I)
+STRONG_STAGES = ("oa", "interview", "offer", "rejected")
 
 
 def _env() -> dict:
@@ -215,8 +225,10 @@ from .mailbox import FORWARD_SUBJECT, own_addresses, unforward  # noqa: E402  (f
 def _match_company(index: dict[str, dict], frm: str, reply_to: str, subject: str, body_head: str) -> str | None:
     sender_domain = _domain(parseaddr(frm)[1]) or _domain(parseaddr(reply_to)[1])
     from_ats = any(sender_domain.endswith(a) for a in ATS_DOMAINS)
-    text = f"{parseaddr(frm)[0]} {subject} {body_head[:600]}"
-    low = text.lower()
+    # The sender's name and the subject are the message's own account of
+    # who it is from; the body is where other companies' products get named.
+    head = f"{parseaddr(frm)[0]} {subject}".lower()
+    body_low = (body_head or "")[:600].lower()
     hits: list[tuple[int, str]] = []
     for key, co in index.items():
         score = 0
@@ -234,12 +246,18 @@ def _match_company(index: dict[str, dict], frm: str, reply_to: str, subject: str
                 if not n:
                     continue
                 short = len(n) <= 4 or AMBIGUOUS_NAME.match(n)
-                if re.search(r"(?<![a-z0-9])" + re.escape(n) + r"(?![a-z0-9])", low):
-                    score = 2 if (from_ats or not short) else 0
-                    if score and short and not from_ats:
-                        score = 0
-                    if score:
-                        break
+                pat = r"(?<![a-z0-9])" + re.escape(n) + r"(?![a-z0-9])"
+                in_head, in_body = bool(re.search(pat, head)), bool(re.search(pat, body_low))
+                if short:
+                    # An ambiguous name: the ATS must vouch for it, and it
+                    # must stand in the subject or the sender's name.
+                    score = 2 if (from_ats and in_head) else 0
+                elif in_head:
+                    score = 2
+                elif in_body and from_ats:
+                    score = 2  # a Greenhouse mail that names the company only in its body
+                if score:
+                    break
         if score:
             hits.append((score, key))
     if not hits:
@@ -248,6 +266,26 @@ def _match_company(index: dict[str, dict], frm: str, reply_to: str, subject: str
     if len(hits) > 1 and hits[0][0] == hits[1][0] and hits[0][0] < 3:
         return None  # two companies named, neither by domain: not decidable
     return hits[0][1]
+
+
+def new_company_from_sender(index: dict[str, dict], frm: str, reply_to: str, subject: str, body: str) -> str | None:
+    """A company the loop never touched, writing from its own domain about
+    an interview, an assessment, an offer or a rejection — an application
+    made by hand (Palantir) — gets a bucket of its own, keyed by the
+    sender's domain, rather than landing on whichever indexed name its body
+    happens to mention. Nothing is made for an ATS, a mail provider, a
+    noise domain, or a message that says nothing so definite."""
+    sender_domain = _domain(parseaddr(frm)[1]) or _domain(parseaddr(reply_to)[1])
+    if not sender_domain or any(sender_domain.endswith(a) for a in ATS_DOMAINS) or NOISE.search(sender_domain) or GENERIC_MAIL.match(sender_domain):
+        return None
+    root = _registrable(sender_domain).split(".")[0]
+    if len(root) < 4 or root in index:
+        return None
+    if _rule_stage(subject, body) not in STRONG_STAGES:
+        return None
+    name = root[:1].upper() + root[1:]
+    index[root] = {"key": root, "names": {name}, "domains": {_registrable(sender_domain)}, "slugs": {root}, "statuses": set(), "ids": []}
+    return root
 
 
 # ---------------------------------------------------------------------------
@@ -388,17 +426,26 @@ def _model_stage(company: str, frm: str, subject: str, body: str) -> dict:
 # ---------------------------------------------------------------------------
 # Addresses worth writing to
 
-def _addresses(company_key_: str, frm: str, reply_to: str, body: str, own: str) -> list[dict]:
+def _addresses(company_key_: str, frm: str, reply_to: str, body: str, own) -> list[dict]:
+    """Addresses worth keeping from one message: the Reply-To and From, and
+    recruiting-looking ones printed in the body. `own` is every address of
+    the applicant's (a string or a set): the Duke address printed in a
+    confirmation body once ranked as a named recruiter at fourteen companies."""
+    mine = {own.lower()} if isinstance(own, str) else {a.lower() for a in (own or set())}
+    try:
+        mine |= own_addresses(next(iter(mine), ""))
+    except Exception:
+        pass
     found: list[dict] = []
     for source, raw in (("reply-to", reply_to), ("from", frm)):
         name, addr = parseaddr(raw)
         addr = addr.lower()
-        if not addr or addr == own.lower() or NOREPLY.search(addr) or any(_domain(addr).endswith(a) for a in ATS_DOMAINS):
+        if not addr or addr in mine or NOREPLY.search(addr) or any(_domain(addr).endswith(a) for a in ATS_DOMAINS):
             continue
         found.append({"address": addr, "name": name.strip(), "source": source})
     for m in re.finditer(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", body[:6000]):
         addr = m.group(0).lower().rstrip(".")
-        if addr == own.lower() or NOREPLY.search(addr) or any(_domain(addr).endswith(a) for a in ATS_DOMAINS):
+        if addr in mine or NOREPLY.search(addr) or any(_domain(addr).endswith(a) for a in ATS_DOMAINS):
             continue
         around = body[max(0, m.start() - 120): m.end() + 60]
         if RECRUITING_WORDS.search(addr.split("@")[0]) or RECRUITING_WORDS.search(around):
@@ -552,6 +599,8 @@ def scan(out_dir: str | Path, since: str = "03-Sep-2026", mailbox: str = "[Gmail
             if key is None and APPLICATION_WORDS.search(subject):
                 body = body or body_of(uid)
                 key = _match_company(index, frm, reply_to, subject, body)
+            if key is None and APPLICATION_WORDS.search(subject):
+                key = new_company_from_sender(index, frm, reply_to, subject, body or body_of(uid))
             if key is None:
                 continue
             if not body:
