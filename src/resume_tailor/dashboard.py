@@ -333,6 +333,15 @@ class _Handler(BaseHTTPRequestHandler):
             except Exception as e:  # a half-written state file mid-save, most likely
                 return self._send(json.dumps({"error": str(e)}).encode("utf-8"), "application/json", 500)
             return self._send(body, "application/json")
+        if path == "/api/calendar":
+            # Both calendars (calendar.py): applications by the day they went
+            # out, and the dates the inbox set. Read from disk; nothing scanned here.
+            try:
+                from .calendar import build_calendar
+                body = json.dumps(build_calendar(self.out_dir)).encode("utf-8")
+            except Exception as e:
+                return self._send(json.dumps({"error": str(e)}).encode("utf-8"), "application/json", 500)
+            return self._send(body, "application/json")
         if path.startswith("/files/"):
             root = self.out_dir.resolve()
             target = (root / path[len("/files/"):]).resolve()
