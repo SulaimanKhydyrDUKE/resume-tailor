@@ -272,9 +272,13 @@ Where a site does gate applications behind a login there are three paths:
   confirmation) get an account with your e-mail and a generated password kept
   in `RESUME_TAILOR_SITE_PASSWORD`. Nothing else is ever signed up for.
 - **E-mailed codes and links.** Forms that send a one-time code or a
-  "continue your application" link first (Oracle, Pella, some iCIMS) are
-  handled when `RESUME_TAILOR_IMAP_*` points at your mailbox; without it they
-  are logged `needs_login` with the exact URL to finish by hand.
+  "continue your application" link first (Oracle, Pella, some iCIMS), and
+  Greenhouse's eight-character security code after Submit (its reCAPTCHA's
+  fallback), are handled when `RESUME_TAILOR_IMAP_*` points at your mailbox:
+  the code is read from the inbox and typed into the boxes. Without it they
+  are logged `needs_login` with the exact URL to finish by hand — unless you
+  have said you are at the keyboard, in which case the window is held for
+  you to type the code, like a captcha or a sign-in.
 
 It still does not solve CAPTCHAs or clear identity verification.
 
@@ -323,6 +327,14 @@ nohup /absolute/path/to/resume-tailor/.venv/bin/resume-tailor watch --out ~/.res
 Tunables live in `answers.yaml` → `search`: `terms`, `positions`, `require_us`,
 `exclude_phd_only`, `company_blacklist`, `title_blacklist`, `location_blacklist`,
 `apply_once_at_company`, `approve_before_submit`, `create_accounts_on`,
+`hand_lane_hosts` (captcha-guarded hosts: nothing opened or tailored until a hand
+sign-in there), `visible_submit_hosts` (boards whose bot check refuses a headless
+submit: filled, held for Approve, submitted from a visible window),
+`agent_driver` / `loop_hosts` (the boards the loop fills itself — Greenhouse,
+Ashby, Workable by default; every other host is recorded `for_agent` for the
+agent driver, see below), `approve_essays` (a form with a model-written answer
+waits for your Approve; the approved run sends those very words), `skip_tier4`
+(a posting whose text shows a seed-stage or tiny-team company is skipped),
 `min_judge_score`, `max_revisions`, `apply_below_bar`, `jobright_account`,
 `extra_sources` — each explained in `profile/answers.example.yaml`.
 
@@ -362,6 +374,7 @@ required field is still empty.
 | `RESUME_TAILOR_PROFILE` | `~/.resume-tailor` | Where `career.yaml` and `answers.yaml` live. |
 | `RESUME_TAILOR_OUTPUT` | `./output` | Where PDFs and screenshots go. |
 | `RESUME_TAILOR_HEADLESS` | `0` | `1` to hide the browser. Watch it the first few times. |
+| `RESUME_TAILOR_AGENT_PROFILE` | `~/.resume-tailor/browser-profile-agent` | The MCP server's (the agent driver's) own Chrome profile, kept apart from the loop's worker 0 so the two never fight over one profile's lock. Sign in to a portal once in its window and it holds. |
 | `RESUME_TAILOR_SITE_PASSWORD` | — | The one password used for accounts the tool creates on `search.create_accounts_on` hosts. Generate it once; never commit it. |
 | `RESUME_TAILOR_IMAP_USER` / `_PASSWORD` / `_HOST` | — | Mailbox for e-mailed one-time codes and continue links. Gmail: an app password, host `imap.gmail.com`. |
 
@@ -385,8 +398,51 @@ resume-tailor dashboard          # http://127.0.0.1:8765 — every posting, its 
 resume-tailor login <company>    # opens that posting's login wall in the tool's browser; sign in, it applies
 resume-tailor setup-logins       # one-time hand sign-ins (Google, jobright, TikTok…) that every worker then carries
 resume-tailor submit <company>   # submits an application held under approve_before_submit
+resume-tailor assist [--limit N] [--json]        # the agent driver's queue: for_agent handoffs and the loop's holds, best first
+resume-tailor assist --next [--size N] [--portal workday]   # the next batch, one portal at a time (MCP assist_next)
+resume-tailor assist-prepare <id>                # the driver's fit step for one posting: read, tailor, judge, record (one model round)
+resume-tailor assist-record <id> applied|skipped|needs_review|needs_login|blocked   # the driver's outcome (applied marks the company applied to)
+resume-tailor assist-learn "<question>" "<answer>"             # keep an answer you gave; the bank finds it first next time
 resume-tailor review <company>   # reopen a needs_review posting with its filled form
+resume-tailor present 2          # you are at the keyboard for 2 h: captcha and sign-in walls are held for you in the worker's window
+resume-tailor words [--add "<phrase>"]   # the dictionary of words never written into an application
+resume-tailor eligibility <id|url> | --sweep   # the deterministic eligibility read (vendor APIs, no model); the sweep prunes the driver's queue
 ```
+
+**Walls are yours to pass, in the same window.** Since 2026-10-18 the loop runs
+one *visible* worker (`start --workers 1 --show`). Press "I'm at the keyboard"
+on the dashboard (or `resume-tailor present 2`): for the next two hours a
+captcha or a sign-in wall does not end the attempt — the worker brings its
+Chrome window to the front, sends a desktop notification, shows a banner on the
+dashboard with a "Show me the window" button, and waits up to ten minutes while
+you solve it in that very window; the filled form and the session are kept and
+the attempt goes on from where it stopped. Away, or after ten minutes, the
+attempt ends as before (`blocked` / `needs_login`). The MCP driver has the same
+hold (`wait_for_you`).
+
+**Before any model call.** `eligibility.py` reads the posting for an enumerated
+bar the applicant cannot meet — citizenship, clearance, ITAR U.S.-person
+status, no-sponsorship wording, graduate-only, a graduation window — judged
+against the bank's own facts (a green-card holder is not barred by "no OPT"),
+with the rule that a requirement bars and a preference does not; and for the
+signals of a tier-4 company. Both run in the loop, at the driver's handoff
+(through the vendor's API where there is one) and in the driver's prepare
+step, so a closed posting costs no résumé and no judges.
+
+**The agent driver.** The loop is good at three boards — Greenhouse, Ashby,
+Workable — and poor at the rest: Workday and Oracle wizards, SmartRecruiters'
+shadow-DOM screening pages, Lever's hCaptcha, iCIMS, companies' own sites ended
+as `needs_review` or `needs_login` after three browser attempts each. So since
+2026-10-18 the loop keeps the three boards (`search.loop_hosts`) and records
+every other posting as `for_agent` on first sight — nothing opened, tailored or
+judged — for a Claude Code session to work through the MCP server's browser
+(`assist_next` → `browser_open` → `page_verdict` → `assist_prepare`, which runs
+the same tailor-and-judge step as the loop, → fill → `review_before_submit` →
+`submit_application` → `assist_record`). The same session takes the loop's own
+holds (`needs_review`, `needs_login`, `blocked`, `awaiting_approval`). An
+outcome the driver records is final for the loop: one owner per application.
+The session's procedure, its keep-going hook and its rules live with the
+workspace (`.claude/skills/assist-queue/SKILL.md`, `.claude/hooks/keep-going.sh`).
 
 The dashboard is where `awaiting_approval` postings (companies in
 `search.approve_before_submit`) wait with an Approve button, and where
@@ -442,7 +498,10 @@ the first one that can decide it honestly:
 2. **Boilerplate rules** — consent checkboxes, "how did you hear about us".
 3. **A required essay question** — written from the record and the posting,
    then held to the same numeral and named-entity gates as a resume bullet.
-   Optional essays are left blank.
+   Optional essays are left blank — and so is every optional free-text box
+   (comments, "additional information", an optional "why us"), whatever the
+   form planner proposes: only an answer the bank holds in your own words
+   fills one. A required box is still written.
 4. **The grounded question-answerer** — for screening questions the bank can't
    enumerate. "Experience with JUnit?" is settled by whether JUnit is in your
    record (silence is a No). Anything else goes to a model that sees your whole

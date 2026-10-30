@@ -319,10 +319,29 @@ def live_status(out_dir: str | Path, profile_dir: Path = DEFAULT_PROFILE_DIR) ->
     for info in workers_now:
         info.pop("_mtime", None)
     now = workers_now[0] if workers_now else None
+    # A wall held for the user (batch._wait_for_human writes waiting-w<k>.json
+    # while it polls), and whether the user said they are at the keyboard.
+    waiting: list[dict] = []
+    for wf in sorted(profile_dir.glob("waiting*.json")):
+        try:
+            info = json.loads(wf.read_text(encoding="utf-8"))
+            if float(info.get("until") or 0) < time.time():
+                continue
+            os.kill(int(info.get("pid") or 0), 0)
+            waiting.append(info)
+        except Exception:
+            continue
+    present = {"until": 0, "minutes_left": 0}
+    try:
+        pr = json.loads((profile_dir / "present.json").read_text(encoding="utf-8"))
+        until = float(pr.get("until") or 0)
+        present = {"until": until, "minutes_left": max(0, int((until - time.time()) // 60))}
+    except Exception:
+        pass
     pool = cached_view("pool", [out_dir / "listings-cache.json", out_dir / "batch-state.json", out_dir / "fresh-seen.json"],
                        lambda: pool_status(out_dir), wait=False)["value"]
     return {"generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "now": now, "workers_now": workers_now,
-            "watch": watch_status(profile_dir), "pool": pool}
+            "watch": watch_status(profile_dir), "pool": pool, "waiting": waiting, "present": present}
 
 
 def build_index(out_dir: str | Path, profile_dir: Path = DEFAULT_PROFILE_DIR) -> dict:
@@ -508,6 +527,29 @@ def mark(out_dir: Path, entry_id: str, status: str) -> dict:
     return rec
 
 
+def bring_to_front(profile_dir: str) -> bool:
+    """Raise the Chrome window of the worker whose profile directory this is
+    (macOS): the process carrying --user-data-dir=<dir> is made frontmost
+    through System Events. Best effort; False when nothing was found."""
+    import subprocess
+
+    if not profile_dir:
+        return False
+    try:
+        pids = subprocess.run(["pgrep", "-f", f"user-data-dir={profile_dir}"], capture_output=True, text=True, timeout=5).stdout.split()
+    except Exception:
+        return False
+    for pid in pids[:3]:
+        try:
+            r = subprocess.run(["osascript", "-e", f'tell application "System Events" to set frontmost of (first process whose unix id is {int(pid)}) to true'],
+                               capture_output=True, text=True, timeout=5)
+            if r.returncode == 0:
+                return True
+        except Exception:
+            continue
+    return False
+
+
 class _Handler(BaseHTTPRequestHandler):
     out_dir: Path = Path("output")
 
@@ -531,6 +573,13 @@ class _Handler(BaseHTTPRequestHandler):
             if path.startswith("/api/mark/"):
                 rec = mark(self.out_dir, path[len("/api/mark/"):], str(body.get("status", "")))
                 return self._send(json.dumps({"ok": True, "status": rec["status"]}).encode("utf-8"), "application/json")
+            if path == "/api/present":
+                from .batch import set_present
+                data = set_present(float(body.get("hours") or 0))
+                return self._send(json.dumps({"ok": True, **data}).encode("utf-8"), "application/json")
+            if path == "/api/front":
+                ok = bring_to_front(str(body.get("profile_dir") or ""))
+                return self._send(json.dumps({"ok": ok}).encode("utf-8"), "application/json")
             if path.startswith("/api/settings/"):
                 return self._send(json.dumps(self._settings_post(path[len("/api/settings/"):], body)).encode("utf-8"), "application/json")
         except Exception as e:

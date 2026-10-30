@@ -65,6 +65,8 @@ _SYSTEM = (
     "title', 'where did you complete your most recent internship' and the like are answered with the employer's "
     "name or the title as the record spells it — never with a record id — citing the role id in basis.\n"
     "- Optional questions with no basis in the profile: skip. Do not fill for the sake of filling.\n"
+    "- An OPTIONAL free-text box — comments, 'additional information', an optional 'why us' or 'tell us "
+    "about' — is skipped, always: `skip: true`. Only a required one is written.\n"
     "- A REQUIRED question is never skipped: a blank required field stops the application, and the "
     "candidate has asked that the tool decide and apply. Decide it from the record: an opinion, "
     "preference, motivation or free-text question is answered briefly in the candidate's voice from the "
@@ -213,6 +215,8 @@ def widget_of(field: dict, group_type: str | None = None) -> str:
         return "select"
     if typ == "yesno":
         return "yesno"
+    if typ == "pills":
+        return "radio"  # choice chips (Oracle's Degree): one of the listed options, like a radio group
     if tag in ("textarea", "editor"):
         return "textarea"
     if typ == "checkbox":
@@ -344,6 +348,28 @@ def _title_to_company(profile: Profile, answer: str) -> str | None:
     return None
 
 
+# Free text a form does not require is left blank. A model's prose in an
+# optional box answers nothing the form asked for, and it is the surest place
+# a generated voice shows: the audit of 2026-10-06 found 98 optional boxes
+# filled, 77 of them with the plan's one-sentence "I am excited to…". The
+# bank's own words (the rules in batch.py run before the plan) may still fill
+# one; nothing written by a model does. A required box is still answered.
+OPTIONAL_PROSE_Q = re.compile(r"additional (information|comments?|details?)|anything else|comments?\b|cover letter|tell (us|me)|"
+                              r"describe|explain|why (do you|are you|would you|us|this)|what (do you|would you|makes you|excites|interests)|"
+                              r"interest(ed)? in|motivat|proud of|story|about yourself|in your (own )?words|\bessay\b|message to", re.I)
+OPTIONAL_PROSE_REASON = "optional free text: left blank on purpose"
+
+
+def is_prose_question(q: dict) -> bool:
+    """A box that wants sentences: a textarea, or a text field whose label is
+    a prompt (long, or worded as a question about the candidate) with no
+    options to choose from."""
+    if q.get("options") or q.get("widget") not in ("textarea", "text", ""):
+        return False
+    label = q.get("label") or ""
+    return q.get("widget") == "textarea" or len(label) > 60 or bool(OPTIONAL_PROSE_Q.search(label))
+
+
 def rails(answers: list[FieldAnswer], questions: list[dict], profile: Profile) -> dict[tuple[str, str], Decision]:
     """The model's plan, held to the rules the rest of the tool lives by."""
     flat = profile.flat_answers()
@@ -359,6 +385,9 @@ def rails(answers: list[FieldAnswer], questions: list[dict], profile: Profile) -
             # Before anything else: a human check is never answered, whatever
             # the model proposed and however it would have been grounded.
             decisions[key] = Decision(None, reason="a human check: left for the user, never answered by the tool")
+            continue
+        if not q.get("required") and is_prose_question(q):
+            decisions[key] = Decision(None, reason=OPTIONAL_PROSE_REASON)
             continue
         if a.essay:
             decisions[key] = Decision(None, essay=True, reason=a.reason)

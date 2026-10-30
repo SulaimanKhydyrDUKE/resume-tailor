@@ -77,7 +77,10 @@ _FIELD_JS = r"""
   // a label: Workable draws a chevron inside every dropdown's <label>.
   const svgText = el => (el && el.querySelectorAll) ? [...el.querySelectorAll('svg')].map(s => (s.textContent || '').trim()).filter(Boolean) : [];
   const txt = el => {
-    let t = el ? (el.innerText || el.textContent || '') : '';
+    // A web component shows its text from its shadow root (SmartRecruiters'
+    // phone country code, a <spl-select> whose light DOM is empty): read
+    // that when the host itself has nothing to say.
+    let t = el ? (el.innerText || el.textContent || (el.shadowRoot ? (el.shadowRoot.textContent || '') : '') || '') : '';
     for (const st of svgText(el)) t = t.split(st).join(' ');
     return t.replace(/[\u2060\u200b\ufeff]/g, '').replace(/\s+/g, ' ').trim();
   };
@@ -108,8 +111,25 @@ _FIELD_JS = r"""
   // "Choose one", "Choose an option", "Choose…" are prompts; "Choose not to
   // Disclose" is an answer (Workday's Gender list), and once read as a
   // prompt every such choice looked unmade.
-  const placeholderish = t => /^(type your response|your answer|type here.*|enter .*|select\.{0,3}|choose( one| an? (option|value|answer|selection)| from( the)? list)?\.{0,3}|start typing.*|attach( file)?|upload( file)?|browse|choose file|select file|drag and drop.*|drop files?.*)$/i.test(t || '');
+  const placeholderish = t => /^(type your response|your answer|type here.*|enter .*|(select|choose)( one| an? (option|value|answer|selection|item)| from( the)? list)?\.{0,3}|please (select|choose)( one| an? option)?\.{0,3}|start typing.*|attach( file)?|upload( file)?|browse|choose file|select file|drag and drop.*|drop files?.*)$/i.test(t || '');
+  // A home-made dropdown's trigger (Jane Street's standard-dropdown: a div
+  // with role=button that expands a container of rows, its choice in a
+  // hidden input). Its widget's own search box is not a field of the form.
+  const opensRows = b => {
+    if (b.getAttribute('role') !== 'button' || !b.hasAttribute('aria-expanded') || !b.getAttribute('aria-controls')) return false;
+    const box = document.getElementById(b.getAttribute('aria-controls'));
+    return !!box && box.querySelectorAll('li, [role=option], [class*="dropdown-row"], [class*="option"]').length >= 2;
+  };
+  const ddWidgets = [...document.querySelectorAll('[role=button][aria-expanded][aria-controls]')].filter(opensRows).map(b => { b.dataset.rtDd = '1'; return b.parentElement; });
+  // Only the widget's own search box is left out. Its "Please specify"
+  // follow-up (Jane Street's data-include-other) lives inside the widget
+  // too, and is a real question.
+  const inDropdownWidget = el => ddWidgets.some(w => w && w !== el && w.contains(el))
+    && (/search/i.test(el.placeholder || '') || /search/i.test(el.className || '') || !!el.closest('[class*="search"]'));
   const MAXQ = 600;
+  // A validation message sits where a label would, after a rejected
+  // submit (SmartRecruiters draws it above the control): never a name.
+  const errorish = t => /^(this field is required\.?|required\.?|please (select|enter|choose|complete|provide|fill)\b.*|invalid\b.*|.*\bis required\.?)$/i.test(t || '');
   const STAR = /[*✱]\s*:?\s*$/;
   const STARLEAD = /^\s*[*✱]\s*\S/;  // Workable writes the star first: "* What is your…"
   // The block holding one question and its control(s): Ashby's field entry,
@@ -167,7 +187,8 @@ _FIELD_JS = r"""
         let sib = node.previousElementSibling;
         while (sib) {
           const t = txt(sib);
-          if (t && t.length <= MAXQ && !sib.querySelector('input, select, textarea') && !placeholderish(t) && !/^[*✱:\s]+$/.test(t) && !pickerOwn(sib)) return t;
+          if (t && t.length <= MAXQ && !sib.querySelector('input, select, textarea') && !placeholderish(t) && !errorish(t) && !/^[*✱:\s]+$/.test(t) && !pickerOwn(sib)
+              && !sib.matches('[role=alert], [class*="error" i], [class*="invalid" i]')) return t;
           sib = sib.previousElementSibling;
         }
         node = node.parentElement;
@@ -184,7 +205,7 @@ _FIELD_JS = r"""
     let host = el.getRootNode() && el.getRootNode().host;
     for (let depth = 0; depth < 12 && host; depth++) {
       const own = txt(host).replace(/\s*[*✱]\s*$/, '');
-      if (own && own.length <= MAXQ && !placeholderish(own) && !/^[*✱:\s]+$/.test(own)) return own + (STAR.test(txt(host)) ? '*' : '');
+      if (own && own.length <= MAXQ && !placeholderish(own) && !errorish(own) && !/^[*✱:\s]+$/.test(own)) return own + (STAR.test(txt(host)) ? '*' : '');
       const around = walkUp(host, 6);
       if (around) return around + (STAR.test(txt(host)) ? '*' : '');
       const rn = host.getRootNode();
@@ -245,6 +266,23 @@ _FIELD_JS = r"""
     }
     return '';
   };
+  // A rendered value belongs to the input that sits nearest above it in the
+  // tree. Walking up from the INPUT to the nearest value node found the
+  // neighbouring control's value on adjacent fields: Greenhouse's Country
+  // read "+1" off the phone widget beside it, and the sweep then held the
+  // form for a Country that was right. So every value node is checked back
+  // against its own input before it is taken.
+  const SV = '[class*="single-value"], [class*="singleValue"], [class*="selected-value"], [class*="selectedValue"], [class*="selection-item"]';
+  const ownedBy = (v, inp) => {
+    let n = v;
+    for (let k = 0; k < 8 && n; k++) {
+      n = n.parentElement;
+      if (!n) return false;
+      const inputs = n.querySelectorAll('input:not([type=hidden]), [role=combobox], select');
+      if (inputs.length) return [...inputs].includes(inp);
+    }
+    return false;
+  };
   const comboValue = el => {
     if (el.value && el.getAttribute('data-uxi-widget-type') !== 'selectinput' && !el.getAttribute('data-uxi-multiselect-id')) return el.value;
     let n = el;
@@ -252,8 +290,8 @@ _FIELD_JS = r"""
       n = n.parentElement;
       if (!n || n.tagName === 'FORM' || n.tagName === 'BODY') break;
       if (n.querySelectorAll('input, [role=combobox]').length > 2) break;
-      const v = n.querySelector('[class*="single-value"], [class*="singleValue"], [class*="selected-value"], [class*="selectedValue"], [class*="selection-item"]');
-      if (v && txt(v)) return txt(v);  // (selection-item: Ant Design's Select shows its choice there, the input stays empty)
+      const v = [...n.querySelectorAll(SV)].find(x => txt(x) && ownedBy(x, el));
+      if (v) return txt(v);  // (selection-item: Ant Design's Select shows its choice there, the input stays empty)
       // Workday's multi-select keeps its choices as chips beside the input.
       const chips = [...n.querySelectorAll('[data-automation-id="selectedItem"], [data-automation-id*="selectedItem"]')].map(txt).filter(Boolean);
       if (chips.length) return chips.join(' | ');
@@ -270,10 +308,24 @@ _FIELD_JS = r"""
   const labelEl = el => (el.labels && el.labels.length) ? el.labels[0]
     : (el.getAttribute('aria-labelledby') ? el.getAttribute('aria-labelledby').split(/\s+/).map(id => document.getElementById(id)).find(Boolean) : null);
   const labelVisible = el => { if (!isOption(el)) return false; const l = labelEl(el); return !!(l && vis(l)); };
-  const out = [...document.querySelectorAll(sel)].filter(el => (vis(el) || labelVisible(el)) && !dummy(el)).map(el => {
+  let lastQ = '';
+  const out = [...document.querySelectorAll(sel)].filter(el => (vis(el) || labelVisible(el)) && !dummy(el) && !inDropdownWidget(el)).map(el => {
     const id = tagOf(el);
     const type = (el.type || '').toLowerCase();
-    const q = questionFor(el);
+    let q = questionFor(el);
+    // "Please specify" is the follow-up box a picker's "Other" opens (Jane
+    // Street's source question): it asks the picker's question, in words.
+    if (/^\s*please specify\b/i.test(el.placeholder || '') || /^\s*please specify\b/i.test(q || '')) {
+      // The box's own placeholder says what it is; the text above it is the
+      // picker's choice ("Other...") and would name it wrongly. The question
+      // is the dropdown's that opened it — the trigger before this box in
+      // the same field block — and only failing that the last control's.
+      const wrap = el.closest('[class*="form-field"], [class*="field"], [data-dropdown-id]') || el.parentElement;
+      const trig = wrap ? [...wrap.querySelectorAll('[data-rt-dd]')].find(t => t.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) : null;
+      const base = (trig && questionFor(trig)) || lastQ;
+      if (base) q = base.replace(/\s*[*✱]\s*$/, '') + ' — please specify' + (/[*✱]/.test((el.placeholder || '') + (q || '')) ? '*' : '');
+    }
+    if (!isOption(el)) lastQ = q;
     const combo = (el.getAttribute('role') === 'combobox' || !!el.getAttribute('aria-autocomplete'))
       // Workday's searchable pickers are plain inputs beside a chip list (selectedItemList): a picker all the same.
       || !!(el.closest('[data-automation-id^="formField-"]') && el.closest('[data-automation-id^="formField-"]').querySelector('[data-automation-id="selectedItemList"], [data-automation-id="selectedItem"]'))
@@ -380,7 +432,8 @@ _FIELD_JS = r"""
       let sib = node.previousElementSibling;
       while (sib) {
         const t = txt(sib);
-        if (t && !sib.querySelector('input, select, textarea, button') && !placeholderish(t) && !/^[*✱:\s]+$/.test(t)) {
+        if (t && !sib.querySelector('input, select, textarea, button') && !placeholderish(t) && !errorish(t) && !/^[*✱:\s]+$/.test(t)
+            && !sib.matches('[role=alert], [class*="error" i], [class*="invalid" i]')) {
           if (t.length <= MAXQ) return t;
           // A block too long to be a label — a compliance paragraph that
           // ends in the actual question — names the control by its last
@@ -395,8 +448,11 @@ _FIELD_JS = r"""
     }
     return '';
   };
-  for (const b of document.querySelectorAll('button[aria-haspopup="listbox"], [aria-haspopup="listbox"]:not(input), [role=combobox]:not(input):not(select)')) {
+  // A home-made dropdown (Jane Street's standard-dropdown) joins the ARIA
+  // listboxes here: nothing ARIA calls it a listbox, the rows it controls do.
+  for (const b of document.querySelectorAll('button[aria-haspopup="listbox"], [aria-haspopup="listbox"]:not(input), [role=combobox]:not(input):not(select), [role=button][aria-expanded][aria-controls]')) {
     if (!vis(b) || (b.dataset.rtId && emitted.has(b.dataset.rtId)) || b.closest('[role=listbox]')) continue;
+    if (b.getAttribute('role') === 'button' && !b.matches('[aria-haspopup="listbox"], [role=combobox]') && !opensRows(b)) continue;
     const id = tagOf(b);
     const shown = txt(b);
     let q = questionFor(b);
@@ -408,6 +464,10 @@ _FIELD_JS = r"""
       const before = textBefore(b, 6);
       if (before) q = before + ((/\bRequired\s*$/i.test(q) || b.getAttribute('aria-required') === 'true') && !STAR.test(before) ? '*' : '');
     }
+    // The country-code selector beside a phone box shows a dial code and
+    // borrows the phone's label; read as "Phone *" it was swept against the
+    // phone number and held the form (Jane Street). It is its own control.
+    if (/^\s*\+?\d{1,3}\s*$/.test(shown.replace(/[^\x20-\x7e]+/g, '')) && !/code/i.test(q)) q = (q ? q.replace(/\s*[*✱]\s*$/, '') + ' — ' : '') + 'Country code';
     out.push({
       id, selector: `[data-rt-id="${id}"]`, tag: 'listbox', type: 'listbox', label: q, name: '', dom_id: b.id || '',
       required: (STAR.test(q) || STARLEAD.test(q)) || entryRequired(b) || b.getAttribute('aria-required') === 'true',
@@ -433,6 +493,38 @@ _FIELD_JS = r"""
       required: (STAR.test(q) || STARLEAD.test(q)) || entryRequired(box), value: on ? txt(on) : '', options: opts.map(txt), combobox: false,
     });
   }
+  // Choice chips: a question answered by pressing one of several pill-shaped
+  // buttons (Oracle's apply flow draws Degree as "Associate's Degree…",
+  // "Bachelor's Degree…" chips). Read by the buttons scan they looked like
+  // submit candidates and the question itself was never answered; here
+  // they are one field with options, like a radio group. A group counts
+  // only when it says so (role=radiogroup) or its chips carry a pressed /
+  // checked state or a chip-like class, and nothing in it reads as an
+  // action.
+  for (const box of document.querySelectorAll('[role=radiogroup], [role=group], fieldset, div, ul')) {
+    if (seen.has(box) || !vis(box)) continue;  // (a group marked rtPills on an earlier scan is read again: its value may have changed)
+    const kids = [...box.children];
+    if (kids.length < 3 || kids.length > 16) continue;
+    const chips = kids.filter(c => c.matches('button, [role=button], [role=radio], li, label') && vis(c)
+      && !c.querySelector('input:not([type=hidden]), select, textarea, a[href]') && txt(c) && txt(c).length <= 60);
+    if (chips.length !== kids.length) continue;
+    const stateful = c => c.hasAttribute('aria-pressed') || c.hasAttribute('aria-checked') || /chip|pill|toggle|choice|option|tag/i.test(c.className || '');
+    if (!box.matches('[role=radiogroup]') && !chips.some(stateful)) continue;
+    const texts = chips.map(txt);
+    if (new Set(texts).size !== texts.length) continue;
+    if (texts.some(t => /^(submit|apply|next|back|cancel|save|continue|sign in|log ?in|search|close|remove|edit|delete|add|upload|browse)\b/i.test(t))) continue;
+    const q = questionFor(box) || textBefore(box, 6);
+    if (!q || q.length > MAXQ || texts.includes(q)) continue;
+    seen.add(box);
+    box.dataset.rtPills = '1';
+    const id = tagOf(box);
+    const on = chips.find(c => c.getAttribute('aria-pressed') === 'true' || c.getAttribute('aria-checked') === 'true' || /\b(selected|active|checked|pressed)\b/i.test(c.className || ''));
+    out.push({
+      id, selector: `[data-rt-id="${id}"]`, tag: 'pills', type: 'pills', label: q, name: '', dom_id: box.id || '',
+      required: (STAR.test(q) || STARLEAD.test(q)) || entryRequired(box) || box.getAttribute('aria-required') === 'true',
+      value: on ? txt(on) : '', options: texts, combobox: false, section: sectionOf(box), placeholder: '', hint: hintOf(box), maxlength: undefined,
+    });
+  }
   return out;
 }
 """
@@ -447,13 +539,26 @@ e => {
   // A Workday search-select keeps the typed text in the input whether or
   // not anything was chosen; only its chips count.
   if (e.value && e.getAttribute('data-uxi-widget-type') !== 'selectinput' && !e.getAttribute('data-uxi-multiselect-id')) return e.value;
+  // The value node must be this input's own (see comboValue in _FIELD_JS):
+  // the first ancestor of the node that holds any input must hold e.
+  const ownedBy = v => {
+    let n = v;
+    for (let k = 0; k < 8 && n; k++) {
+      n = n.parentElement;
+      if (!n) return false;
+      const inputs = n.querySelectorAll('input:not([type=hidden]), [role=combobox], select');
+      if (inputs.length) return [...inputs].includes(e);
+    }
+    return false;
+  };
   let n = e;
   for (let i = 0; i < 6 && n; i++) {
     n = n.parentElement;
     if (!n || n.tagName === 'FORM' || n.tagName === 'BODY') break;
     if (n.querySelectorAll('input, [role=combobox]').length > 2) break;
-    const v = n.querySelector('[class*="single-value"], [class*="singleValue"], [class*="selected-value"], [class*="selectedValue"]');
-    if (v && (v.innerText || '').trim()) return v.innerText.trim();
+    const v = [...n.querySelectorAll('[class*="single-value"], [class*="singleValue"], [class*="selected-value"], [class*="selectedValue"]')]
+      .find(x => (x.innerText || '').trim() && ownedBy(x));
+    if (v) return v.innerText.trim();
     // A multi-select shows each chosen entry as a chip ("Active Security
     // Clearance(s)") rather than one single-value node.
     const chips = [...n.querySelectorAll('[class*="multi-value__label"], [class*="multi-value"] [class*="label"], [class*="multiValue"], spl-chip, [class*="-chip"], [data-automation-id="selectedItem"]')]
@@ -491,7 +596,7 @@ _COUNTRY_CODE_JS = _deep(r"""
 
 _OPTION_SEL = ('[role=option], [role=listbox] li, [id*="-option-"], [class*="__option"]:not([class*="__options"]), .pac-item, '
                '[class*="autocomplete-option"], [class*="autocomplete-default-option"], '
-               'spl-select-option, spl-dropdown-item, [class*="dropdown-item"], '
+               'spl-select-option, spl-dropdown-item, [class*="dropdown-item"], li[class*="dropdown-row"], [class*="dropdown-row"][data-dropdown-selection], '
                # Ant Design's Select (EquipmentShare's Greenhouse-fed form): the
                # entries a person sees carry no role; its role=option list is
                # the zero-width one for screen readers.
@@ -527,6 +632,14 @@ _AFTER_SUBMIT_JS = r"""
   const errors = [...document.querySelectorAll('[role=alert], [aria-live=assertive], [aria-live=polite], [class*="error" i], [class*="invalid" i], [aria-invalid=true], [data-automation-id="inputAlert"], [data-automation-id="errorHeading"] li')]
     .filter(vis).map(e => (e.innerText || e.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim())
     .filter(t => t && t.length < 200);
+  // One-time-code boxes: a run of single-character inputs (Greenhouse's
+  // eight security-input-N after Submit, Oracle's six before the form),
+  // drawn when the site wants an e-mailed code before it takes the
+  // application. Counted by shape and id, so the verdict does not hang on
+  // the dialog's wording.
+  const codeBoxes = fields.filter(f => f.tagName === 'INPUT' && /^(text|tel|number|)$/.test((f.type || '').toLowerCase())
+    && (f.maxLength === 1 || /security-input|\botp\b|one-?time|verification-?code|passcode/i.test(
+      (f.id || '') + ' ' + (f.name || '') + ' ' + (f.getAttribute('autocomplete') || '')))).length;
   // A submit control that is disabled, marked busy, or showing a spinner is
   // still sending — nothing has been decided yet.
   const busy = submit.some(b => b.disabled || b.getAttribute('aria-busy') === 'true' || b.getAttribute('aria-disabled') === 'true'
@@ -534,7 +647,7 @@ _AFTER_SUBMIT_JS = r"""
     || !!b.querySelector('[class*="spinner" i], [class*="loading" i], [class*="loader" i], [role=progressbar]'));
   return {
     form_present: fields.length >= 3 && submit.length > 0,
-    fields: fields.length, submit: submit.length, busy,
+    fields: fields.length, submit: submit.length, busy, code_boxes: codeBoxes,
     text: (document.body.innerText || '').slice(0, 20000),
     errors: [...new Set(errors)].slice(0, 12),
   };
@@ -546,6 +659,15 @@ _AFTER_SUBMIT_JS = _deep(_AFTER_SUBMIT_JS)
 # spinner can run a good while. Two seconds — what the check used to allow —
 # called both "not submitted" while they were still sending.
 SUBMIT_WAIT_S = 75
+# How long a form left standing with no complaint stays provisional after
+# the click. Greenhouse answers a Submit after a reCAPTCHA assessment and a
+# post, a few seconds in which the form simply sits there; its eight-box
+# security-code dialog (Inversion, 2026-10-19) was drawn after the first
+# look had already called the form "still on the page", and the code sat in
+# the inbox unread while the attempt waited on an acknowledgement instead.
+SUBMIT_SETTLE_S = 10
+_STILL_ON_PAGE = "submit was clicked but the form is still on the page"
+CODE_WALL_VERDICT = "the page asks for an e-mailed code before it takes the application"
 
 
 def _submit_verdict(state: dict, url_changed: bool) -> tuple[bool, str] | None:
@@ -565,7 +687,13 @@ def _submit_verdict(state: dict, url_changed: bool) -> tuple[bool, str] | None:
     # a code wall, not a draft, and the batch reads the code from the inbox.
     if re.search(r"(verification|security) code|type the code|enter the code|code (was|has been) sent|confirm your identity", text, re.I) \
             and re.search(r"\bverify\b|\bconfirm\b|\bsubmit\b", text, re.I):
-        return False, "the page asks for an e-mailed code before it takes the application"
+        return False, CODE_WALL_VERDICT
+    if int(state.get("code_boxes") or 0) >= 4:
+        # Greenhouse's eight single-character boxes (security-input-0…7),
+        # Oracle's six: the dialog is up whatever it says. Its Submit stays
+        # disabled until the code is in, which read as "busy" would hold
+        # this verdict for the whole wait and then call it in progress.
+        return False, CODE_WALL_VERDICT
     # Oracle's portals answer a Submit with "We saved a draft of your job
     # application… complete and submit": the form is gone and nothing was
     # sent. That was counted as applied eleven times at one company.
@@ -579,7 +707,7 @@ def _submit_verdict(state: dict, url_changed: bool) -> tuple[bool, str] | None:
     if state.get("busy"):
         return None
     errors = [e for e in dict.fromkeys(state.get("errors") or []) if e]
-    why = "submit was clicked but the form is still on the page"
+    why = _STILL_ON_PAGE
     if errors:
         why += "; it says: " + " | ".join(errors)[:400]
     return False, why
@@ -653,6 +781,39 @@ _US_STATES = {
     "wi": "wisconsin", "wy": "wyoming", "dc": "district of columbia",
 }
 _PLACE_NOISE = {"united", "states", "usa", "us", "america", "of", "the"}
+
+
+# A country's dial code: Greenhouse's new form draws its Country picker (the
+# phone widget's) as a flag and "+1" once United States is chosen, and a
+# "Country code" picker lists "+1" where the bank says "United States".
+_DIAL_CODES = {
+    "united states": "1", "united states of america": "1", "usa": "1", "us": "1", "u.s.": "1", "u.s.a.": "1", "canada": "1",
+    "united kingdom": "44", "uk": "44", "great britain": "44", "india": "91", "china": "86", "mexico": "52", "germany": "49",
+    "france": "33", "australia": "61", "japan": "81", "south korea": "82", "korea": "82", "brazil": "55", "spain": "34",
+    "italy": "39", "netherlands": "31", "singapore": "65", "ireland": "353", "israel": "972", "pakistan": "92", "nigeria": "234",
+    "turkey": "90", "russia": "7", "kazakhstan": "7", "kyrgyzstan": "996", "uzbekistan": "998", "philippines": "63", "vietnam": "84",
+}
+_BARE_CODE = re.compile(r"^\s*\+?\s*(\d{1,3})\s*$")
+
+
+def _dial_code_of(text: str) -> tuple[str | None, bool]:
+    """(the dial code a text names, whether the text is the bare code).
+    Flags and other symbols are stripped first ("🇺🇸 +1" is "+1")."""
+    t = re.sub(r"[^\x20-\x7e]+", " ", text or "").strip().lower().rstrip("*").strip()
+    m = _BARE_CODE.match(t)
+    if m:
+        return m.group(1), True
+    t = re.sub(r"\s*\(?\+\d{1,3}\)?\s*$", "", t).strip()  # "United States (+1)" → "united states"
+    return _DIAL_CODES.get(t), False
+
+
+def _same_country_code(a: str, b: str) -> bool:
+    """Whether one text is the bare dial code of the country the other
+    names: "+1" and "United States". Two country names are never equated by
+    their shared code (Canada is not the United States)."""
+    ca, bare_a = _dial_code_of(a)
+    cb, bare_b = _dial_code_of(b)
+    return ca is not None and ca == cb and (bare_a != bare_b)
 
 
 def _place_tokens(text: str) -> set[str]:
@@ -799,7 +960,9 @@ _SUBMIT_JS = """
   // A component wrapping another button-like component reports once, as the
   // innermost — the one that takes the click.
   const within = (outer, inner) => { let n = inner.parentNode || inner.host; while (n) { if (n === outer) return true; n = n.parentNode || n.host; } return false; };
-  const list = raw.filter(b => !raw.some(c => c !== b && within(b, c)));
+  // A choice chip in a group the form scan reported as one field (Oracle's
+  // Degree pills) is an answer, never a button to press on its own.
+  const list = raw.filter(b => !raw.some(c => c !== b && within(b, c))).filter(b => !b.closest('[data-rt-pills]') && !b.dataset.rtDd);
   const textOf = b => (s(b.innerText) || s(b.value) || b.getAttribute('aria-label') || '').trim();
   // The native button inside a component gets its label by slotting, so its
   // own innerText is empty; the wrapping component carries the words.
@@ -957,7 +1120,9 @@ _COOKIE_JS = """
   // Cookie strips, and the product tours that sit over a page the same way
   // (TikTok's "AI assistant guide" mask covers its Apply button until
   // "Maybe Later" is pressed).
-  const ok = /^\\s*(accept( all)?( cookies)?|allow( all)?( cookies)?|i (accept|agree|consent)( to (all )?cookies)?|consent( to cookies)?|agree|got it|ok(ay)?|accept and (close|continue)|maybe later|not now|no,? thanks|close guide|skip( the)? tour|dismiss)\\s*$/i;
+  // "I understand" closes Eightfold's Data Privacy Notice (Microsoft's
+  // careers site), which sat over the Apply control on five postings.
+  const ok = /^\\s*(accept( all)?( cookies)?|allow( all)?( cookies)?|i (accept|agree|consent)( to (all )?cookies)?|consent( to cookies)?|agree|got it|ok(ay)?|accept and (close|continue)|maybe later|not now|no,? thanks|close guide|skip( the)? tour|dismiss|i understand|understood|i acknowledge)\\s*$/i;
   for (const b of document.querySelectorAll('button, a, [role=button], input[type=button]')) {
     if (!vis(b)) continue;
     const t = ((typeof b.innerText === 'string' ? b.innerText : '') || (typeof b.value === 'string' ? b.value : '')).trim();
@@ -978,6 +1143,22 @@ _COOKIE_JS = """
 }
 """
 _COOKIE_JS = _deep(_COOKIE_JS)
+
+
+def _fresh_cookies(payloads: list) -> list[dict]:
+    """The unexpired cookies among the saved-login files' contents. Only a
+    list of cookie dicts counts: the same directory holds signed-in.json
+    (host → time), and one such file read as cookies once stopped every
+    browser session from starting."""
+    out: list[dict] = []
+    now = time.time()
+    for data in payloads:
+        if not isinstance(data, list):
+            continue
+        for c in data:
+            if isinstance(c, dict) and (not c.get("expires") or c["expires"] < 0 or c["expires"] > now):
+                out.append(c)
+    return out
 
 
 def _is_empty(field: dict) -> bool:
@@ -1203,15 +1384,15 @@ class ApplySession:
         """Cookies saved by save_logins(), added to this context on start."""
         if not self.LOGINS_DIR.is_dir():
             return
-        cookies: list[dict] = []
+        payloads: list = []
         for path in self.LOGINS_DIR.glob("*.json"):
-            if "linkedin" in path.name.lower():
-                continue  # LinkedIn's session never rides along: automation there is against its rules
+            if "linkedin" in path.name.lower() or path.name == "signed-in.json":
+                continue  # LinkedIn's session never rides along (automation there is against its rules); signed-in.json is the sign-in log, not cookies
             try:
-                cookies.extend(json.loads(path.read_text(encoding="utf-8")))
+                payloads.append(json.loads(path.read_text(encoding="utf-8")))
             except Exception:
                 continue
-        fresh = [c for c in cookies if not c.get("expires") or c["expires"] < 0 or c["expires"] > time.time()]
+        fresh = _fresh_cookies(payloads)
         if fresh:
             try:
                 await self._ctx.add_cookies(fresh)
@@ -1368,6 +1549,7 @@ class ApplySession:
         link repeated at the top and bottom of a posting, or a specific
         "Apply to this job" beside a generic "Apply", is one choice."""
         await self.start()
+        await self._dismiss_cookie_banner()  # a notice drawn late sits over the Apply control (Eightfold)
         try:
             seen = {c["selector"] for c in await self._doc.evaluate(_APPLY_JS)}
         except Exception:
@@ -1612,6 +1794,9 @@ class ApplySession:
         tag = await el.evaluate("e => e.tagName.toLowerCase()")
         typ = (await el.evaluate("e => (e.type || '').toLowerCase()")) or ""
         if tag not in ("input", "select", "textarea"):
+            if (field or {}).get("tag") == "pills":
+                await self._press_pill(el, value, list((field or {}).get("options") or []))
+                return
             if (field or {}).get("tag") == "listbox" or await el.evaluate(
                     "e => e.getAttribute('aria-haspopup') === 'listbox' || e.getAttribute('role') === 'combobox'"):
                 await self._pick_listbox(el, value)
@@ -1865,13 +2050,91 @@ class ApplySession:
             await el.evaluate("e => e.scrollIntoView({block: 'center'})")
             await el.click(force=True, timeout=5000)
         found = await self._visible_options()
+        if not found:
+            # Some dropdown buttons open on a key rather than a click.
+            try:
+                await el.focus()
+                await page.keyboard.press("ArrowDown")
+            except Exception:
+                pass
+            found = await self._visible_options(wait_ms=1500)
+        # A dropdown with its own search box (Jane Street's college and
+        # source pickers hold hundreds of rows): type the value there and
+        # read what is left. The search box is a sibling of the button
+        # inside the widget, never the button itself.
+        search = el.locator("xpath=..").locator('input[type="text"], input[type="search"]').first
+        try:
+            has_search = bool(await search.count()) and await search.is_visible()
+        except Exception:
+            has_search = False
+        if has_search and (not found or len(found) > 12):
+            try:
+                await search.fill("")
+                await search.press_sequentially(value[:60], delay=20)
+                await page.wait_for_timeout(500)
+                narrowed = await self._visible_options(wait_ms=1500)
+                if narrowed:
+                    found = narrowed
+            except Exception:
+                pass
         i = self._match_option(value, found) if found else None
+        if i is None and found and has_search:
+            # The whole value filtered everything away: its first word alone.
+            first = next((w for w in re.findall(r"[A-Za-z0-9']+", value) if len(w) >= 3), "")
+            if first and first.lower() != value.strip().lower():
+                try:
+                    await search.fill("")
+                    await search.press_sequentially(first, delay=20)
+                    await page.wait_for_timeout(500)
+                    found = await self._visible_options(wait_ms=1500) or found
+                    i = self._match_option(value, found, loose_prefix=first) if found else None
+                except Exception:
+                    pass
         if i is None:
             await page.keyboard.press("Escape")
             raise ValueError(f"no option matches {value!r}"
                              + (f"; it offered {[o['t'] for o in found[:8]]}" if found else "; the list showed nothing"))
+        before = [o["t"] for o in found]
+        shown_before = (await el.inner_text()).strip()
         await self._doc.locator(f'[data-rt-opt="{found[i]["id"]}"]').first.click()
         await page.wait_for_timeout(300)
+        # A category row (Jane Street's "Academic competition" ▸) opens a
+        # branch instead of choosing: pick the leaf that means the value, else
+        # the branch's own name, when the rows changed and the button did not.
+        try:
+            shown_after = (await el.inner_text()).strip()
+        except Exception:
+            shown_after = shown_before
+        if shown_after == shown_before:
+            leaves = await self._visible_options(wait_ms=800)
+            leaf_texts = [o["t"] for o in leaves]
+            if leaves and leaf_texts != before:
+                j = self._match_option(value, leaves)
+                if j is None:
+                    j = next((k for k, o in enumerate(leaves) if o["t"] == found[i]["t"] and k not in ()), None)
+                if j is not None:
+                    await self._doc.locator(f'[data-rt-opt="{leaves[j]["id"]}"]').first.click()
+                    await page.wait_for_timeout(300)
+
+    async def _press_pill(self, box, value: str, options: list[str]) -> None:
+        """Answer a group of choice chips: press the one that means `value`
+        and confirm it took, where the chips carry a pressed or checked state."""
+        i = _pick_option(value, [{"label": o, "value": o} for o in options])
+        if i is None:
+            i = closest_option(value, options)
+        if i is None:
+            raise ValueError(f"no option matches {value!r}; the chips offer {options[:10]}")
+        chip = box.locator(":scope > *").nth(i)
+        if not await chip.count():
+            raise ValueError("the chip group changed before it could be pressed")
+        await chip.scroll_into_view_if_needed()
+        await chip.click()
+        await self._page.wait_for_timeout(300)
+        state = await chip.evaluate(
+            "c => c.getAttribute('aria-pressed') || c.getAttribute('aria-checked') || (/\\b(selected|active|checked|pressed)\\b/i.test(c.className || '') ? 'true' : '')")
+        stateful = await box.evaluate("b => [...b.children].some(c => c.hasAttribute('aria-pressed') || c.hasAttribute('aria-checked'))")
+        if stateful and state != "true":
+            raise ValueError(f"the chip {options[i]!r} did not register as chosen")
 
     async def _press_yes_no(self, box, value: str) -> None:
         """Answer a two-button Yes/No widget and confirm the button took."""
@@ -1959,6 +2222,15 @@ class ApplySession:
             starts = [k for k, o in enumerate(found) if o["t"].lower().startswith(loose_prefix.lower())
                       and all(w in o["t"].lower() for w in words)]
             i = starts[0] if len(starts) == 1 else None
+        if i is None:
+            # A country against a list of bare dial codes ("+1", "+44"): the
+            # one entry that is that country's code. Only bare codes count —
+            # Canada shares +1 and is not the United States.
+            code, bare = _dial_code_of(value)
+            if code and not bare:
+                coded = [k for k, o in enumerate(found) if _dial_code_of(o["t"]) == (code, True)]
+                if len(coded) == 1:
+                    i = coded[0]
         if i is None and len(holds) > 1 and re.fullmatch(r"\d+(\.\d+)?", v):
             # A bare score against "1560 out of 1600" and "1560 out of 2400":
             # the tightest scale that holds the score is the one it was
@@ -2074,6 +2346,16 @@ class ApplySession:
             if typed:
                 await el.press_sequentially(typed, delay=30)
             found = await self._visible_options()
+            if not typed and not found:
+                # A react-select does not open on a click headless (its
+                # input is a sliver under a wrapper that ignores the click);
+                # a keystroke opens it. ArrowDown opens without filtering.
+                try:
+                    await el.focus()
+                    await page.keyboard.press("ArrowDown")
+                except Exception:
+                    pass
+                found = await self._visible_options(wait_ms=1500)
             if typed and ((not found and await self._searches_on_enter(el)) or self._ignored_typing(typed, found)):
                 # The list stays empty until the search is run — or, on some
                 # Workday prompts, keeps showing the unfiltered head of the
@@ -2105,9 +2387,15 @@ class ApplySession:
             before_texts = [o["t"] for o in found]
             await opt.click()
             await page.wait_for_timeout(500)
-            if await el.evaluate(_COMBO_VALUE_JS):
-                await self._close_menu(el)
-                return
+            shown = await el.evaluate(_COMBO_VALUE_JS)
+            if shown:
+                if self._took(shown, wanted, value):
+                    await self._close_menu(el)
+                    return
+                # The widget committed something else (react-select commits
+                # whatever it pre-highlighted when the click misses): undo it
+                # rather than leave a wrong answer standing.
+                await self._uncommit(el)
             # A hierarchical prompt (Workday's "How did you hear": Job Boards →
             # Indeed, Handshake, Other…): the click opened a branch, and a
             # leaf must be chosen — the one that means the value, else Other,
@@ -2128,49 +2416,121 @@ class ApplySession:
                 if live == leaves[j]["t"]:
                     await leaf.click()
                     await page.wait_for_timeout(500)
-                    if await el.evaluate(_COMBO_VALUE_JS):
+                    shown = await el.evaluate(_COMBO_VALUE_JS)
+                    if shown and (self._took(shown, leaves[j]["t"], value) or self._took(shown, wanted, value)):
                         await self._close_menu(el)
                         return
+                    if shown:
+                        await self._uncommit(el)
             # A multi-select keeps its menu open; the chosen chip shows once it closes.
             await page.keyboard.press("Escape")
             await page.wait_for_timeout(300)
-            if await el.evaluate(_COMBO_VALUE_JS):
+            shown = await el.evaluate(_COMBO_VALUE_JS)
+            if shown and self._took(shown, wanted, value):
                 return
             # The click landed but the widget did not take it (some
             # react-select builds commit only through the keyboard): type the
-            # matched entry's own text and choose it with the arrow keys.
+            # matched entry's own text, walk the highlight onto that very
+            # entry, and press Enter only once it sits there. Enter on a menu
+            # whose highlight is elsewhere commits whatever is highlighted —
+            # on a demographics question that is a claim about a person.
             await el.click()
             await el.fill("")
-            await el.fill(found[i]["t"][:80])
+            await el.fill(wanted[:80])
             await page.wait_for_timeout(500)
-            await page.keyboard.press("ArrowDown")
-            await page.keyboard.press("Enter")
-            await page.wait_for_timeout(350)
-            if await el.evaluate(_COMBO_VALUE_JS):
-                return
-        # Last try: type it and press Enter — some pickers commit the typed
-        # entry — and keep it only if the widget then shows that entry. A
-        # picker that never showed a list (Greenhouse's employer field, an
-        # autocomplete over free text) keeps the whole typed value.
-        try:
-            typed = value[:40] if offered else value[:120]
-            await el.click()
-            await el.fill("")
-            await el.press_sequentially(typed, delay=25)
-            await page.wait_for_timeout(600)
-            await page.keyboard.press("Enter")
-            await page.wait_for_timeout(500)
-            shown = await el.evaluate(_COMBO_VALUE_JS)
-            if shown and _pick_option(value, [{"label": shown, "value": shown}]) is not None:
-                return
-            if shown and not offered and " ".join(shown.split()).lower() == " ".join(typed.split()).lower():
-                return
-            await el.fill("")
-        except Exception:
-            pass
+            if await self._highlight(wanted):
+                await page.keyboard.press("Enter")
+                await page.wait_for_timeout(350)
+                shown = await el.evaluate(_COMBO_VALUE_JS)
+                if shown and self._took(shown, wanted, value):
+                    return
+                if shown:
+                    await self._uncommit(el)
+            else:
+                await page.keyboard.press("Escape")
+        # Last try, only for a picker that never showed a list at all
+        # (Greenhouse's employer field, an autocomplete over free text): type
+        # the value and press Enter, and keep it only if the widget shows the
+        # typed text back. A picker that offered a list and matched nothing
+        # is a miss — Enter there would commit its first entry.
+        if not offered:
+            try:
+                typed = value[:120]
+                await el.click()
+                await el.fill("")
+                await el.press_sequentially(typed, delay=25)
+                await page.wait_for_timeout(600)
+                listed = await self._visible_options(wait_ms=800)
+                if not listed or (len(listed) == 1 and self._took(listed[0]["t"], typed, value)):
+                    await page.keyboard.press("Enter")
+                    await page.wait_for_timeout(500)
+                    shown = await el.evaluate(_COMBO_VALUE_JS)
+                    if shown and (_pick_option(value, [{"label": shown, "value": shown}]) is not None
+                                  or " ".join(shown.split()).lower() == " ".join(typed.split()).lower()):
+                        return
+                    if shown:
+                        await self._uncommit(el)
+                await el.fill("")
+            except Exception:
+                pass
         await page.keyboard.press("Escape")
         raise ValueError(f"no option matches {value!r} in this picker"
                          + (f"; it offered {offered}" if offered else "; it showed no list"))
+
+    @staticmethod
+    def _took(shown: str, wanted: str, value: str) -> bool:
+        """Whether what a picker shows after a pick is the entry that was
+        chosen (or means the value): the entry's text, one holding the other,
+        the same place written out, or the bank's answer mapped onto it. A
+        committed value unrelated to both is a wrong pick, whatever it is."""
+        a, w = " ".join(shown.split()).lower(), " ".join(wanted.split()).lower()
+        if not a:
+            return False
+        if a == w or w in a or (a in w and len(a) >= 3):
+            return True
+        if _pick_option(value, [{"label": shown, "value": shown}]) is not None:
+            return True
+        tw = _place_tokens(w)
+        return bool(tw) and tw == _place_tokens(a)
+
+    async def _highlight(self, wanted: str, presses: int = 12) -> bool:
+        """Move a picker's highlight onto the entry whose text is `wanted`,
+        with ArrowDown, and say whether it got there."""
+        for _ in range(presses):
+            current = await self._visible_options(wait_ms=300)
+            j = next((k for k, o in enumerate(current) if o["t"] == wanted), None)
+            if j is None:
+                return False
+            if current[j].get("focused"):
+                return True
+            await self._page.keyboard.press("ArrowDown")
+            await self._page.wait_for_timeout(120)
+        current = await self._visible_options(wait_ms=300)
+        return any(o["t"] == wanted and o.get("focused") for o in current)
+
+    async def _uncommit(self, el) -> None:
+        """Take back a value a picker committed by mistake: an empty input
+        plus Backspace removes react-select's value; a clear control does it
+        on the others. Best effort — what still shows is reported by the
+        sweep as a deviation, never sent as an answer."""
+        page = self._page
+        try:
+            await el.fill("")
+            await el.press("Backspace")
+            await page.wait_for_timeout(250)
+            if not await el.evaluate(_COMBO_VALUE_JS):
+                return
+            await el.evaluate(
+                "e => { let n = e; for (let k = 0; k < 6 && n; k++) { n = n.parentElement; if (!n) break;"
+                " const c = n.querySelector('[class*=\"clear-indicator\"], [class*=\"clearIndicator\"], [aria-label*=\"clear\" i], [title*=\"clear\" i]');"
+                " if (c) { c.click(); return; } } }")
+            await page.wait_for_timeout(250)
+        except Exception:
+            pass
+        try:
+            await page.keyboard.press("Escape")
+        except Exception:
+            pass
 
     async def combobox_search(self, selector: str, field: dict | None = None, text: str = "", limit: int = 40) -> list[str]:
         """What a search-as-you-type picker offers for `text` — the live
@@ -2237,6 +2597,17 @@ class ApplySession:
             await el.fill("")
             if not found:
                 found = await self._visible_options(limit, wait_ms=800)
+        if not found and await self._searches_on_enter(el):
+            # A Workday prompt ("How Did You Hear About Us?" on LSEG, Arch)
+            # lists its fixed choices only once Enter runs its search, even
+            # an empty one. Enter in a prompt box never sends the page.
+            try:
+                await el.click()
+                await el.fill("")
+                await page.keyboard.press("Enter")
+                found = await self._visible_options(limit, wait_ms=2500)
+            except Exception:
+                found = []
         await page.keyboard.press("Escape")
         await page.wait_for_timeout(150)
         labels = [o["t"] for o in found]
@@ -2282,6 +2653,7 @@ class ApplySession:
         import time
 
         deadline = time.monotonic() + SUBMIT_WAIT_S
+        settle = time.monotonic() + SUBMIT_SETTLE_S
         while True:
             await page.wait_for_timeout(1500)
             try:
@@ -2302,6 +2674,12 @@ class ApplySession:
                 except Exception:
                     pass
             verdict = _submit_verdict(state, page.url != before)
+            if verdict == (False, _STILL_ON_PAGE) and time.monotonic() < settle:
+                # No complaint, no confirmation, the form just standing:
+                # the site may still be answering (a code dialog, an error,
+                # the confirmation page). Look again until the settle window
+                # has passed; only then is "still on the page" the verdict.
+                continue
             if verdict is not None:
                 return verdict
             if time.monotonic() > deadline:

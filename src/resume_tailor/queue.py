@@ -170,6 +170,18 @@ class RunState:
         self._touched.add(entry_id)
         self.save()
 
+    def update(self, entry_id: str, fields: dict[str, Any]) -> dict[str, Any]:
+        """Merge `fields` into a record without counting an attempt: the agent
+        driver's prepare step writes the PDF and the judges' verdict ahead of
+        the attempt it is about to make, and a hand-corrected detail is not a
+        try either. Saves like record()."""
+        rec = dict(self.done.get(entry_id) or {"entry_id": entry_id})
+        rec.update(fields)
+        self.done[entry_id] = rec
+        self._touched.add(entry_id)
+        self.save()
+        return rec
+
     def mark_retry(self, ids: list[str], why: str) -> int:
         """Put finished attempts back in front of the loop by prefixing their
         detail with "retry: <why> · ", which lifts the attempt cap

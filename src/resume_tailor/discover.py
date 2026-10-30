@@ -190,6 +190,9 @@ class Prefs:
     # audit found applications in a posting's fourth week or later produced
     # rejections and silence, never an assessment. 0 = no cap.
     max_posting_age_days: int = 21
+    # When the résumé last changed (tailor.resume_updated_at). A review-held
+    # posting last tried before this is run again with the new résumé.
+    resume_updated_at: float = 0.0
     positions: list[str] = field(default_factory=list)
     jobright_account: bool = False  # the tool's browser is signed in to jobright.ai, so its links resolve
     # Listing categories worth reading (substrings of the source's category):
@@ -221,7 +224,35 @@ class Prefs:
             company_cooldown_days=int(s.get("company_cooldown_days", 7) or 0),
             max_posting_age_days=int(s.get("max_posting_age_days", 21) or 0),
             jobright_account=bool(s.get("jobright_account", False)),
+            resume_updated_at=_resume_updated_at(profile),
         )
+
+
+def _resume_updated_at(profile) -> float:
+    try:
+        from .tailor import resume_updated_at
+        return float(resume_updated_at(profile))
+    except Exception:
+        return 0.0
+
+
+def resume_stale(rec: dict, resume_since: float = 0.0) -> bool:
+    """Whether a record's résumé is older than the current one: made by an
+    earlier composer (resume_version below batch.RESUME_VERSION), or tried
+    before the fixed PDF / skeleton last changed. The user's rule: never
+    reuse what was almost submitted with a résumé they no longer send; run
+    the cycle again with the newest one."""
+    from .batch import RESUME_VERSION
+
+    version = rec.get("resume_version")
+    if version is not None and int(version or 0) < RESUME_VERSION:
+        return True  # (a record with no version at all is judged by its time alone)
+    if resume_since and rec.get("when"):
+        try:
+            return datetime.fromisoformat(str(rec["when"])).timestamp() < resume_since
+        except ValueError:
+            return False
+    return False
 
 
 # --- fetching ----------------------------------------------------------------
@@ -640,6 +671,7 @@ def entry_term(listing: dict) -> str:
 
 RETRY_CAP = 3
 LOGIN_RETRY_CAP = 2
+ERROR_RETRY_CAP = 6
 
 
 def shard_of(listing: dict, workers: int) -> int:
@@ -676,7 +708,7 @@ def logged_in_since(url: str, when: str) -> bool:
     return bool(at) and float(at) > since
 
 
-def _worn_out(rec: dict, inbox: bool | None = None, url: str = "") -> bool:
+def _worn_out(rec: dict, inbox: bool | None = None, url: str = "", resume_since: float = 0.0) -> bool:
     """Three attempts that all ended in needs_review or blocked, or two that
     ended at a login wall — none of them a hand re-queue. A wall only a
     person can pass (a sign-in, an e-mailed link) costs minutes of browser
@@ -698,11 +730,22 @@ def _worn_out(rec: dict, inbox: bool | None = None, url: str = "") -> bool:
         # judges' gate); "retry:" is the bulk re-queue after a fix, which
         # lifts only the attempt cap.
         return False
+    if rec.get("worker") == "assist":
+        # The agent driver's word is final for the loop: an outcome the agent
+        # recorded (assist.record) is never retried here — the agent sees its
+        # own holds again through assist_next. One owner per application; the
+        # hand re-queue above is the one way back into the loop.
+        return True
     attempts = int(rec.get("attempts") or 0)
     if rec.get("status") in ("needs_login", "blocked") and logged_in_since(url or rec.get("url") or "", str(rec.get("when") or "")):
         return False
     if rec.get("status") == "blocked" and (rec.get("detail") or "").lower().startswith("spam flag"):
         return True  # a spam-flagged submit is never retried on its own: repeated flags hurt the applicant's standing
+    if rec.get("status") == "blocked" and re.match(r"a (captcha|bot/verification check)", (rec.get("detail") or "").lower()):
+        # A captcha does not go away on retry: Tesla's 36 blocks and the
+        # iCIMS walls each took three browser passes to learn that. One
+        # attempt; a hand sign-in at the host (above) lifts it.
+        return attempts >= 1
     if rec.get("status") == "blocked" and (rec.get("detail") or "").lower().startswith("weekly application cap"):
         try:
             return datetime.fromisoformat(str(rec.get("when"))).timestamp() + 7 * 86400 > time.time()  # the cap is per rolling week
@@ -712,6 +755,17 @@ def _worn_out(rec: dict, inbox: bool | None = None, url: str = "") -> bool:
         if mailbox.waiting_for_inbox(rec):
             return not (mailbox.configured() if inbox is None else inbox)
         return attempts >= LOGIN_RETRY_CAP
+    if rec.get("status") == "needs_review" and attempts >= RETRY_CAP and resume_stale(rec, resume_since):
+        # Held three times with a résumé the user no longer sends: the cycle
+        # runs once more with the newest one (the cached PDF and verdicts are
+        # not reused — batch.fit_and_resume re-tailors and re-judges). After
+        # that run the record carries the current version and the cap holds.
+        return False
+    if rec.get("status") == "error" and attempts >= ERROR_RETRY_CAP:
+        # A blip clears in a pass or two. Six attempts on is a posting the
+        # tool breaks on every time (one reached 163 attempts, ten minutes
+        # apart, on "can only join an iterable"): a bug to fix, not a retry.
+        return True
     return rec.get("status") in ("needs_review", "blocked") and attempts >= RETRY_CAP
 
 
@@ -815,6 +869,8 @@ def select(listings: list[dict], prefs: Prefs, state: RunState | None = None,
                 reason = "this link was already applied to"
             elif rk in applied_roles and rk[1]:
                 reason = f"this role was already applied to at this company ({applied_roles[rk]})"
+            elif (state.done.get(l.get("id") or l.get("url", "")) or {}).get("status") == "for_agent":
+                reason = "for the agent driver (assist-queue)"
             elif state.already_attempted(l.get("id") or l.get("url", ""), RETRYABLE):
                 reason = "already attempted"
             if reason:
@@ -829,7 +885,9 @@ def select(listings: list[dict], prefs: Prefs, state: RunState | None = None,
             reason = f"older than {max_age} days"
         if not reason and state is not None:
             role_key = role_key_of(l.get("company_name") or "", l.get("title") or "")
-            if state.already_attempted(l.get("id") or l.get("url", ""), RETRYABLE):
+            if (state.done.get(l.get("id") or l.get("url", "")) or {}).get("status") == "for_agent":
+                reason = "for the agent driver (assist-queue)"
+            elif state.already_attempted(l.get("id") or l.get("url", ""), RETRYABLE):
                 reason = "already attempted"
             elif url_key(l.get("url") or "") in attempted_urls and (l.get("id") or l.get("url")) not in state.done:
                 reason = "same link already attempted"
@@ -885,15 +943,17 @@ def select(listings: list[dict], prefs: Prefs, state: RunState | None = None,
     # Errors and login walls keep retrying: a network blip or a login by
     # the user changes them without any code change.
     inbox = mailbox.configured()  # once per pass, not once per record: it reads the env file
-    retries = [l for l in kept if stage(l) == 2 and not _worn_out(attempted.get(l.get("id") or l.get("url")) or {}, inbox, l.get("url") or "")]
+    retries = [l for l in kept if stage(l) == 2 and not _worn_out(attempted.get(l.get("id") or l.get("url")) or {}, inbox, l.get("url") or "",
+                                                                   resume_since=prefs.resume_updated_at)]
     # The least-tried first: a posting never retried since the last fix to
     # the form layer goes before one that just failed again a pass ago.
     retries.sort(key=lambda l: int((attempted.get(l.get("id") or l.get("url")) or {}).get("attempts") or 0))
     for l in kept:
         rec = attempted.get(l.get("id") or l.get("url")) or {}
-        if stage(l) == 2 and _worn_out(rec, inbox, l.get("url") or ""):
+        if stage(l) == 2 and _worn_out(rec, inbox, l.get("url") or "", resume_since=prefs.resume_updated_at):
             why = ("waiting for the inbox (set RESUME_TAILOR_IMAP_PASSWORD)" if mailbox.waiting_for_inbox(rec)
                    else ("login wall or captcha, two tries (a hand Log in there lifts this)" if rec.get("status") in ("needs_login", "blocked")
+                         else f"broke off {ERROR_RETRY_CAP} times (a bug, not a blip)" if rec.get("status") == "error"
                          else "needs review, three attempts"))
             excluded[why] = excluded.get(why, 0) + 1
     kept = ready
@@ -905,6 +965,10 @@ def select(listings: list[dict], prefs: Prefs, state: RunState | None = None,
         del new[:3]
         if retries:
             kept.append(retries.pop(0))
+    # Tier 1 firms before everything else, retries of theirs included (the
+    # user, 2026-10-29); the sort is stable, so the deal above holds inside
+    # each tier.
+    kept.sort(key=lambda l: tier_rank(l, prefs))
     if limit is not None:
         kept = kept[:limit]
     return [to_entry(l) for l in kept], excluded

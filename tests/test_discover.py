@@ -327,6 +327,39 @@ check("retry cap: a login wall is left out of the pool",
       [e.id for e in select([L(id="wall", company_name="Wall Co", url="https://wall.wd1.myworkdayjobs.com/j")], P, _wall)[0]] == [])
 _wall.record("wall", {"status": "needs_login", "detail": "re-queued by hand"})
 check("retry cap: a hand re-queue lifts it", not _worn(_wall.done["wall"]))
+_cap = RunState(path=Path(tempfile.mkdtemp()) / "state.json")
+_cap.record("tesla", {"status": "blocked", "detail": "a bot/verification check was on the page — not attempted", "url": "https://www.tesla.com/careers/x"})
+check("retry cap: a captcha block is parked after its first attempt", _worn(_cap.done["tesla"]))
+check("retry cap: a captcha block is left out of the pool",
+      [e.id for e in select([L(id="tesla", company_name="Tesla", url="https://www.tesla.com/careers/x")], P, _cap)[0]] == [])
+_cap.record("ashby-draft", {"status": "blocked", "detail": "the site kept a draft instead of submitting"})
+check("retry cap: another kind of block still gets its three tries", not _worn(_cap.done["ashby-draft"]))
+from resume_tailor.discover import resume_stale as _stale
+from resume_tailor.batch import RESUME_VERSION as _RV
+_stale_rec = {"status": "needs_review", "attempts": 3, "resume_version": _RV - 1, "when": "2026-10-16T10:00:00-04:00", "detail": "could not answer: x"}
+_fresh_rec = {"status": "needs_review", "attempts": 3, "resume_version": _RV, "when": "2026-10-18T10:00:00-04:00", "detail": "could not answer: x"}
+import datetime as _dt2
+_edited = _dt2.datetime.fromisoformat("2026-10-17T00:00:00-04:00").timestamp()
+check("stale résumé: an older composer version, or an attempt before the résumé was last edited, is stale; a current one is not",
+      _stale(_stale_rec) and _stale(dict(_fresh_rec, when="2026-10-16T10:00:00-04:00"), _edited) and not _stale(_fresh_rec, _edited) and not _stale(_fresh_rec))
+check("retry cap: a review-held posting with a stale résumé is run again; with the current résumé it stays parked",
+      not _worn(_stale_rec) and _worn(_fresh_rec) and not _worn(dict(_fresh_rec, when="2026-10-16T10:00:00-04:00"), resume_since=_edited))
+_sl = RunState(path=Path(tempfile.mkdtemp()) / "state.json")
+_sl.done["st"] = dict(_stale_rec); _sl.done["fr"] = dict(_fresh_rec)  # as the loop left them, three attempts in
+_sl_sel, _sl_why = select([L(id="st", company_name="Stale Co", url="https://jobs.lever.co/stale/1"), L(id="fr", company_name="Fresh Co", url="https://jobs.lever.co/fresh/2")],
+                          Prefs(max_posting_age_days=0, positions=["Software Engineer Intern"], apply_once_at_company=False), _sl)
+check("select: the stale-résumé hold is back in the pool, the current-résumé hold is not", [e.id for e in _sl_sel] == ["st"] and _sl_why.get("needs review, three attempts") == 1, str([e.id for e in _sl_sel]))
+from resume_tailor.tailor import resume_updated_at as _rua
+from resume_tailor.profile import Profile as _Prof
+_rd = Path(tempfile.mkdtemp()); (_rd / "resume").mkdir(); (_rd / "resume" / "base.yaml").write_text("pdf: base.pdf\n"); (_rd / "resume" / "base.pdf").write_bytes(b"%PDF")
+import os as _os2; _os2.utime(_rd / "resume" / "base.pdf", (1700000000, 1700000000)); _os2.utime(_rd / "resume" / "base.yaml", (1600000000, 1600000000))
+check("résumé timestamp: the newest of the fixed PDF and the skeleton", int(_rua(_Prof(career={}, answers={}, root=_rd, base_resume={"pdf": "base.pdf"}))) == 1700000000)
+check("résumé timestamp: nothing on disk is 0.0", _rua(_Prof(career={}, answers={}, root=Path(tempfile.mkdtemp()))) == 0.0)
+from resume_tailor.discover import ERROR_RETRY_CAP as _ECAP
+check("retry cap: an error keeps retrying for a while, then is parked as a bug after six attempts",
+      not _worn({"status": "error", "attempts": _ECAP - 1, "detail": "the attempt broke off: can only join an iterable"})
+      and _worn({"status": "error", "attempts": _ECAP, "detail": "the attempt broke off: can only join an iterable"})
+      and not _worn({"status": "error", "attempts": 50, "detail": "retry: fixed · the attempt broke off"}))
 _once = RunState(path=Path(tempfile.mkdtemp()) / "state.json")
 _once.record("wall1", {"status": "needs_login", "detail": "this site wants an account"})
 check("retry cap: one login wall is still retried", not _worn(_once.done["wall1"]))
@@ -422,6 +455,10 @@ _tiered = [L(id="t3", company_name="Zed Co", url="https://jobs.lever.co/z/1", da
            L(id="t1", company_name="Stripe", url="https://jobs.lever.co/s/1", date_posted=100),
            L(id="t2", company_name="Cencora", url="https://jobs.lever.co/c/1", date_posted=200)]
 check("tiers: first, then, the rest — ahead of posting date", [e.id for e in select(_tiered, _tp, None)[0]] == ["t1", "t2", "t3"])
+_ts = RunState(path=Path(tempfile.mkdtemp()) / "s.json")
+_ts.record("t1", {"status": "error", "company": "Stripe", "when": "2026-10-28T10:00:00-04:00"})
+check("tiers: a tier-1 retry goes before a new posting at an unlisted firm (the user, 2026-10-29)",
+      [e.id for e in select(_tiered, _tp, _ts)[0]] == ["t1", "t2", "t3"], str([e.id for e in select(_tiered, _tp, _ts)[0]]))
 check("tiers: from the profile", Prefs.from_profile(type("P", (), {"answers": {"search": {"company_tiers": {"first": ["Stripe"], "never": ["X"]}}}})()).tier_first == ["stripe"])
 
 # --- a spam-flagged submit is never retried on its own ---
@@ -445,6 +482,13 @@ check("host blacklist: answers.yaml can widen or (knowingly) empty it",
       Prefs.from_profile(type("P", (), {"answers": {"search": {"host_blacklist": ["linkedin.com", "example.org"]}}})()).host_blacklist == ["linkedin.com", "example.org"]
       and Prefs.from_profile(type("P", (), {"answers": {"search": {"host_blacklist": []}}})()).host_blacklist == []
       and Prefs.from_profile(type("P", (), {"answers": {"search": {}}})()).host_blacklist == ["linkedin.com"])
+
+from resume_tailor.discover import _worn_out as _wo2
+check("one owner: an outcome the agent driver recorded is never the loop's to retry, whatever its status or count",
+      _wo2({"status": "needs_review", "worker": "assist", "attempts": 1}) and _wo2({"status": "needs_login", "worker": "assist", "attempts": 0})
+      and _wo2({"status": "blocked", "worker": "assist", "detail": "assist: a captcha", "attempts": 1}))
+check("one owner: the hand re-queue is the way back into the loop", not _wo2({"status": "needs_review", "worker": "assist", "detail": "re-queued …", "attempts": 3}))
+check("one owner: the loop's own holds keep their caps", not _wo2({"status": "needs_review", "worker": "3", "attempts": 1}) and _wo2({"status": "needs_review", "worker": "3", "attempts": 3}))
 
 width = max(len(n) for n, _, _ in RESULTS)
 failed = 0

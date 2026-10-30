@@ -43,6 +43,16 @@ BANNED_DEFAULT = (
     "additionally,", "i am confident that", "i'm confident that", "i am excited", "i'm excited", "i am eager", "i'm eager",
     "i am thrilled", "i'm thrilled", "i am passionate", "i'm passionate", "i am drawn", "i'm drawn", "i am driven", "i'm driven",
     "excited to", "eager to", "thrilled to",
+    # Added 2026-10-18 from the sibling kit's hard floor (canon/voice/hard-rules.md) and its structural tells.
+    "boasts", "crucial", "vital", "testament", "astonishing", "incredible", "remarkable", "synergy", "synergize", "dream job",
+    "i would love to", "game-changer", "game changer", "world-class", "seamless", "seamlessly", "unparalleled", "unwavering",
+    "utilize", "utilizing", "empower", "empowering", "elevate", "journey", "harness", "spearhead", "spearheaded", "orchestrate",
+    "ever-evolving", "in today's", "at the forefront", "bring to the table", "hit the ground running", "wear many hats",
+    "move the needle", "think outside the box", "go-getter", "self-starter", "team player", "detail-oriented", "results-driven",
+    "fast learner", "quick learner", "ecosystem", "unlock", "supercharge", "revolutionize", "transformative", "state-of-the-art",
+    "best-in-class", "mission-critical", "deep dive", "holistic", "actionable", "underscoring", "highlighting the importance",
+    "i want a summer", "i would like to spend a summer", "i am writing to express my interest", "i believe i would be a great fit",
+    "rich history", "plays a pivotal role", "key turning point",
 )
 # A sentence that says what the candidate lacks, has not done or would be
 # learning. Honesty governs what is asserted, never what must be confessed:
@@ -67,6 +77,8 @@ def violations(text: str, profile: Profile) -> list[str]:
     m = _WEAKNESS.search(text)
     if m:
         out.append(f"volunteers a weakness: {m.group(0)!r}")
+    if "\u2014" in text:
+        out.append("em dash (a machine-prose tell: write the plain sentence, or a comma)")
     return out
 
 

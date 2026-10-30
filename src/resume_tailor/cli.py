@@ -734,7 +734,7 @@ async def _submit(args: argparse.Namespace) -> int:
     from datetime import datetime
 
     from .apply import DEFAULT_PROFILE_DIR, ApplySession
-    from .batch import _process_one, _safe
+    from .batch import _process_one, _safe, visible_submit_host
     from .llm import get_llm
     from .queue import RunState
 
@@ -751,7 +751,11 @@ async def _submit(args: argparse.Namespace) -> int:
     state = RunState.load(out / "batch-state.json")
     from .profile import apply_once_at_company
     apply_once = apply_once_at_company(profile.answers)
-    session = ApplySession(headless=not bool(getattr(args, "show", False)),
+    # A board whose bot check turns a headless submit away (Lever, per
+    # search.visible_submit_hosts) is submitted from a visible window
+    # whether or not --show was given: that is what the hold was for.
+    show = bool(getattr(args, "show", False)) or visible_submit_host(profile, entry.apply_url or entry.url or "", entry.url or "")
+    session = ApplySession(headless=not show,
                            profile_dir=DEFAULT_PROFILE_DIR.parent / "approve-profiles" / _safe(entry.id)[:16])
     print(f"submitting {entry.company_hint} — {entry.title}", file=sys.stderr, flush=True)
     try:
@@ -763,6 +767,296 @@ async def _submit(args: argparse.Namespace) -> int:
     state.record(entry.id, asdict(o))
     print(f"  [{o.status}] {o.company or '?'} — {o.detail[:200]}", file=sys.stderr, flush=True)
     return 0 if o.status == "applied" else 1
+
+
+def cmd_assist(args: argparse.Namespace) -> int:
+    """The assist lane from the terminal: the stuck postings worth a hand
+    (see assist.py), one line each or as JSON for an agent."""
+    import json
+
+    from . import assist
+    from .queue import RunState
+
+    out = PROJECT_ROOT / args.out
+    try:
+        profile = Profile.load(args.profile)
+    except ProfileError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    state = RunState.load(out / "batch-state.json")
+    wanted = tuple(s.strip() for s in (args.status or "").split(",") if s.strip()) or assist.ASSIST_STATUSES
+    max_age = 0 if args.include_old else assist.MAX_AGE_DAYS
+    if getattr(args, "next", False):
+        batch = assist.next_batch(state, out, profile, size=args.size, portal=args.portal or "", statuses=wanted, max_age_days=max_age)
+        if args.json:
+            print(json.dumps(batch, indent=2))
+            return 0
+        if not batch["postings"]:
+            print("the driver's queue is empty")
+            return 0
+        portals = ", ".join(f"{p['portal']} {p['count']}" for p in batch["portals"][:12])
+        print(f"portal {batch['portal']}: {len(batch['postings'])} of {len(batch['postings']) + batch['remaining']} queued ({portals})")
+        rows = batch["postings"]
+    else:
+        rows = assist.queue(state, out, profile, limit=args.limit, statuses=wanted, max_age_days=max_age)
+        if args.json:
+            print(json.dumps(rows, indent=2))
+            return 0
+    if not rows:
+        print("nothing queued for the driver")
+        return 0
+    for b in rows:
+        you = f"  [needs you: {b['needs_you']}]" if b["needs_you"] else ""
+        age = f"{b['posted_days_ago']}d" if b["posted_days_ago"] is not None else "?"
+        prep = "prepared" if b["prepared"] else ("stale pdf" if b["pdf_stale"] else "unprepared")
+        print(f"{b['status']:17s} {b['company'][:28]:28s} {b['role'][:44]:44s} {b['ats']:14s} posted {age:>4s} {prep:10s} {b['id']}{you}")
+        print(f"                  why: {b['why_stuck'][:150]}")
+    return 0
+
+
+def cmd_assist_prepare(args: argparse.Namespace) -> int:
+    """The driver's fit step from the terminal: the posting is read in a
+    headless browser on a scratch profile (the MCP driver reads it in its own
+    window), then assist.prepare tailors and judges and writes the record.
+    For checking the step without an MCP session; one model round."""
+    import asyncio
+    import json
+    import re as _re
+
+    from . import assist
+    from .apply import DEFAULT_PROFILE_DIR, ApplySession
+    from .batch import posting_text_on_page
+    from .queue import RunState
+
+    out = PROJECT_ROOT / args.out
+    try:
+        profile = Profile.load(args.profile)
+    except ProfileError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    state = RunState.load(out / "batch-state.json")
+    b = assist.brief(state, out, args.entry_id, profile)
+    if not b:
+        print(f"error: no record {args.entry_id!r}", file=sys.stderr)
+        return 1
+
+    async def run():
+        text = Path(args.text_file).read_text(encoding="utf-8") if args.text_file else ""
+        if not text.strip():
+            slug = _re.sub(r"[^A-Za-z0-9]+", "-", args.entry_id).strip("-")[:16]
+            session = ApplySession(headless=True, profile_dir=DEFAULT_PROFILE_DIR.parent / "review-profiles" / slug)
+            await session.start()
+            try:
+                await session.goto(b["url"])
+                text = await posting_text_on_page(session)
+            finally:
+                await session.stop()
+        return await assist.prepare(state, out, args.entry_id, profile, text)
+
+    print(json.dumps(asyncio.run(run()), indent=2, default=str))
+    return 0
+
+
+def cmd_assist_record(args: argparse.Namespace) -> int:
+    import json
+
+    from . import assist
+    from .queue import RunState
+
+    state = RunState.load(PROJECT_ROOT / args.out / "batch-state.json")
+    try:
+        rec = assist.record(state, args.entry_id, args.status, args.detail or "")
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    print(json.dumps({"status": rec["status"], "detail": rec["detail"], "company": rec.get("company")}))
+    return 0
+
+
+def cmd_assist_learn(args: argparse.Namespace) -> int:
+    from . import assist
+
+    try:
+        profile = Profile.load(args.profile)
+    except ProfileError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    path = assist.learn(profile.root, args.question, args.answer)
+    print(f"kept in {path} → hand_answers: {args.question!r} → {args.answer!r}")
+    return 0
+
+
+def cmd_intake(args: argparse.Namespace) -> int:
+    from . import intake
+
+    try:
+        profile = Profile.load(args.profile)
+    except ProfileError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    st = intake.status(profile.root)
+    if args.check:
+        for r in st["facts"]:
+            print(f"  {'✓' if r['value'] is not None else '·'} {r['group']:<13} {r['key']:<34} {r['value'] if r['value'] is not None else '(missing)'}")
+        print(f"\n{len(st['missing'])} of {len(st['facts'])} facts missing" + ("; run `resume-tailor intake` to answer them" if st["missing"] else ""))
+        return 1 if st["missing"] else 0
+    if not st["missing"] and not args.all:
+        print("every fact is on file (`--check` lists them; `--all` re-asks)")
+        return 0
+    print("Answer once; the agent reads these instead of stopping to ask. Enter leaves a fact blank for later.")
+    got = intake.run(profile.root, only_missing=not args.all)
+    print(f"\nsaved {len(got)} fact(s) to {profile.root / 'answers.yaml'} → facts")
+    return 0
+
+
+def cmd_pending(args: argparse.Namespace) -> int:
+    from . import pending
+
+    out = PROJECT_ROOT / args.out
+    if args.answer:
+        n, text = args.answer
+        row = pending.close(out, int(n), text)
+        if not row:
+            print(f"no pending question #{n}", file=sys.stderr)
+            return 1
+        try:
+            from . import assist
+
+            assist.learn(Profile.load(args.profile).root, row["question"], text, source="pending")
+        except ProfileError:
+            pass
+        print(f"#{n} answered and kept in the bank: {row['question']!r} → {text!r}")
+        return 0
+    if args.drop:
+        return 0 if pending.close(out, int(args.drop), status="dropped") else 1
+    rows = pending.listing(out, include_closed=args.all)
+    if not rows:
+        print("no open questions")
+        return 0
+    for r in rows:
+        print(f"#{r['n']:<4} {r['status']:<9} {r['company'][:24]:<24} {r['question'][:90]}")
+        print(f"      {r['url']}" + (f"  (tab: {r['tab']})" if r.get("tab") else ""))
+    print("\nanswer one: resume-tailor pending --answer N \"your answer\"   (also saved to the bank)")
+    return 0
+
+
+def cmd_words(args: argparse.Namespace) -> int:
+    """The dictionary of words and phrases never written into an application
+    (freetext.BANNED_DEFAULT plus answers.yaml → writing.banned_phrases).
+    --add appends phrases to the bank's list, comments kept."""
+    import json
+
+    from . import freetext
+
+    try:
+        profile = Profile.load(args.profile)
+    except ProfileError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    if args.add:
+        from ruamel.yaml.comments import CommentedMap, CommentedSeq
+
+        from .settings import load_rt, save_rt
+
+        path = Path(profile.root).expanduser() / "answers.yaml"
+        data = load_rt(path)
+        writing = data.get("writing")
+        if writing is None:
+            writing = CommentedMap()
+            data["writing"] = writing
+        lst = writing.get("banned_phrases")
+        if lst is None:
+            lst = CommentedSeq()
+            writing["banned_phrases"] = lst
+        have = {str(x).strip().lower() for x in lst}
+        added = [ph.strip() for ph in args.add if ph.strip() and ph.strip().lower() not in have]
+        for ph in added:
+            lst.append(ph)
+        save_rt(path, data)
+        print(f"added {len(added)} to {path} → writing.banned_phrases")
+        profile = Profile.load(args.profile)
+    words = freetext.banned_phrases(profile)
+    if args.json:
+        print(json.dumps(words))
+        return 0
+    for w in words:
+        print(w)
+    print(f"\n{len(words)} banned phrases; also: no em dash, never volunteer a weakness, numbers and names only as the record states them")
+    return 0
+
+
+def cmd_eligibility(args: argparse.Namespace) -> int:
+    """The deterministic eligibility read (eligibility.py) of one posting —
+    a record id or a URL, fetched from its vendor's API — or, with --sweep,
+    of every posting in the driver's queue on a vendor with a public API: a
+    bar is recorded fit_rejected and a tier-4 signal skipped, so neither
+    reaches the driver. No model call, no browser."""
+    import json
+
+    from . import assist, eligibility
+    from .queue import RunState
+
+    out = PROJECT_ROOT / args.out
+    try:
+        profile = Profile.load(args.profile)
+    except ProfileError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    facts = eligibility.facts_from_profile(profile)
+    state = RunState.load(out / "batch-state.json")
+    from datetime import datetime as _dt
+
+    stamp = _dt.now().astimezone().isoformat(timespec="seconds")
+    if args.sweep:
+        rows = assist.queue(state, out, profile, limit=0)
+        n_api = n_bar = n_small = 0
+        for b in rows:
+            if not eligibility.api_url(b["url"]):
+                continue
+            text = eligibility.fetch_text(b["url"], out)
+            if not text:
+                continue
+            n_api += 1
+            verdict, why = eligibility.scan(text, facts)
+            if verdict == "bar":
+                state.update(b["id"], {"status": "fit_rejected", "detail": f"eligibility (vendor API sweep): {why}", "worker": "eligibility", "when": stamp})
+                n_bar += 1
+                print(f"  bar      {b['company'][:28]:28s} {b['role'][:40]:40s} {why[:110]}")
+                continue
+            small = eligibility.tier4_signal(text) if eligibility.skip_tier4(profile) else ""
+            if small:
+                state.update(b["id"], {"status": "skipped", "detail": f"company tier 4 — a seed-stage or tiny-team signal in the posting (search.skip_tier4): {small!r}",
+                                       "worker": "eligibility", "when": stamp})
+                n_small += 1
+                print(f"  tier 4   {b['company'][:28]:28s} {b['role'][:40]:40s} {small[:110]}")
+        print(f"\n{len(rows)} queued, {n_api} readable through a vendor API: {n_bar} barred, {n_small} tier 4, {n_api - n_bar - n_small} open")
+        return 0
+    target = args.target or ""
+    if not target:
+        print("error: a record id or URL, or --sweep", file=sys.stderr)
+        return 1
+    url = target if target.startswith("http") else ((assist.brief(state, out, target, profile) or {}).get("url") or "")
+    text = Path(args.text_file).read_text(encoding="utf-8") if args.text_file else (eligibility.fetch_text(url, out) if url else None)
+    if not text:
+        print("no text to read: the host has no public API (pass --text-file with the posting's text)", file=sys.stderr)
+        return 1
+    verdict, why = eligibility.scan(text, facts)
+    print(json.dumps({"url": url, "verdict": verdict, "why": why, "tier4_signal": eligibility.tier4_signal(text), "facts": facts.__dict__}, indent=2))
+    return 0
+
+
+def cmd_present(args: argparse.Namespace) -> int:
+    """Tell the loop you are at the keyboard: for the next N hours a captcha
+    or a sign-in wall is held for you in the worker's own Chrome window
+    (batch._wait_for_human) instead of ending the attempt. 0 clears."""
+    from .batch import PRESENT_FILE, human_present, set_present
+
+    if args.hours is None:
+        print("present: walls are held for you" if human_present() else "away: walls end the attempt as before")
+        return 0
+    data = set_present(float(args.hours))
+    print(f"{'present for the next ' + str(args.hours) + ' h' if args.hours > 0 else 'away'} ({PRESENT_FILE})")
+    return 0
 
 
 def cmd_retry(args: argparse.Namespace) -> int:
@@ -984,6 +1278,71 @@ def main() -> int:
     pm.add_argument("--no-model", action="store_true", help="rules only; do not ask the model about unplaced mail")
     pm.set_defaults(func=lambda a: __import__("resume_tailor.mailscan", fromlist=["run_cli"]).run_cli(a))
 
+    pas = sub.add_parser("assist", help="the agent driver's queue: postings handed over by the loop (for_agent) and the ones it held, best first (also MCP assist_queue / assist_next)")
+    pas.add_argument("--limit", type=int, default=15)
+    pas.add_argument("--next", action="store_true", help="the next batch instead: up to --size postings on one portal (MCP assist_next)")
+    pas.add_argument("--size", type=int, default=5)
+    pas.add_argument("--portal", default="", help="with --next: pick the portal by hand (an ATS kind such as workday, or a host)")
+    pas.add_argument("--status", default="", help="comma-separated statuses (default: awaiting_approval,for_agent,needs_review,needs_login,blocked)")
+    pas.add_argument("--include-old", action="store_true", help="also postings older than 45 days")
+    pas.add_argument("--json", action="store_true")
+    pas.add_argument("--out", default="output")
+    pas.add_argument("--profile", help=f"profile directory (default {DEFAULT_PROFILE_DIR})")
+    pas.set_defaults(func=cmd_assist)
+
+    par = sub.add_parser("assist-record", help="record the driver's outcome for a posting (applied|by_hand|skipped|needs_review|needs_login|blocked)")
+    par.add_argument("entry_id")
+    par.add_argument("status", choices=["applied", "by_hand", "skipped", "needs_review", "needs_login", "blocked"])
+    par.add_argument("--detail", default="")
+    par.add_argument("--out", default="output")
+    par.set_defaults(func=cmd_assist_record)
+
+    pap = sub.add_parser("assist-prepare", help="the driver's fit step for one posting: read it headless, tailor, judge, write the record (one model round; MCP assist_prepare)")
+    pap.add_argument("entry_id")
+    pap.add_argument("--text-file", default="", help="the posting's text from a file instead of the page")
+    pap.add_argument("--out", default="output")
+    pap.add_argument("--profile", help=f"profile directory (default {DEFAULT_PROFILE_DIR})")
+    pap.set_defaults(func=cmd_assist_prepare)
+
+    pal = sub.add_parser("assist-learn", help="keep an answer you gave for a question the bank missed (answers.yaml → hand_answers)")
+    pal.add_argument("question")
+    pal.add_argument("answer")
+    pal.add_argument("--profile", help=f"profile directory (default {DEFAULT_PROFILE_DIR})")
+    pal.set_defaults(func=cmd_assist_learn)
+
+    pin = sub.add_parser("intake", help="answer once the personal facts forms ask (address, zip, birthday, college, demographics…), "
+                                        "so the agent never stops a run to ask; only missing facts are asked")
+    pin.add_argument("--check", action="store_true", help="list every fact and what is missing, ask nothing (exit 1 if any missing)")
+    pin.add_argument("--all", action="store_true", help="ask every fact again, not only the missing ones")
+    pin.add_argument("--profile", help=f"profile directory (default {DEFAULT_PROFILE_DIR})")
+    pin.set_defaults(func=cmd_intake)
+
+    ppe = sub.add_parser("pending", help="questions the agent could not answer and left open in a tab (output/pending-questions.jsonl)")
+    ppe.add_argument("--answer", nargs=2, metavar=("N", "TEXT"), help="answer question N (also kept in the bank)")
+    ppe.add_argument("--drop", metavar="N", help="close question N without an answer")
+    ppe.add_argument("--all", action="store_true", help="include answered and dropped questions")
+    ppe.add_argument("--out", default="output")
+    ppe.add_argument("--profile", help=f"profile directory (default {DEFAULT_PROFILE_DIR})")
+    ppe.set_defaults(func=cmd_pending)
+
+    pwd = sub.add_parser("words", help="the dictionary of words and phrases never written into an application (the floor plus writing.banned_phrases); --add appends to answers.yaml")
+    pwd.add_argument("--add", nargs="*", default=[], metavar="PHRASE")
+    pwd.add_argument("--json", action="store_true")
+    pwd.add_argument("--profile", help=f"profile directory (default {DEFAULT_PROFILE_DIR})")
+    pwd.set_defaults(func=cmd_words)
+
+    pel = sub.add_parser("eligibility", help="the deterministic eligibility read of one posting (record id or URL, via the vendor's API), or --sweep the driver's queue")
+    pel.add_argument("target", nargs="?", default="")
+    pel.add_argument("--sweep", action="store_true", help="every queued posting on a vendor with a public API: bars → fit_rejected, tier 4 → skipped")
+    pel.add_argument("--text-file", default="", help="the posting's text from a file")
+    pel.add_argument("--out", default="output")
+    pel.add_argument("--profile", help=f"profile directory (default {DEFAULT_PROFILE_DIR})")
+    pel.set_defaults(func=cmd_eligibility)
+
+    ppr = sub.add_parser("present", help="you are at the keyboard for N hours: captcha and sign-in walls are held for you in the worker's window; 0 clears; no argument shows")
+    ppr.add_argument("hours", nargs="?", type=float, default=None)
+    ppr.set_defaults(func=cmd_present)
+
     pr = sub.add_parser("retry", help="put finished attempts back in front of the loop after a fix: lifts the attempt cap, keeps the judges' gate")
     pr.add_argument("--status", default="needs_review", help="which outcome to retry (default needs_review)")
     pr.add_argument("--kind", default=None, help="only postings on this portal kind (workday, ashby, oracle, smartrecruiters, …)")
@@ -1012,6 +1371,17 @@ def main() -> int:
     po.add_argument("--no-web", action="store_true", help="do not web-search for addresses; inbox and pages only")
     po.add_argument("--refresh", action="store_true", help="lookup: redo companies whose cache already holds an address")
     po.add_argument("--workers", type=int, default=3, help="lookup: companies searched at once (default 3)")
+    po.add_argument("--to", default=None, help="send: deliver ONE company's note (--only) to one of your own addresses instead — the self-test; never logged as sent")
+    po.add_argument("--web", action="store_true", help="plan/send: also search the web for addresses (slow); by default they read the cache and the inbox only")
+    po.add_argument("--self-test", action="store_true", help="follow-send: reply to the newest mail you sent yourself with '[resume-tailor self-test]' in the subject")
+    po.add_argument("--message-id", default=None, help="verify: the Message-ID to look for (default: the last test send or reply)")
+    po.add_argument("--wait", type=int, default=180, help="verify: seconds to wait for the copy to appear")
+    po.add_argument("--interval", type=float, default=15.0, help="watch: minutes between send ticks")
+    po.add_argument("--lookup-interval", type=float, default=180.0, help="watch: minutes between address-lookup passes")
+    po.add_argument("--lookup-batch", type=int, default=20, help="watch: companies looked up per pass (0 = never)")
+    po.add_argument("--dry-run", action="store_true", help="watch: plan every tick, send nothing")
+    po.add_argument("--ticks", type=int, default=None, help="watch: stop after this many ticks (tests)")
+    po.add_argument("--within", type=float, default=None, help="status: PASS only if the lane ticked within this many minutes")
     po.add_argument("--people", action="store_true",
                     help="lookup: search again for a named recruiter at every company that only has a team mailbox; "
                          "plan/send: write to named people only, skip companies with just a shared mailbox")
@@ -1061,14 +1431,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-    po.add_argument("--to", default=None, help="send: deliver ONE company's note (--only) to one of your own addresses instead — the self-test; never logged as sent")
-    po.add_argument("--web", action="store_true", help="plan/send: also search the web for addresses (slow); by default they read the cache and the inbox only")
-    po.add_argument("--self-test", action="store_true", help="follow-send: reply to the newest mail you sent yourself with '[resume-tailor self-test]' in the subject")
-    po.add_argument("--message-id", default=None, help="verify: the Message-ID to look for (default: the last test send or reply)")
-    po.add_argument("--wait", type=int, default=180, help="verify: seconds to wait for the copy to appear")
-    po.add_argument("--interval", type=float, default=15.0, help="watch: minutes between send ticks")
-    po.add_argument("--lookup-interval", type=float, default=180.0, help="watch: minutes between address-lookup passes")
-    po.add_argument("--lookup-batch", type=int, default=20, help="watch: companies looked up per pass (0 = never)")
-    po.add_argument("--dry-run", action="store_true", help="watch: plan every tick, send nothing")
-    po.add_argument("--ticks", type=int, default=None, help="watch: stop after this many ticks (tests)")
-    po.add_argument("--within", type=float, default=None, help="status: PASS only if the lane ticked within this many minutes")

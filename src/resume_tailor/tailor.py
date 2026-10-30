@@ -506,6 +506,26 @@ def fixed_pdf_path(profile: Profile) -> Path | None:
     return p if p.is_absolute() else (Path(profile.root) / "resume" / p)
 
 
+def resume_updated_at(profile: Profile) -> float:
+    """When the résumé last changed, as a timestamp: the newest of the fixed
+    PDF, the skeleton (resume/base.yaml) and the variants. A record tried
+    before this moment carries an older résumé — its cached PDF and verdicts
+    are not reused, and the loop runs the posting again with the new one."""
+    root = Path(profile.root)
+    candidates = [root / "resume" / "base.yaml", fixed_pdf_path(profile)]
+    vdir = root / "resume" / "variants"
+    if vdir.is_dir():
+        candidates += sorted(vdir.glob("*.yaml"))
+    times = []
+    for p in candidates:
+        try:
+            if p is not None and p.is_file():
+                times.append(p.stat().st_mtime)
+        except OSError:
+            continue
+    return max(times) if times else 0.0
+
+
 def _send_fixed_pdf(profile: Profile, job: JobSpec, out_dir: str | Path, label: str, variant: str, say) -> TailorResult:
     """The user's own PDF, copied under the upload name into the same place a
     tailored one would go, with its text layer read for the judges and the
