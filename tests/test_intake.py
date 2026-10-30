@@ -72,6 +72,27 @@ try:
 except Exception as e:  # a profile without career basics may refuse to load; the facts are still read by intake_facts
     check("profile loads for the bank check", False, repr(e))
 
+d2 = Path(tempfile.mkdtemp())
+(d2 / "answers.yaml").write_text(
+    "address:\n  zip: \"62701\"\n  alternates:\n    - street: 1 Elm St\n      zip: \"62704\"\n"
+    "self_identification:\n  gender: Decline to self-identify\n"
+    "hand_answers:\n  - question: Are you related to anyone who currently works at the company?\n    answer: \"No\"\n"
+    "  - question: Where did you attend high school/secondary school?\n    answer: Springfield High\n",
+    encoding="utf-8")
+(d2 / "career.yaml").write_text(
+    "personal_information:\n  name: Jane\n  surname: Doe\n  email: jane@example.edu\n"
+    "education_details:\n  - institution: State University\n    field_of_study: Computer Science\n"
+    "experience_details:\n  - position: Software Engineer Intern\n    company: Acme Corp\n  - position: Research Assistant\n    company: Lab\n"
+    "  - position: Software Engineering Intern\n    company: Campus IT\n", encoding="utf-8")
+v2 = intake.facts_map(d2)
+check("career.yaml personal_information layout is read", v2.get("legal_first_name") == "Jane" and v2.get("email") == "jane@example.edu", v2)
+check("list paths: education_details.0.institution", v2.get("university") == "State University", v2.get("university"))
+check("permanent address from address.alternates[0]", v2.get("permanent_address_zip") == "62704" and v2.get("permanent_address_street") == "1 Elm St")
+check("signature name derived from first + last", v2.get("signature_name") == "Jane Doe", v2.get("signature_name"))
+check("intern companies derived from experience, interns only", v2.get("previous_internship_companies") == "Acme Corp, Campus IT", v2.get("previous_internship_companies"))
+check("hand answer found by its question pattern", v2.get("related_to_employees") == "No" and v2.get("high_school") == "Springfield High")
+check("self_identification answers demographics", v2.get("gender") == "Decline to self-identify")
+
 out = d / "output"
 r1 = pending.add(out, "Why do you want to work here?", company="Acme", url="https://x/1", entry_id="e1", tab="tab 3")
 r2 = pending.add(out, "Why do you want to work here?", company="Acme", url="https://x/1", entry_id="e1")
