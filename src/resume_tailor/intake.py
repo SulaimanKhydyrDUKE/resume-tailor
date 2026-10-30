@@ -124,19 +124,26 @@ def _derived(name: str, career: dict) -> Any:
     return None
 
 
+def _text(v) -> str:
+    """A YAML boolean (an unquoted Yes/No) back to the words the user gave."""
+    return ("Yes" if v else "No") if isinstance(v, bool) else str(v)
+
+
 def _hand_answer(answers: dict, fact: Fact) -> str | None:
-    """An answer the user gave in an earlier session (hand_answers) whose
-    question shares the fact's key words."""
-    words = set(fact.key.split("_")) - {"and", "or", "to", "at", "the", "default"}
-    for item in answers.get("hand_answers") or []:
-        if not isinstance(item, dict) or not str(item.get("answer", "")).strip():
-            continue
-        text = str(item.get("question", "")).lower()
-        if any(re.search(h, text) for h in fact.hints):
-            return str(item["answer"])
-        q = set(re.sub(r"[^a-z0-9 ]+", " ", text).split())
+    """An answer the user gave in an earlier session (hand_answers): first one
+    whose question matches the fact's own patterns, else one sharing the
+    fact's key words. Patterns go first across every item, so "date of
+    birth" never lands on an earlier "availability dates" answer."""
+    words = set(fact.key.split("_")) - {"and", "or", "to", "at", "the", "of", "default"}
+    items = [i for i in answers.get("hand_answers") or []
+             if isinstance(i, dict) and str(i.get("answer", "")).strip()]
+    for item in items:
+        if any(re.search(h, str(item.get("question", "")).lower()) for h in fact.hints):
+            return _text(item["answer"])
+    for item in items:
+        q = set(re.sub(r"[^a-z0-9 ]+", " ", str(item.get("question", "")).lower()).split())
         if words and len(words & q) >= max(2, len(words) - 1):
-            return str(item["answer"])
+            return _text(item["answer"])
     return None
 
 
@@ -144,7 +151,7 @@ def known(fact: Fact, answers: dict, career: dict) -> str | None:
     """What the record already says for this fact, or None."""
     v = _get(answers, f"facts.{fact.key}")
     if v not in _EMPTY:
-        return str(v)
+        return _text(v)
     for p in fact.paths:
         if p.startswith("@"):
             v = _derived(p, career)
@@ -154,7 +161,7 @@ def known(fact: Fact, answers: dict, career: dict) -> str | None:
         for src in (answers, career):
             v = _get(src, p)
             if v not in _EMPTY:
-                return str(v) if not isinstance(v, (list, dict)) else yaml.safe_dump(v).strip()
+                return _text(v) if not isinstance(v, (list, dict)) else yaml.safe_dump(v).strip()
     return _hand_answer(answers, fact)
 
 

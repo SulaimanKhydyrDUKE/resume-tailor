@@ -77,7 +77,10 @@ d2 = Path(tempfile.mkdtemp())
     "address:\n  zip: \"62701\"\n  alternates:\n    - street: 1 Elm St\n      zip: \"62704\"\n"
     "self_identification:\n  gender: Decline to self-identify\n"
     "hand_answers:\n  - question: Are you related to anyone who currently works at the company?\n    answer: \"No\"\n"
-    "  - question: Where did you attend high school/secondary school?\n    answer: Springfield High\n",
+    "  - question: Where did you attend high school/secondary school?\n    answer: Springfield High\n"
+    "  - question: What are your internship availability dates?\n    answer: May 2027 - Aug 2027\n"
+    "  - question: Will you need housing?\n    answer: Yes\n"
+    "  - question: What is your date of birth? (month and day of birth)\n    answer: January 1, 2005\n",
     encoding="utf-8")
 (d2 / "career.yaml").write_text(
     "personal_information:\n  name: Jane\n  surname: Doe\n  email: jane@example.edu\n"
@@ -91,6 +94,8 @@ check("permanent address from address.alternates[0]", v2.get("permanent_address_
 check("signature name derived from first + last", v2.get("signature_name") == "Jane Doe", v2.get("signature_name"))
 check("intern companies derived from experience, interns only", v2.get("previous_internship_companies") == "Acme Corp, Campus IT", v2.get("previous_internship_companies"))
 check("hand answer found by its question pattern", v2.get("related_to_employees") == "No" and v2.get("high_school") == "Springfield High")
+check("date of birth is not taken from an earlier dates answer", v2.get("date_of_birth") == "January 1, 2005", v2.get("date_of_birth"))
+check("a YAML boolean reads back as Yes/No", v2.get("need_housing") == "Yes" and v2.get("related_to_employees") == "No", (v2.get("need_housing"), v2.get("related_to_employees")))
 check("self_identification answers demographics", v2.get("gender") == "Decline to self-identify")
 
 out = d / "output"
