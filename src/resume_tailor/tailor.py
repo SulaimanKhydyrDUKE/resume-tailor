@@ -375,6 +375,19 @@ def deterministic_gate(index: dict[str, str], exp_drafts: list[RoleDraft]) -> di
     return out
 
 
+def _plain(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
+
+
+def _quote_supports(quote: str, cited_text: str) -> bool:
+    """The auditor's quote, found in the cited text it claims to come from:
+    letters and digits compared, so punctuation, case and line breaks do not
+    matter. An empty quote supports nothing — "supported" without the words
+    is the model vouching for itself."""
+    q = _plain(quote)
+    return bool(q) and q in _plain(cited_text)
+
+
 async def audit_claim(cited_text: str, claim: str) -> bool:
     """The JD-blind check. Its entire context is one claim and the verbatim
     evidence it cites — no posting, no career file, no other bullets, no writer
@@ -396,7 +409,10 @@ Does the source text state or plainly entail the claim? Quote the supporting \
 words verbatim if so.""",
         AuditVerdict, effort="low", role="audit",
     )
-    return v.supported
+    # The verdict counts only with its quote in the source: a "supported"
+    # whose quote is not there is the one kind of rationalisation the
+    # JD-blind design cannot see on its own.
+    return v.supported and _quote_supports(v.quote, cited_text)
 
 
 async def audit_and_repair(index: dict[str, str], exp_drafts: list[RoleDraft],
@@ -488,6 +504,26 @@ def fixed_pdf_path(profile: Profile) -> Path | None:
         return None
     p = Path(raw).expanduser()
     return p if p.is_absolute() else (Path(profile.root) / "resume" / p)
+
+
+def resume_updated_at(profile: Profile) -> float:
+    """When the résumé last changed, as a timestamp: the newest of the fixed
+    PDF, the skeleton (resume/base.yaml) and the variants. A record tried
+    before this moment carries an older résumé — its cached PDF and verdicts
+    are not reused, and the loop runs the posting again with the new one."""
+    root = Path(profile.root)
+    candidates = [root / "resume" / "base.yaml", fixed_pdf_path(profile)]
+    vdir = root / "resume" / "variants"
+    if vdir.is_dir():
+        candidates += sorted(vdir.glob("*.yaml"))
+    times = []
+    for p in candidates:
+        try:
+            if p is not None and p.is_file():
+                times.append(p.stat().st_mtime)
+        except OSError:
+            continue
+    return max(times) if times else 0.0
 
 
 def _send_fixed_pdf(profile: Profile, job: JobSpec, out_dir: str | Path, label: str, variant: str, say) -> TailorResult:

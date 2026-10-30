@@ -270,3 +270,70 @@ async def fetch_code_async(since: float, hints: list[str], timeout_s: float = 24
 async def fetch_secret_async(since: float, hints: list[str], timeout_s: float = 240,
                              require: list[str] | None = None) -> dict | None:
     return await asyncio.to_thread(fetch_secret, since, hints, timeout_s, 10, require)
+
+
+# What an application's acknowledgement says in its subject or first lines
+# (mailscan's "applied" stage uses the same words for the dashboard).
+CONFIRMATION_RE = re.compile(
+    r"thank you for (applying|your application|your interest|submitting)|thanks for (applying|your application)|"
+    r"application (has been |was )?(received|submitted)|we('ve| have) received your application|received your application|"
+    r"application confirmation|successfully (submitted|applied)|we('ve| have)? got your application", re.I)
+
+
+def _confirmation_once(since: float, company: str) -> str | None:
+    """The subject of an acknowledgement mail for `company` dated after
+    `since`, or None. Read when the page after a submit would not say
+    whether the form went: a page can show the form, or an error, over a
+    submission that already landed, and a blind retry sends it again."""
+    host = os.environ.get("RESUME_TAILOR_IMAP_HOST", "imap.gmail.com")
+    user = os.environ.get("RESUME_TAILOR_IMAP_USER") or _profile_email()
+    password = os.environ["RESUME_TAILOR_IMAP_PASSWORD"].replace(" ", "")
+    floor = datetime.fromtimestamp(since, tz=timezone.utc) - timedelta(seconds=90)
+    words = [w for w in re.findall(r"[a-z0-9]+", (company or "").lower()) if len(w) >= 3 and w not in ("inc", "llc", "the", "and", "corp", "corporation", "company", "group", "technologies")]
+    if not words:
+        return None
+    box = imaplib.IMAP4_SSL(host, timeout=90)
+    try:
+        box.login(user, password)
+        box.select("INBOX", readonly=True)
+        _, data = box.uid("search", None, "SINCE", (floor - timedelta(days=1)).strftime("%d-%b-%Y"))
+        for uid in reversed((data[0] or b"").split()[-40:]):
+            _, head = box.uid("fetch", uid, "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])")
+            if not head or not head[0] or not isinstance(head[0], tuple):
+                continue
+            msg = email.message_from_bytes(head[0][1])
+            try:
+                when = parsedate_to_datetime(msg.get("Date"))
+                when = when if when.tzinfo else when.replace(tzinfo=timezone.utc)
+            except Exception:
+                continue
+            if when < floor:
+                continue
+            frm, subject = str(msg.get("From") or ""), str(msg.get("Subject") or "")
+            head_text = (frm + " " + subject).lower()
+            if CONFIRMATION_RE.search(subject) and any(w in head_text for w in words):
+                return subject.strip()
+        return None
+    finally:
+        try:
+            box.logout()
+        except Exception:
+            pass
+
+
+def confirmation(since: float, company: str, timeout_s: float = 90, poll_s: float = 15) -> str | None:
+    """Poll the inbox for an acknowledgement of an application at `company`
+    sent after `since`. Returns the mail's subject, or None in time."""
+    deadline = time.time() + timeout_s
+    while True:
+        try:
+            found = _confirmation_once(since, company)
+        except Exception:
+            found = None
+        if found or time.time() > deadline:
+            return found
+        time.sleep(poll_s)
+
+
+async def confirmation_async(since: float, company: str, timeout_s: float = 90) -> str | None:
+    return await asyncio.to_thread(confirmation, since, company, timeout_s)

@@ -200,6 +200,16 @@ check("files: portals with a saved sign-in, and the count of every saved site", 
 check("files: no password anywhere in the files response", "password" not in _json.dumps(_files).lower())
 
 
+# --- the calendar never shows a nag to finish an application as a deadline ---
+from resume_tailor.calendar import not_a_deadline as _nad
+check("calendar: 'Continue to apply' and 'you've been referred — submit' are not deadlines",
+      _nad({"subject": "Reminder: Continue to apply for the job Software Intern - Summer 2027", "what": "submit job application"})
+      and _nad({"subject": "[Reminder] You’ve been referred to Roblox!", "what": "submit job application"})
+      and _nad({"stage": "draft", "subject": "x"}) and _nad({"subject": "⏳ Your 35K offer ends soon"}) and _nad({"subject": "Congratulations!", "what": "model unavailable: Error code: 429"}))
+check("calendar: an assessment or interview invitation still is",
+      not _nad({"stage": "oa", "subject": "Ramp invited you to take the CodeSignal assessment", "what": "closes 1:18 am PDT"})
+      and not _nad({"stage": "interview", "subject": "Interview with Acme", "what": "Tuesday 3pm"}))
+
 width = max(len(n) for n, _, _ in RESULTS)
 failed = 0
 for name, ok, detail in RESULTS:

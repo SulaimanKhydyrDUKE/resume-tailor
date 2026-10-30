@@ -129,6 +129,8 @@
   .worker .stage { font-size: 13px; margin: 2px 0 8px; }
   .worker .stage b { font-weight: 600; }
   .worker .idle { color: var(--muted); }
+  .waiting { background: #fef3c7; border: 1px solid #f59e0b; color: #78350f; padding: 10px 14px; border-radius: 8px; margin: 10px 0; display: flex; flex-direction: column; gap: 6px; }
+  .waiting button { margin-left: 10px; }
   .worker ul { list-style: none; margin: 0 0 8px; padding: 0; }
   .worker li { display: flex; justify-content: space-between; gap: 8px; font-size: 12.5px; padding: 3px 0; border-top: 1px solid var(--line); }
   .worker li span:first-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -307,6 +309,7 @@ const STATUS = {
   blocked: ["Blocked", "bad"],
   ready_not_submitted: ["Ready (dry run)", "info"],
   awaiting_approval: ["Awaiting your approval", "warn"],
+  for_agent: ["For the agent driver", "info"],
   by_hand: ["In your hands", "info"],
   needs_login: ["Needs login", "warn"],
   error: ["Error", "bad"],
@@ -365,7 +368,7 @@ function workerName(w) {
 
 // Colours: one per outcome and one per stage, kept apart from the accent.
 const STATUS_COLOR = {
-  applied: "#16a34a", by_hand: "#0ea5e9", awaiting_approval: "#f97316", needs_review: "#f59e0b",
+  applied: "#16a34a", by_hand: "#0ea5e9", awaiting_approval: "#f97316", for_agent: "#6366f1", needs_review: "#f59e0b",
   needs_login: "#8b5cf6", blocked: "#ef4444", error: "#b91c1c", fit_rejected: "#94a3b8",
   skipped: "#cbd5e1", tailored_only: "#a3a3a3", ready_not_submitted: "#38bdf8",
 };
@@ -550,23 +553,67 @@ function Workers({ data, onPick, reload }) {
   );
 }
 
+// "I'm here": for two hours a captcha or a sign-in wall is held for the user
+// in the worker's own Chrome window instead of ending the attempt
+// (batch.human_present / _wait_for_human).
+function Presence({ present, onDone }) {
+  const [st, run] = useSave();
+  const here = !!(present && present.minutes_left > 0);
+  const set = h => run(() => postJson("/api/present", { hours: h }).then(r => { if (onDone) onDone(); return r; }), () => (h ? `here for ${h} h` : "away"));
+  return (
+    <span className="loopctl">
+      {here
+        ? <button className="btn small" disabled={st.busy} onClick={() => set(0)} title="Walls are being held for you in the worker's window. Click to say you have left.">I'm here · {present.minutes_left} min left</button>
+        : <button className="btn small" disabled={st.busy} onClick={() => set(2)} title="For two hours a captcha or sign-in wall is held for you in the worker's Chrome window, with a notification">I'm at the keyboard (2 h)</button>}
+      {st.err ? <span className="bad">{st.err}</span> : null}
+    </span>
+  );
+}
+
+// A wall a worker is holding for the user right now.
+function Waiting({ waiting }) {
+  const [msg, setMsg] = useState("");
+  if (!waiting || !waiting.length) return null;
+  const front = async w => {
+    try {
+      const r = await postJson("/api/front", { profile_dir: w.profile_dir });
+      setMsg(r.ok ? "Brought the Chrome window to the front." : "Could not find that window from here; look for the resume-tailor Chrome window on your screen.");
+    } catch (e) { setMsg(String(e)); }
+  };
+  return (
+    <div className="waiting">
+      {waiting.map(w => (
+        <div key={(w.worker || "") + (w.entry_id || "")}>
+          <b>{w.kind === "captcha" ? "A captcha is waiting for you" : w.kind === "code" ? "An e-mailed code is waiting for you to type it" : "A sign-in is waiting for you"}</b> · {w.company}{w.role ? " — " + w.role : ""} · {workerName(w.worker || "0")} since {new Date(w.since).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}, {Math.max(0, Math.round((w.until * 1000 - Date.now()) / 60000))} min left
+          <button className="btn small" onClick={() => front(w)}>Show me the window</button>
+        </div>
+      ))}
+      {msg ? <span className="muted">{msg}</span> : null}
+    </div>
+  );
+}
+
 function Header({ data, err, reload }) {
   const w = data?.watch || {};
   const busy = (data?.workers_now || []).filter(n => n.stage && n.stage !== "idle").length;
   const procs = (w.processes || []).filter(p => p.alive).length;
   return (
-    <header>
-      <h1>resume-tailor</h1>
-      <span className="watch">
-        <span className={"dot " + (w.running || w.pass_running ? "on" : "")}></span>
-        <b>{w.label || (w.running ? "loop running" : "loop stopped")}</b>
-        {data?.pool && data.pool.new != null ? <span className="muted"> · {data.pool.new} new postings waiting in the pool ({data.pool.cached} discovered)</span> : null}
-        {procs ? <span> · <b>{busy} of {procs}</b> busy right now</span> : <span> · idle</span>}
-        {data ? <span> · refreshed {new Date(data.generated_at).toLocaleTimeString()}</span> : null}
-        {err ? <span className="err"> · {err}</span> : null}
-      </span>
-      {data ? <LoopControls running={loopRunning(w)} onDone={reload} /> : null}
-    </header>
+    <React.Fragment>
+      <header>
+        <h1>resume-tailor</h1>
+        <span className="watch">
+          <span className={"dot " + (w.running || w.pass_running ? "on" : "")}></span>
+          <b>{w.label || (w.running ? "loop running" : "loop stopped")}</b>
+          {data?.pool && data.pool.new != null ? <span className="muted"> · {data.pool.new} new postings waiting in the pool ({data.pool.cached} discovered)</span> : null}
+          {procs ? <span> · <b>{busy} of {procs}</b> busy right now</span> : <span> · idle</span>}
+          {data ? <span> · refreshed {new Date(data.generated_at).toLocaleTimeString()}</span> : null}
+          {err ? <span className="err"> · {err}</span> : null}
+        </span>
+        {data ? <LoopControls running={loopRunning(w)} onDone={reload} /> : null}
+        {data ? <Presence present={data.present} onDone={reload} /> : null}
+      </header>
+      <Waiting waiting={data?.waiting} />
+    </React.Fragment>
   );
 }
 

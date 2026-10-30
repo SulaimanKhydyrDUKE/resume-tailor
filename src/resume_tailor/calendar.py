@@ -47,6 +47,24 @@ DEADLINE_WORDS = re.compile(
     r"deadline|\bdue\b|expir|complete (the|your)|finish (the|your)|within \d+ (day|hour|business)|schedul|invit|reminder|"
     r"last chance|closes?\b|time.?sensitive|action required|next steps?|assessment|hackerrank|codesignal|codility|"
     r"interview|webinar|info session|event|rsvp", re.I)
+# Not a deadline, whatever the mail calls it: a portal nagging the applicant
+# to finish or submit an application he chose not to ("Continue to apply",
+# "Reminder: complete your application", "you've been referred — submit"),
+# a marketing offer that happens to expire, or an entry whose "what" is the
+# text of a model error. None of these is something he owes anyone by a date.
+APPLICATION_NAG = re.compile(
+    r"continue to apply|continue your application|complete (and submit )?(your|the) (job )?application|finish(ing)? (your|the) (job )?application|"
+    r"incomplete application|application (is )?incomplete|resume your application|submit (your|the|a|an|job) application|"
+    r"you'?ve been referred|start(ed)? your application|application (was|has been) started|haven'?t (finished|completed|submitted)", re.I)
+NOT_A_DEADLINE = re.compile(r"offer ends|credit card|\bpromo\b|% off|\bsale\b|discount|newsletter|unsubscribe to stop|model unavailable|rate limit", re.I)
+
+
+def not_a_deadline(e: dict) -> bool:
+    """Whether an event is one of those, by its stage, subject or summary."""
+    text = " ".join((str(e.get("subject") or ""), str(e.get("what") or ""), str(e.get("note") or "")))
+    return (e.get("stage") or "") == "draft" or bool(APPLICATION_NAG.search(text)) or bool(NOT_A_DEADLINE.search(text))
+
+
 MONTHS = "jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec"
 _MONTH_NUM = {m: i + 1 for i, m in enumerate(("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"))}
 _MONTH_NUM["sept"] = 9
@@ -203,6 +221,8 @@ def candidate_messages(results: dict) -> list[dict]:
     for key, co in (results.get("companies") or {}).items():
         for e in co.get("timeline") or []:
             stage = e.get("stage") or ""
+            if not_a_deadline(e):
+                continue  # a nag to finish an application, or marketing: never read for a date
             if stage in ("oa", "interview", "offer") or DEADLINE_WORDS.search(e.get("subject") or "") or e.get("date"):
                 out.append({"key": key, "company": co.get("company") or key, **e})
     return out
@@ -345,6 +365,8 @@ def build_calendar(out_dir: str | Path) -> dict:
     deadlines_data = load_deadlines(out_dir)
     events: dict[str, dict] = {}
     for uid, e in (deadlines_data.get("events") or {}).items():
+        if not_a_deadline(e):
+            continue
         date = _settled_date(e)
         if date and _plausible(date, e.get("received") or ""):
             events[str(uid)] = {"uid": str(uid), "company": e.get("company") or "", "key": e.get("key") or "", "kind": e.get("kind") or "other",
@@ -355,7 +377,7 @@ def build_calendar(out_dir: str | Path) -> dict:
             uid = str(e.get("uid"))
             if uid in events or not e.get("date") or not _plausible(str(e["date"]), e.get("when") or ""):
                 continue
-            if e.get("stage") not in ("oa", "interview", "offer", "applied"):
+            if e.get("stage") not in ("oa", "interview", "offer", "applied") or not_a_deadline(e):
                 continue
             events[uid] = {"uid": uid, "company": co.get("company") or key, "key": key,
                            "kind": {"oa": "assessment", "interview": "interview", "offer": "deadline"}.get(e.get("stage") or "", "deadline"),

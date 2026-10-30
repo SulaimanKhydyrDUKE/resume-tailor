@@ -18,3 +18,8 @@ career.yaml
 answers.yaml
 queue.yaml
 logins/
+
+# the agent driver's run-time sentinel and personal Claude settings
+.claude/keep-going
+.claude/keep-going.count
+.claude/settings.local.json

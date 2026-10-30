@@ -13,6 +13,7 @@ from resume_tailor.outreach import (NOREPLY, NetworkDown, _about_company, _broke
                                     save_log, search)
 
 RESULTS = []
+_ORIG_FN = {n: getattr(outreach, n) for n in ("candidates", "find_addresses", "search", "from_web", "from_pages", "from_inbox", "compose", "send")}
 
 
 def check(name, cond, detail=""):
@@ -308,6 +309,102 @@ outreach.find_addresses = lambda cand, results, log, use_web=True: [{"address": 
 outreach._resume_text = lambda pdf: "Duke University, DukeGPT"
 
 
+# --- the unattended sender: own addresses, persons, the refusals, the mail, the follow-ups ----------
+import json as _json
+import tempfile as _tmp
+from types import SimpleNamespace as _NS
+from resume_tailor.outreach import (_domain_tie, build_message, compose_follow_up, follow_up_candidates, from_inbox, outreach_enabled,
+                                    refusal, run as _run, SendBlocked, FOLLOW_UP_TEMPLATES)
+check("relay host: reply.<company> routes mail and is not writable", not _writable("pinterest-recommendations@reply.pinterest.com"))
+check("personal mailbox: a feed named after the company is not a person",
+      _personal_local("pinterest-recommendations@ideas.pinterest.com") == "" and _personal_local("natalie.chwalk@growtherapy.com") == "Natalie Chwalk")
+check("a 'No Reply' display name is not a person", not _person("No Reply", "Expedia") and not _person("Automated System", ""))
+_own = {"sulaiman.khydyruulu@duke.edu", "sulaimanexchange@gmail.com"}
+_res = {"companies": {
+    "acme": {"company": "Acme", "stage": "applied", "addresses": [
+        {"address": "sulaiman.khydyruulu@duke.edu", "name": "", "source": "body", "subject": "Thank you for applying"},
+        {"address": "jane.doe@acme.com", "name": "Jane Doe", "source": "from", "subject": "Acme invites you to take an assessment"},
+        {"address": "careers@acme.com", "name": "", "source": "body", "subject": "Thank you for applying to Acme"}]},
+    "adobe": {"company": "Adobe", "stage": "applied", "addresses": [
+        {"address": "dennis@hbcu20x20.org", "name": "Dr. Dennis Johnson", "source": "from", "subject": "Inside Adobe: Internships and Career Paths"}]}}}
+_acme = from_inbox(_res, "acme", _own)
+check("inbox: the applicant's own address never counts, whatever a body printed", all(a["address"] != "sulaiman.khydyruulu@duke.edu" for a in _acme))
+check("inbox: the recruiter who sent the assessment invitation is a person (rank 1), the subject notwithstanding",
+      any(a["address"] == "jane.doe@acme.com" and a["rank"] <= 1 for a in _acme), str(_acme))
+check("inbox: the team mailbox stays, ranked after her", any(a["address"] == "careers@acme.com" and a["rank"] >= 2 for a in _acme))
+check("inbox: an event organiser whose subject names the company is not its recruiter", from_inbox(_res, "adobe", _own) == [])
+check("domain tie: telusdigital.com is TELUS Digital, hbcu20x20.org is not Adobe", _domain_tie("x@telusdigital.com", "TELUS Digital Solutions") and not _domain_tie("x@hbcu20x20.org", "Adobe"))
+_prof = _NS(answers={"search": {"company_blacklist": ["Palantir"], "approve_before_submit": ["Google"]}})
+_log = {"sent": {"beta": {"to": "jane.doe@acme.com", "company": "Beta"}, "gamma": {"to": "recruiting@gamma.com", "company": "Gamma"}}, "lookups": {}, "skipped": {}, "replies": {}, "tests": {}}
+_r = {"bounced": ["gone@old.com"], "bounced_domains": ["dead.com"], "opt_out": ["bob@no.com"], "companies": {}}
+def _ref(company, addr, **kw):
+    return refusal({"company": company}, {"address": addr, "rank": kw.pop("rank", 1), **kw}, _log, _r, _prof, _own)
+check("refusal: own address", _ref("Acme", "sulaimanexchange@gmail.com") == "the applicant's own address")
+check("refusal: a person already written to under another company", "already written to" in _ref("Acme", "jane.doe@acme.com"))
+check("refusal: a second team mailbox at a domain already written to", "already written to" in _ref("Gamma Labs", "jobs@gamma.com", rank=2))
+check("refusal: a bounced address or domain", _ref("Old", "gone@old.com") == "bounced before" and _ref("Dead", "hr.jones@dead.com") == "bounced before")
+check("refusal: opted out", _ref("No", "bob@no.com") == "asked not to be contacted")
+check("refusal: a page that could not be checked, or a broker", "could not be checked" in _ref("T", "a.k@t.ai", source="web, page unreachable: https://lead411.com/x")
+      and "could not be checked" in _ref("T", "a.k@t.ai", source="web: https://www4.lead411.com/x"))
+check("refusal: a web person with a sales title", "no recruiting role" in _ref("NISC", "linda.r@nisc.coop", source="web: https://publicpower.org", title="Sales Manager"))
+check("refusal: a web person with a recruiting title stands", _ref("TELUS", "jazmin.par@telusdigital.com", source="web: https://career.uoi.gr/x", title="University Recruiter") == "")
+check("refusal: blacklist and the approval list", _ref("Palantir", "a.b@palantir.com") == "company blacklisted" and _ref("Google", "a.b@google.com") == "company on approve_before_submit")
+check("refusal: a clean named person from the inbox goes", _ref("Grow Therapy", "natalie.chwalk@growtherapy.com", source="inbox: hello") == "")
+_m = build_message("to@x.com", "Hi", "body", None, user="me@gmail.com", in_reply_to="<orig@acme.com>", references="<a@acme.com>", extra_headers={"X-T": "1"})
+check("message: Message-ID on the account's domain, a Date, threading headers, no attachment without a PDF",
+      _m["Message-ID"].endswith("@gmail.com>") and _m["Date"] and _m["In-Reply-To"] == "<orig@acme.com>" and _m["References"] == "<a@acme.com> <orig@acme.com>"
+      and _m["X-T"] == "1" and not _m.is_multipart())
+_pdf = Path(_tmp.mkdtemp()) / "r.pdf"; _pdf.write_bytes(b"%PDF-1.4 test")
+_m2 = build_message("to@x.com", "Hi", "body", str(_pdf), user="me@gmail.com")
+check("message: the résumé rides along as a PDF named for the applicant", _m2.is_multipart() and any(p.get_filename() == "Sulaiman_Khydyr_resume.pdf" for p in _m2.iter_attachments()))
+_now_iso = __import__("datetime").datetime.now(outreach.TZ).isoformat()
+_old_iso = (__import__("datetime").datetime.now(outreach.TZ) - __import__("datetime").timedelta(days=30)).isoformat()
+_fr = {"companies": {
+    "liveoak": {"company": "Live Oak Bank", "stage": "interview", "timeline": [{"uid": 1, "when": _now_iso, "from": "Joe Robke <joe.robke@liveoak.bank>", "subject": "Virtual Interview Confirmation", "stage": "interview"}]},
+    "ramp": {"company": "Ramp", "stage": "oa", "timeline": [{"uid": 2, "when": _now_iso, "from": "Nate Sutton <nate.sutton@ramp.com>", "subject": "Ramp invited you to take an assessment", "stage": "oa"}]},
+    "cme": {"company": "CME", "stage": "oa", "timeline": [{"uid": 3, "when": _now_iso, "from": "Mia Gonzalez <mia.gonzalez@cmegroup.com>", "subject": "CME invitation for assessment", "stage": "oa"},
+                                                            {"uid": 4, "when": _now_iso, "from": "no-reply@glider.ai", "subject": "Assessment completed: CME", "stage": "oa"}]},
+    "gfs": {"company": "Gordon Food Service", "stage": "interview", "timeline": [{"uid": 5, "when": _now_iso, "from": "Olivia <recruiting.scheduling@gfs.com>", "subject": "Your phone interview is confirmed", "stage": "interview"}]},
+    "old": {"company": "Old Co", "stage": "interview", "timeline": [{"uid": 6, "when": _old_iso, "from": "Ann Lee <ann.lee@oldco.com>", "subject": "Interview Confirmation", "stage": "interview"}]},
+    "rej": {"company": "Rej Co", "stage": "rejected", "timeline": [{"uid": 7, "when": _now_iso, "from": "Bo Li <bo.li@rej.com>", "subject": "Interview", "stage": "interview"}]}}}
+_fc = follow_up_candidates(_fr, {"replies": {"<x>": {"key": "cme", "stage": "oa"}}}, _own)
+_fk = {(c["key"], c["stage"]) for c in _fc}
+check("follow-ups: an interview confirmation from a person qualifies", ("liveoak", "interview") in _fk, str(_fk))
+check("follow-ups: an assessment invitation qualifies only once the assessment was taken, and never twice", ("ramp", "oa") not in _fk and ("cme", "oa") not in _fk)
+check("follow-ups: a scheduling mailbox, an old thread and a rejected company do not", not {("gfs", "interview"), ("old", "interview"), ("rej", "interview")} & _fk)
+check("follow-up templates: short, no dates, the first name", compose_follow_up("interview", {"name": "Joe Robke"}, "Live Oak Bank").startswith("Hi Joe,")
+      and "assessment" in compose_follow_up("oa", {"name": "Mia Gonzalez"}, "CME") and all("202" not in v for v in FOLLOW_UP_TEMPLATES.values()))
+_ks = outreach.KILL_SWITCH
+outreach.KILL_SWITCH = Path(_tmp.mkdtemp()) / "outreach.off"
+check("switch: on by default, off by the file or by the setting",
+      outreach_enabled(_NS(answers={}))[0] and not outreach_enabled(_NS(answers={"outreach": {"enabled": False}}))[0]
+      and (outreach.KILL_SWITCH.write_text("") or not outreach_enabled(_NS(answers={}))[0]))
+outreach.KILL_SWITCH = _ks
+# a cache-only run: the web is never called, and --to is for the applicant's own addresses only
+_o = Path(_tmp.mkdtemp()); (_o / "batch-state.json").write_text(_json.dumps({"done": {"e1": {"status": "applied", "company": "Grow Therapy", "role": "SWE Intern", "pdf": str(_pdf), "fit": "hiring manager 90/100 pass"}}, "applied_companies": []}))
+(_o / "listings-cache.json").write_text("[]"); (_o / "results.json").write_text(_json.dumps({"companies": {"grow therapy": {"company": "Grow Therapy", "stage": "applied", "timeline": [], "addresses": []}}, "bounced": []}))
+(_o / "outreach.json").write_text(_json.dumps({"sent": {}, "lookups": {"grow therapy": {"at": 0, "addresses": [{"address": "natalie.chwalk@growtherapy.com", "name": "Natalie Chwalk", "source": "inbox: hello", "rank": 1}]}}, "skipped": {}}))
+_calls = []
+_stubbed = {n: getattr(outreach, n) for n in _ORIG_FN}  # earlier checks leave stubs on the module; the run needs the real functions
+for _n, _f in _ORIG_FN.items():
+    setattr(outreach, _n, _f)
+_real_search, _real_web, _real_compose = outreach.search, outreach.from_web, outreach.compose
+outreach.search = lambda *a, **k: _calls.append("search") or []
+outreach.from_web = lambda *a, **k: _calls.append("web") or []
+outreach.compose = lambda cand, to, li, rt: ("Subject", "body")
+try:
+    _plan = _run(_o, dry_run=True, max_send=15, quiet=True)
+    check("run: a plan from a month-old cache entry, without one web or page call", len(_plan) == 1 and _plan[0]["to"] == "natalie.chwalk@growtherapy.com" and _calls == [], str((_plan, _calls)))
+    check("run: the plan file is written", (_o / "outreach-plan.json").is_file() and _json.loads((_o / "outreach-plan.json").read_text())["would_send"][0]["company"] == "Grow Therapy")
+    try:
+        _run(_o, dry_run=False, only="grow", test_to="stranger@example.com", quiet=True); check("run: --to refuses anyone but the applicant", False)
+    except ValueError:
+        check("run: --to refuses anyone but the applicant", True)
+finally:
+    for _n, _f in _stubbed.items():
+        setattr(outreach, _n, _f)
+
+
 def scenario(compose_fails=None, send_fails=None, people_only=False, find_fails=None):
     """Run three companies a, b, c; the given exception is raised by compose
     or send the given number of times for company a. Returns the log and the
@@ -326,7 +423,7 @@ def scenario(compose_fails=None, send_fails=None, people_only=False, find_fails=
         n["find"][k] = n["find"].get(k, 0) + 1
         if find_fails and k == "a" and n["find"][k] <= find_fails[1]:
             raise find_fails[0]
-        return [{"address": "careers@acme.com", "name": "", "source": "test", "rank": 2}]
+        return [{"address": f"careers@{cand['key']}corp.com", "name": "", "source": "test", "rank": 2}]  # one mailbox per company, as in life
     outreach.find_addresses = find
 
     def compose(cand, to, linkedin, resume_text):
@@ -423,6 +520,7 @@ except Exception as e:
 openai.OpenAI = _fake_client(ValueError("malformed"))
 check("from_web: any other failure is nothing found, not an outage", outreach.from_web("Acme", "https://acme.com/jobs") == [])
 openai.OpenAI = _real_openai
+
 
 
 width = max(len(n) for n, _, _ in RESULTS)

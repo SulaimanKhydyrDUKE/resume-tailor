@@ -278,7 +278,7 @@ class Profile:
         # Every section of answers.yaml except the search settings, so a new
         # section (address, education, ...) answers forms without a code change.
         for section, val in self.answers.items():
-            if section != "search" and isinstance(val, dict):
+            if section not in ("search", "hand_answers") and isinstance(val, dict):
                 walk(val, f"{section}.")
 
         pi = self.career.get("personal_information", {})
@@ -351,6 +351,12 @@ class Profile:
         # name. Without this, "Will you require sponsorship from Northwood
         # (i.e. H1-B visa)" never reaches requires_us_sponsorship.
         # …but a short parenthetical is the question ("Location (City)").
+        # An answer the user gave by hand for this very question (answers.yaml
+        # → hand_answers, kept by the assist lane) beats every word match.
+        from .assist import hand_answer
+        taught, taught_key = hand_answer(self.answers, question)
+        if taught is not None:
+            return taught, taught_key
         question = re.sub(r"\((?:[^)]*\b(?:e\.g\.|i\.e\.|such as|for example)\b[^)]*|[^)]{24,})\)|\b(?:e\.g\.|i\.e\.)[^?.]*", " ", question)
 
         flat = self.flat_answers()

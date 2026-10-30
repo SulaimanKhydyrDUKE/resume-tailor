@@ -1,0 +1,41 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__claude-in-chrome__tabs_context_mcp",
+      "mcp__claude-in-chrome__tabs_create_mcp",
+      "mcp__claude-in-chrome__tabs_close_mcp",
+      "mcp__claude-in-chrome__navigate",
+      "mcp__claude-in-chrome__computer",
+      "mcp__claude-in-chrome__browser_batch",
+      "mcp__claude-in-chrome__form_input",
+      "mcp__claude-in-chrome__file_upload",
+      "mcp__claude-in-chrome__find",
+      "mcp__claude-in-chrome__read_page",
+      "mcp__claude-in-chrome__get_page_text",
+      "mcp__claude-in-chrome__javascript_tool",
+      "mcp__resume-tailor__intake_facts",
+      "mcp__resume-tailor__note_pending",
+      "mcp__resume-tailor__answer_form_question",
+      "mcp__resume-tailor__assist_next",
+      "mcp__resume-tailor__assist_brief",
+      "mcp__resume-tailor__assist_record",
+      "mcp__resume-tailor__assist_learn",
+      "mcp__resume-tailor__inbox_confirmation",
+      "mcp__resume-tailor__inbox_code"
+    ]
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/keep-going.sh",
+            "timeout": 20,
+            "statusMessage": "keep-going: checking the driver sentinel"
+          }
+        ]
+      }
+    ]
+  }
+}

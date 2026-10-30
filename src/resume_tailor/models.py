@@ -113,6 +113,7 @@ class AuditVerdict(BaseModel):
     """
 
     supported: bool = Field(description="Default to false. Only true if the cited text states or plainly entails it.")
+    quote: str = Field(description="When supported: the supporting words, copied verbatim from the source text. Empty otherwise.")
     issue: str = Field(description="Empty when supported; otherwise what was asserted beyond the cited text")
     quote: str = Field(description="The words from the cited evidence that support it, verbatim. Empty if none do.")
 

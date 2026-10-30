@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from resume_tailor.batch import _autofill_boilerplate, _pick_submit_button, _as_amount
+from resume_tailor.batch import _autofill_boilerplate, _pick_submit_button, _as_amount, _optional_prose
 from resume_tailor.queue import QueueEntry, RunState, load_queue
 
 
@@ -843,6 +843,29 @@ check("submit: a refusal banner wins even while the button looks busy",
 check("submit: a confirmation wins even with the form still present",
       _submit_verdict({"form_present": True, "busy": False, "text": "Thank you for applying! Your application has been submitted.", "errors": []}, False)
       == (True, "confirmation shown"))
+from resume_tailor.apply import CODE_WALL_VERDICT
+check("submit: eight one-character boxes are a code wall by shape, whatever the dialog says, before the disabled button reads as busy",
+      _submit_verdict({"form_present": True, "busy": True, "text": "Submit application", "errors": [], "code_boxes": 8}, False) == (False, CODE_WALL_VERDICT)
+      and _submit_verdict({"form_present": True, "busy": True, "text": "Submit application", "errors": [], "code_boxes": 2}, False) is None)
+
+# The code wall's boxes, as the scanner reports them: Greenhouse's eight say
+# nothing on seven of them (the words sit in the dialog's legend) and are
+# known by their ids and shape; Oracle's six by their label.
+from resume_tailor.batch import _code_boxes
+_gh_boxes = [{"id": f"rt-{i}", "selector": f"[data-rt-id=rt-{i}]", "type": "text", "label": "Security code" if i == 0 else "", "name": "",
+              "dom_id": f"security-input-{i}", "hint": "", "value": "", "maxlength": 1} for i in range(8)]
+_plain = [{"id": "rt-20", "selector": "a", "type": "text", "label": "First Name", "name": "first_name", "dom_id": "first_name", "hint": "", "value": "Jane"},
+          {"id": "rt-21", "selector": "b", "type": "text", "label": "Middle initial", "name": "mi", "dom_id": "mi", "hint": "", "value": "", "maxlength": 1},
+          {"id": "rt-22", "selector": "c", "type": "email", "label": "Email", "name": "email", "dom_id": "email", "hint": "", "value": ""}]
+check("code wall: Greenhouse's eight boxes are read by id and shape with no words on them, in page order; a lone one-character box is not one",
+      [b["dom_id"] for b in _code_boxes(_plain + _gh_boxes)] == [f"security-input-{i}" for i in range(8)] and _code_boxes(_plain) == [])
+_nameless = [{"id": f"rt-{i}", "selector": "s", "type": "tel", "label": "", "name": "", "dom_id": "", "hint": "", "value": "", "maxlength": 1} for i in range(6)]
+check("code wall: six nameless one-character boxes are a code wall by shape alone", len(_code_boxes(_nameless)) == 6)
+_oracle = [{"id": f"rt-{i}", "selector": "s", "type": "text", "label": "Verification code", "name": f"c{i}", "dom_id": "", "hint": "",
+            "value": "1" if i == 0 else ""} for i in range(6)]
+check("code wall: Oracle's six are read by their label, a stray character in one notwithstanding", len(_code_boxes(_oracle)) == 6)
+check("code wall: a filled text field named like a code is not a box to type into",
+      _code_boxes([{"id": "rt-1", "selector": "s", "type": "text", "label": "Verification code", "name": "", "dom_id": "", "hint": "", "value": "483920"}]) == [])
 
 # --- yes/no widgets and pickers as the scanner reports them --------------------------
 from resume_tailor.apply import _is_empty
@@ -1151,6 +1174,12 @@ check("education start month answered in the form's words", _education_date_answ
 check("education start year answered", _education_date_answer(_prof, "Education 1", "Start date — Year", ["Year...", "2025", "2024"]) == "2024")
 check("education end year answered from the completion date", _education_date_answer(_prof, "Education", "End date — Year", ["2028", "2027"]) == "2028")
 check("education month as a number option", _education_date_answer(_prof, "Education", "Start date — Month", ["01", "08", "12"]) == "08")
+check("education dates: a work-history prose question under an education heading is not a date box (OCC's 'Employer 1' answered '2024')",
+      _education_date_answer(_prof, "Please list your highest level of education achieved.*",
+                             "Employer 1: Please list, starting with your most recent employment, all work history over the last seven years. "
+                             "Include employment dates, contact information, and indicate if we may contact this employer.", []) is None
+      and _education_date_answer(_prof, "Education", "Graduation Year", []) is not None
+      and _education_date_answer(_prof, "Education", "Years attended", []) is None)
 check("education dates: nothing outside an Education section", _education_date_answer(_prof, "Work Experience 1", "Start date — Month", ["August"]) is None)
 check("education dates: nothing when the option is absent (never a near miss)", _education_date_answer(_prof, "Education", "Start date — Year", ["2027", "2026"]) is None)
 
@@ -1293,6 +1322,397 @@ check("mail: a forward whose text part is only the header block has no readable 
 _f2, _s2, _body2, _ = _mbx.unforward("Sulaiman Khydyr uulu <sulaiman.khydyruulu@duke.edu>", "FW: Security code for your application", _mbx.html_as_text(_fwd_html), {"sk930@duke.edu"})
 check("mail: the HTML part read as text yields the code", _mbx.extract_code(_s2 + " " + _body2) == "482913", (_s2, _body2))
 check("mail: html_as_text drops tags and decodes entities", _mbx.html_as_text("<p>a &amp; b</p><script>x()</script>") == "a & b")
+
+# --- relocation: yes to anything (the user, 2026-10-05) ------------------------------------
+from resume_tailor.batch import relocation_answer
+check("relocation: a willingness question takes Yes", relocation_answer("Are you willing to relocate for this role?*", ["Yes", "No"]) == "Yes")
+check("relocation: the option that says relocate beats a bare Yes",
+      relocation_answer("Do you currently reside in commutable proximity to our office?", ["I currently live within commuting distance", "I am willing to relocate before starting employment"]) == "I am willing to relocate before starting employment")
+check("relocation: 'able to work in the city without assistance' is a Yes",
+      relocation_answer("Are you able to work in the internship's city without relocation assistance?*", ["Yes", "No"]) == "Yes")
+check("relocation: a city-for-the-summer requirement is met",
+      relocation_answer("For this role, candidates must be in Omaha, NE for Summer 2026. Are you able to meet this requirement?", ["Yes", "No"]) == "Yes")
+check("relocation: a service-area requirement is met",
+      relocation_answer("It is a requirement that our interns live within our service areas of Rochester, Syracuse, Buffalo, Utica, or other approved areas. Do you meet this requirement?", ["Yes", "No"]) == "Yes")
+check("relocation: an on-site requirement is accepted",
+      relocation_answer("This role requires working onsite 5 days per week at our Mountain View office. Are you able to meet this requirement?", ["Yes", "No"]) == "Yes")
+check("relocation: 'do you need relocation assistance' takes the no-assistance option",
+      relocation_answer("Will you require relocation assistance?", ["Yes", "No"]) == "No"
+      and relocation_answer("Would you need to relocate for this role?", ["No", "Yes, but I am planning to relocate on my own", "Yes, I would need relocation assistance"]) == "Yes, but I am planning to relocate on my own")
+check("relocation: where the candidate lives now, with only Yes/No, is not a willingness question",
+      relocation_answer("Do you currently live in Austin, TX?", ["Yes", "No"]) is None)
+check("relocation: a list of places to relocate to takes every one",
+      relocation_answer("Please indicate all of the locations you would be interested in relocating to", ["New York, NY", "San Francisco, CA", "None of these"], {"type": "checkbox"}, "checkboxes") == "New York, NY | San Francisco, CA")
+check("relocation: a free-text 'open to relocation? list your cities' gets an open answer",
+      "open to relocating" in (relocation_answer("Are you open to relocation? If so, please list your geographical areas/cities of choice.*", [], {"type": "textarea"}) or ""))
+check("relocation: a lone required checkbox under an on-site statement is ticked",
+      relocation_answer("I understand this role is on-site in Durham, NC", [], {"type": "checkbox", "required": True}) == "yes")
+check("relocation: an unrelated question is left alone",
+      relocation_answer("Do you require any reasonable adjustments to participate in the recruitment process?", ["Yes", "No"]) is None
+      and relocation_answer("Preferred work location", ["Austin", "Denver"]) is None)
+# --- acknowledgement rules stay off situational questions; "how did you hear" never names a site ---
+check("boilerplate: a dated availability confirmation is not an acknowledgement",
+      _autofill_boilerplate("I confirm my availability for a Summer 2026 (May/June starts) internship*", {"type": "select", "required": True}, ["Yes", "No"]) is None)
+check("boilerplate: a city-for-the-summer requirement is not an acknowledgement",
+      _autofill_boilerplate("For this role, candidates must be in Omaha, NE for Summer 2026. Are you able to meet this requirement?", {"type": "radio", "required": True}, ["Yes", "No"]) is None)
+check("boilerplate: a plain terms box still is", _autofill_boilerplate("I agree to the privacy policy", {"type": "checkbox", "required": True}, []) == "yes")
+check("how did you hear: 'LinkedIn Job Postings' is a site, not a job board",
+      _autofill_boilerplate("How Did You Hear About Us?*", {"type": "select", "required": True}, ["LinkedIn Job Postings", "Indeed", "Company Website", "Referral"]) == "Company Website")
+check("how did you hear: a job-board category that lists sites in brackets is fine",
+      _autofill_boilerplate("Where did you hear about us?*", {"type": "select", "required": True}, ["Job Posting (LinkedIn, Indeed, Handshake, etc.)", "Employee Referral", "Career Fair"]) == "Job Posting (LinkedIn, Indeed, Handshake, etc.)")
+check("how did you hear: only named sites on offer → Other, else nothing",
+      _autofill_boilerplate("How did you hear about us?", {"type": "select", "required": True}, ["LinkedIn", "Indeed", "Referral", "Other"]) == "Other"
+      and _autofill_boilerplate("How did you hear about us?", {"type": "select", "required": True}, ["LinkedIn", "Indeed", "Referral"]) is None)
+# --- rails: citizenship rests on the bank; a named source is refused ---
+_cz = [
+    {"qid": "z1", "key": planner.question_key("Please list ALL countries of citizenship:", "text"), "label": "Please list ALL countries of citizenship:",
+     "section": "", "widget": "text", "options": [], "required": True, "maxlength": None, "hint": "", "bank": ""},
+    {"qid": "z2", "key": planner.question_key("Citizenship status", "select"), "label": "Citizenship status",
+     "section": "", "widget": "select", "options": ["U.S. citizen", "U.S. permanent resident", "Other"], "required": True, "maxlength": None, "hint": "", "bank": ""},
+    {"qid": "z3", "key": planner.question_key("How did you hear about us?", "select"), "label": "How did you hear about us?",
+     "section": "", "widget": "select", "options": ["LinkedIn", "Other"], "required": True, "maxlength": None, "hint": "", "bank": ""},
+]
+_cplan = planner.rails([
+    FieldAnswer(id="z1", answer="United States", basis=["reasoning"], skip=False, essay=False, reason="the candidate works in the US"),
+    FieldAnswer(id="z2", answer="U.S. permanent resident", basis=["work_authorization.requires_us_sponsorship"], skip=False, essay=False, reason="bank"),
+    FieldAnswer(id="z3", answer="LinkedIn", basis=["reasoning"], skip=False, essay=False, reason="profile link"),
+], _cz, _pl)
+check("bank: a citizenship question never takes the mailing address",
+      _bank(_pl, "Please list ALL countries of citizenship:", {"type": "text", "required": True}, [], strong=True) == (None, None)
+      and _bank(_pl, "State", {"type": "text", "required": True}, [], strong=True)[1] == "address.state")
+_fq = [
+    {"qid": "f1", "key": planner.question_key("How many years of industry experience do you have?", "select"), "label": "How many years of industry experience do you have?",
+     "section": "", "widget": "select", "options": ["0-1", "2-3", "4+"], "required": True, "maxlength": None, "hint": "", "bank": ""},
+    {"qid": "f2", "key": planner.question_key("Which team interests you most?", "select"), "label": "Which team interests you most?",
+     "section": "", "widget": "select", "options": ["Backend", "Design", "Sales"], "required": True, "maxlength": None, "hint": "", "bank": ""},
+    {"qid": "f3", "key": planner.question_key("Are you at least 18 years of age?", "select"), "label": "Are you at least 18 years of age?",
+     "section": "", "widget": "select", "options": ["Yes", "No"], "required": True, "maxlength": None, "hint": "", "bank": ""},
+    {"qid": "f4", "key": planner.question_key("The car wash is two blocks away. Walk or drive?", "text"), "label": "The car wash is two blocks away. Walk or drive?",
+     "section": "", "widget": "text", "options": [], "required": True, "maxlength": None, "hint": "", "bank": ""},
+]
+_fplan = planner.rails([
+    FieldAnswer(id="f1", answer="2-3", basis=["reasoning"], skip=False, essay=False, reason="internships add up"),
+    FieldAnswer(id="f2", answer="Backend", basis=["reasoning"], skip=False, essay=False, reason="closest to the record"),
+    FieldAnswer(id="f3", answer="Yes", basis=["reasoning"], skip=False, essay=False, reason="a college junior"),
+    FieldAnswer(id="f4", answer="Walk", basis=["reasoning"], skip=False, essay=False, reason="two blocks"),
+], _fq, _pl)
+check("rails: a quantity about the candidate on reasoning alone is refused", _fplan[_fq[0]["key"]].answer is None and "fact" in _fplan[_fq[0]["key"]].reason)
+check("rails: a preference on reasoning stands", _fplan[_fq[1]["key"]].answer == "Backend")
+check("rails: an age question on reasoning alone is refused (the bank's to answer)", _fplan[_fq[2]["key"]].answer is None)
+check("rails: a puzzle on reasoning still stands", _fplan[_fq[3]["key"]].answer == "Walk")
+# --- parser-filled identity fields, the pre-submit sweep, the portal quirks ---
+from resume_tailor.batch import _same_identity, _IDENTITY_Q, _deviates, _CAP_DIALOG, _breezy_pending
+from resume_tailor.apply import _FAILURE_TEXT as _FAIL
+check("identity: whole-label match — First Name yes, 'Name of the person who referred you' no",
+      _IDENTITY_Q.search("First Name*") and _IDENTITY_Q.search("Email") and _IDENTITY_Q.search("LinkedIn Profile URL") and _IDENTITY_Q.search("Zip Code")
+      and not _IDENTITY_Q.search("Name of the person who referred you") and not _IDENTITY_Q.search("Emergency contact phone") and not _IDENTITY_Q.search("Company name"))
+check("identity: a truncated first name is not the same name", not _same_identity("Sulaiman", "Sulai", "First Name") and _same_identity("Sulaiman", " sulaiman ", "First Name"))
+check("identity: a doubled e-mail is wrong although it contains the right one",
+      not _same_identity("a@duke.edu", "a@duke.edua@duke.edu", "Email") and _same_identity("a@duke.edu", "A@duke.edu", "Email*"))
+check("identity: phones compare by digits, links without scheme or slash",
+      _same_identity("+1 910-336-0632", "(910) 336-0632", "Phone") and not _same_identity("+1 910-336-0632", "910-336-0633", "Phone")
+      and _same_identity("https://www.linkedin.com/in/x/", "linkedin.com/in/x", "LinkedIn"))
+check("sweep: an empty field with an intended answer deviates; an agreeing one does not; dates and search pickers are left alone",
+      _deviates("Yes", {"type": "select", "label": "Authorized?", "value": ""}, ["Yes", "No"]) == "empty"
+      and _deviates("Yes", {"type": "select", "label": "Authorized?", "value": "Yes"}, ["Yes", "No"]) is None
+      and _deviates("No", {"type": "select", "label": "Sponsorship?", "value": "Yes"}, ["Yes", "No"]) == "holds 'Yes'"
+      and _deviates("05/2028", {"type": "text", "label": "Graduation date", "value": "2028-05"}, []) is None
+      and _deviates("Durham, NC", {"type": "text", "label": "Location", "value": "", "search": True}, []) is None
+      and _deviates(None, {"type": "text", "label": "x", "value": ""}, []) is None)
+from resume_tailor.batch import (_same_place, _same_answer as _same_ans, _state_pickers_last, hand_lane_host, visible_submit_host,
+                                 CAPTCHA_DETAIL, DEFAULT_HAND_LANE_HOSTS, DEFAULT_VISIBLE_SUBMIT_HOSTS)
+check("sweep: a state code against the state written out is the same answer (Workday shows 'North Carolina' for the bank's 'NC')",
+      _same_place("NC", "North Carolina") and _same_ans("NC", "North Carolina", []) and _same_ans("North Carolina", "NC", [])
+      and not _same_place("NC", "North Dakota") and not _same_ans("NC", "North Dakota", []))
+check("sweep: a place with its state abbreviated agrees with the typeahead's expansion",
+      _same_ans("Durham, NC, United States", "Durham, North Carolina, United States", []) and not _same_ans("Durham, NC", "Raleigh, NC", []))
+check("sweep: the country's names agree with each other, and with the country's own dial code, never with another's",
+      _same_ans("United States", "United States of America", []) and _same_ans("USA", "United States", [])
+      and _same_ans("United States", "+1", []) and _same_ans("United States", "🇺🇸 +1", []) and _same_ans("+1", "United States", [])
+      and not _same_ans("United States", "+44", []) and not _same_ans("United States", "United Kingdom", [])
+      and not _same_ans("United States", "Canada", []))
+check("sweep: a LinkedIn address the form shows with https://www. is the bank's bare one; a different profile is not",
+      _same_ans("https://linkedin.com/in/janedoe", "https://www.linkedin.com/in/janedoe", [])
+      and _same_ans("linkedin.com/in/x/", "https://www.linkedin.com/in/x", [])
+      and not _same_ans("https://linkedin.com/in/x", "https://www.linkedin.com/in/y", [])
+      and _deviates("https://linkedin.com/in/x", {"type": "text", "label": "Please provide your LinkedIn profile:", "value": "https://www.linkedin.com/in/x"}, []) is None)
+check("sweep: a phone's country-code picker is never a hold on its own — empty read (shadow root), '+1', or the country's code",
+      _deviates("United States", {"type": "listbox", "tag": "listbox", "label": "Country code", "value": ""}, []) is None
+      and _deviates("United States", {"type": "text", "label": "Phone — Country code", "value": "🇺🇸 +1", "combobox": True}, []) is None
+      and _deviates("United States", {"type": "text", "label": "Country*", "value": "", "combobox": True}, []) == "empty")
+check("sweep: Greenhouse's Country picker showing '+1' is not a deviation from 'United States'",
+      _deviates("United States", {"type": "text", "label": "Country*", "value": "+1", "combobox": True}, []) is None
+      and _deviates("United States", {"type": "text", "label": "Country*", "value": "+44", "combobox": True}, []) == "holds '+44'")
+from resume_tailor.apply import ApplySession as _AS
+check("picker: a country answer lands on its dial-code entry when that is what the list offers",
+      _AS._match_option("United States", [{"t": "+44", "id": "a"}, {"t": "+1", "id": "b"}, {"t": "+91", "id": "c"}]) == 1
+      and _AS._match_option("United States", [{"t": "United States (+1)", "id": "a"}, {"t": "Canada (+1)", "id": "b"}]) == 0
+      and _AS._match_option("United States", [{"t": "Canada", "id": "a"}, {"t": "Mexico", "id": "b"}]) is None)
+check("sweep: the State field Workday shows as 'North Carolina' is not a deviation from 'NC'",
+      _deviates("NC", {"type": "listbox", "label": "State*", "value": "North Carolina"}, []) is None
+      and _deviates("NC", {"type": "listbox", "label": "State*", "value": "New York"}, []) == "holds 'New York'")
+check("fill order: State and Province pickers go last among single controls, plain text fields keep their order",
+      [f["id"] for f in _state_pickers_last([
+          {"id": "a", "label": "City", "combobox": False, "tag": "input"},
+          {"id": "b", "label": "State*", "combobox": True, "tag": "input"},
+          {"id": "c", "label": "Postal Code", "combobox": False, "tag": "input"},
+          {"id": "d", "label": "Province", "combobox": False, "tag": "select"},
+          {"id": "e", "label": "State", "combobox": False, "tag": "input"}])] == ["a", "c", "e", "b", "d"])
+
+
+class _P:
+    def __init__(self, search): self.answers = {"search": search}
+
+
+check("hand lane: iCIMS and Tesla by default, white-labelled iCIMS by the listing's ?icims=1, an empty list turns it off",
+      hand_lane_host(_P({}), "https://careers-berkley.icims.com/jobs/1/job") and hand_lane_host(_P({}), "https://www.tesla.com/careers/search/job/x-1")
+      and hand_lane_host(_P({}), "https://careers.amd.com/careers-home/jobs/1", "https://careers.amd.com/careers-home/jobs/1?icims=1")
+      and not hand_lane_host(_P({}), "https://job-boards.greenhouse.io/acme/jobs/1")
+      and not hand_lane_host(_P({"hand_lane_hosts": []}), "https://careers-berkley.icims.com/jobs/1/job")
+      and hand_lane_host(_P({"hand_lane_hosts": ["example.org"]}), "https://jobs.example.org/1")
+      and DEFAULT_HAND_LANE_HOSTS == ["icims.com", "tesla.com"])
+check("visible submit: Lever by default, not Greenhouse; the user's list rules",
+      visible_submit_host(_P({}), "https://jobs.lever.co/acme/1/apply") and not visible_submit_host(_P({}), "https://job-boards.greenhouse.io/acme/jobs/1")
+      and not visible_submit_host(_P({"visible_submit_hosts": []}), "https://jobs.lever.co/acme/1/apply")
+      and DEFAULT_VISIBLE_SUBMIT_HOSTS == ["lever.co"])
+from resume_tailor.discover import _worn_out as _worn_b
+check("captcha: a blocked record naming a captcha is parked after one attempt; another block is not",
+      _worn_b({"status": "blocked", "detail": CAPTCHA_DETAIL + ": https://x", "attempts": 1})
+      and _worn_b({"status": "blocked", "detail": "a bot/verification check was on the page — not attempted", "attempts": 1})
+      and not _worn_b({"status": "blocked", "detail": "the site kept a draft instead of submitting", "attempts": 1})
+      and not _worn_b({"status": "blocked", "detail": "retry: fixed · " + CAPTCHA_DETAIL, "attempts": 1}))
+from resume_tailor.apply import _fresh_cookies
+check("logins: the cookie loader keeps unexpired cookie dicts and ignores signed-in.json's host map and junk",
+      [c["name"] for c in _fresh_cookies([[{"name": "a", "expires": -1}, {"name": "b", "expires": 1}, "junk"], {"host": 1.0}, "x"])] == ["a"])
+check("identity: a State picker showing the state written out agrees with the bank's code; a city still must match",
+      _same_identity("NC", "North Carolina", "State*") and not _same_identity("NC", "North Dakota", "State")
+      and not _same_identity("Durham", "Raleigh", "City") and _same_identity("Durham", "durham", "City"))
+import re as _re_src
+_batch_src = (Path(__file__).resolve().parents[1] / "src" / "resume_tailor" / "batch.py").read_text(encoding="utf-8")
+check("no str.join over a generator that awaits (an async generator is not iterable; it turned every submit into an 'error' for eleven days)",
+      not _re_src.search(r"\.join\(\s*await\b[^()]*\bfor\b", _batch_src))
+check("a submitted application is recorded as applied before any post-submit check runs",
+      _batch_src.index('o.status, o.detail = "applied", f"submitted — {why}"') < _batch_src.index("_breezy_pending(_page_url(session) or apply_url, why, page_text_after)"))
+check("sweep: a checkbox is judged by state, an identity field exactly",
+      _deviates("yes", {"type": "checkbox", "label": "I agree", "checked": False}, []) == "unticked instead of yes"
+      and _deviates("yes", {"type": "checkbox", "label": "I agree", "checked": True}, []) is None
+      and _deviates("Sulaiman", {"type": "text", "label": "First Name", "value": "Sulai"}, []) == "holds 'Sulai'")
+check("weekly cap: the alert's wording is recognised, a plain confirm is not",
+      _CAP_DIALOG.search("You have reached the limit of 25 applications per week.") and _CAP_DIALOG.search("Maximum applications for this week reached")
+      and not _CAP_DIALOG.search("Are you sure you want to leave this page?"))
+check("breezy: a breezy.hr submit, or a page saying 'one more step', still wants the e-mailed code",
+      _breezy_pending("https://acme.breezy.hr/p/123/apply", "form gone after submit", "") and _breezy_pending("https://jobs.lever.co/x", "", "One more step! Check your email for the code")
+      and not _breezy_pending("https://jobs.lever.co/x", "form gone after submit", "Thank you for applying"))
+check("ashby: 'submission is unavailable at this time' reads as a refusal (then an error to retry), not a submit",
+      _FAIL.search("Application submission is unavailable at this time. Please try again later."))
+
+# --- a human check is never answered ---
+_hc = [{"qid": "h1", "key": planner.question_key("If you are a human, answer: how many R's are in strawberry?", "text"),
+        "label": "If you are a human, answer: how many R's are in strawberry?", "section": "", "widget": "text", "options": [], "required": True,
+        "maxlength": None, "hint": "", "bank": ""},
+       {"qid": "h2", "key": planner.question_key("To prove you are not a bot, type the word apple", "text"),
+        "label": "To prove you are not a bot, type the word apple", "section": "", "widget": "text", "options": [], "required": True,
+        "maxlength": None, "hint": "", "bank": ""}]
+_hplan = planner.rails([FieldAnswer(id="h1", answer="3", basis=["reasoning"], skip=False, essay=False, reason="count"),
+                        FieldAnswer(id="h2", answer="apple", basis=["reasoning"], skip=False, essay=False, reason="asked")], _hc, _pl)
+check("human check: the strawberry question is left empty however right the answer", _hplan[_hc[0]["key"]].answer is None and "human check" in _hplan[_hc[0]["key"]].reason)
+check("human check: 'type the word apple to prove you are not a bot' too", _hplan[_hc[1]["key"]].answer is None)
+check("human check: the pattern leaves ordinary questions alone",
+      not planner.HUMAN_CHECK.search("Are you legally authorized to work in the United States?") and not planner.HUMAN_CHECK.search("Describe a robot you built")
+      and not planner.HUMAN_CHECK.search("What is your GPA?") and planner.HUMAN_CHECK.search("Are you a human?") and planner.HUMAN_CHECK.search("Human verification: enter the code"))
+from resume_tailor.batch import _decide as _decide_q
+_dd, _ss = {}, {}
+_dd2, _ss2 = {}, {}
+check("unreadable question: a control labelled only by its digits (SmartRecruiters' 1-10 scale in a shadow root) is never answered",
+      _aio.run(_decide_q("1 2 3 4 5 6 7 8 9 10", {"type": "text", "required": True, "section": "Preliminary questions", "combobox": True},
+                         ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"], _pl, "", _dd2, _ss2, None, "picker")) is None
+      and "could not be read" in _ss2.get(("Preliminary questions", "1 2 3 4 5 6 7 8 9 10"), ""))
+_dd3, _ss3 = {}, {}
+check("recruiting timelines: No unless the bank says otherwise (a Yes opens a required essay about a deadline that does not exist)",
+      _aio.run(_decide_q("Do you have any recruiting timelines we should be aware of? *", {"type": "radio", "required": True, "section": ""},
+                         ["Yes", "No"], _pl, "", _dd3, _ss3, None, "radio")) == "No"
+      and "standing rule" in _ss3.get(("", "Do you have any recruiting timelines we should be aware of? *"), ""))
+check("human check: the field-by-field path leaves it empty and says why",
+      _aio.run(_decide_q("If you are a human, answer: how many R's are in strawberry?", {"type": "text", "required": True, "section": ""}, [], _pl, "", _dd, _ss, None, "text")) is None
+      and _ss.get(("", "If you are a human, answer: how many R's are in strawberry?")) == "human check: left for the user")
+check("rails: a country of citizenship on reasoning alone is refused", _cplan[_cz[0]["key"]].answer is None and "citizenship" in _cplan[_cz[0]["key"]].reason)
+check("rails: a citizenship status resting on a work_authorization entry stands", _cplan[_cz[1]["key"]].answer == "U.S. permanent resident")
+check("rails: 'how did you hear: LinkedIn' is refused", _cplan[_cz[2]["key"]].answer is None and "source" in _cplan[_cz[2]["key"]].reason)
+
+# --- optional free text is left blank: no model prose in a box the form does not require ---------
+_ft = [
+    {"qid": "f1", "key": planner.question_key("Additional Information", "textarea"), "label": "Additional Information",
+     "section": "", "widget": "textarea", "options": [], "required": False, "maxlength": None, "hint": "", "bank": ""},
+    {"qid": "f2", "key": planner.question_key("Why are you interested in working here?", "textarea"), "label": "Why are you interested in working here?",
+     "section": "", "widget": "textarea", "options": [], "required": True, "maxlength": None, "hint": "", "bank": ""},
+    {"qid": "f3", "key": planner.question_key("LinkedIn URL", "text"), "label": "LinkedIn URL",
+     "section": "", "widget": "text", "options": [], "required": False, "maxlength": None, "hint": "", "bank": ""},
+    {"qid": "f4", "key": planner.question_key("Tell us about something you've put into the world for others to use or experience.", "text"),
+     "label": "Tell us about something you've put into the world for others to use or experience.",
+     "section": "", "widget": "text", "options": [], "required": False, "maxlength": None, "hint": "", "bank": ""},
+    {"qid": "f5", "key": planner.question_key("Comments", "text"), "label": "Comments",
+     "section": "", "widget": "text", "options": [], "required": False, "maxlength": None, "hint": "", "bank": ""},
+]
+_ft_plan = planner.rails([
+    FieldAnswer(id="f1", answer="I am excited to contribute my backend skills.", basis=["reasoning"], skip=False, essay=False, reason="filler"),
+    FieldAnswer(id="f2", answer="", basis=[], skip=False, essay=True, reason="prose"),
+    FieldAnswer(id="f3", answer="https://linkedin.com/in/x", basis=["personal.linkedin"], skip=False, essay=False, reason="link"),
+    FieldAnswer(id="f4", answer="I built a thing.", basis=["reasoning"], skip=False, essay=False, reason="story"),
+    FieldAnswer(id="f5", answer="None", basis=["reasoning"], skip=False, essay=False, reason="nothing to add"),
+], _ft, _pl)
+check("optional free text: an optional comments box gets no model text, and says why",
+      _ft_plan[_ft[0]["key"]].answer is None and _ft_plan[_ft[0]["key"]].reason == planner.OPTIONAL_PROSE_REASON)
+check("optional free text: a required 'why us' still goes to the essay writer", _ft_plan[_ft[1]["key"]].essay is True)
+_ft_link = planner.rails([FieldAnswer(id="f3", answer="https://linkedin.com/in/ab", basis=["personal.linkedin"], skip=False, essay=False, reason="link")],
+                         [_ft[2]], _bank3)  # a fixture whose record holds the link
+check("optional free text: an optional short field (LinkedIn URL) is still filled from the record", _ft_link[_ft[2]["key"]].answer == "https://linkedin.com/in/ab")
+check("optional free text: an optional text box with a long prompt is left blank", _ft_plan[_ft[3]["key"]].answer is None)
+check("optional free text: an optional 'Comments' box is left blank even when the model offers 'None'", _ft_plan[_ft[4]["key"]].answer is None)
+check("optional prose: textarea yes, required no, short label no, long label yes, picker no, file no",
+      _optional_prose({"tag": "textarea", "type": "", "label": "Additional Information", "required": False}, [])
+      and not _optional_prose({"tag": "textarea", "type": "", "label": "Additional Information", "required": True}, [])
+      and not _optional_prose({"tag": "input", "type": "text", "label": "LinkedIn URL", "required": False}, [])
+      and _optional_prose({"tag": "input", "type": "text", "label": "Tell us the story of something you've put into the world for others to use", "required": False}, [])
+      and not _optional_prose({"tag": "input", "type": "text", "label": "Describe your role", "required": False, "combobox": True}, [])
+      and not _optional_prose({"tag": "input", "type": "file", "label": "Cover letter", "required": False}, []))
+
+# --- the agent driver: which postings the loop hands over, and how ----
+
+import asyncio
+import json as _json
+from types import SimpleNamespace
+
+from resume_tailor.batch import (DEFAULT_LOOP_HOSTS, FOR_AGENT, FitResult, RETRYABLE, RESUME_VERSION, _process_one_inner, agent_driver_host,
+                                 cached_fit, fit_knobs, posting_for_models, settle_fit)
+from resume_tailor.profile import Profile
+
+with tempfile.TemporaryDirectory() as d:
+    d = Path(d)
+    (d / "career.yaml").write_text("personal_information:\n  name: A\n  surname: B\n")
+    prof = Profile(career={}, answers={}, root=d)
+    wd = "https://beta.wd5.myworkdayjobs.com/x/job/Data-Intern_R1"
+    gh = "https://job-boards.greenhouse.io/acme/jobs/1"
+    check("driver: Workday, Oracle, SmartRecruiters, Lever, iCIMS and a company's own site are the driver's; Greenhouse, Ashby and Workable stay with the loop",
+          all(agent_driver_host(prof, u) for u in (wd, "https://x.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX/job/1",
+                                                   "https://jobs.smartrecruiters.com/Acme/1", "https://jobs.lever.co/acme/1/apply",
+                                                   "https://careers-acme.icims.com/jobs/1/job", "https://www.acme.com/careers/apply/123"))
+          and not any(agent_driver_host(prof, u) for u in (gh, "https://jobs.ashbyhq.com/acme/1/application", "https://apply.workable.com/acme/j/1/")))
+    check("driver: the listing's own URL counts too (a company page fronting a Greenhouse board)", not agent_driver_host(prof, "https://www.acme.com/jobs/1?gh_jid=1", gh))
+    check("driver: agent_driver: false keeps everything in the loop; an empty loop_hosts sends everything to the driver; a URL-less entry is the loop's",
+          not agent_driver_host(Profile(career={}, answers={"search": {"agent_driver": False}}, root=d), wd)
+          and agent_driver_host(Profile(career={}, answers={"search": {"loop_hosts": []}}, root=d), gh)
+          and not agent_driver_host(prof, "", ""))
+    check("driver: the loop's boards can be renamed (ATS kinds or host suffixes)",
+          agent_driver_host(Profile(career={}, answers={"search": {"loop_hosts": ["workday"]}}, root=d), gh)
+          and not agent_driver_host(Profile(career={}, answers={"search": {"loop_hosts": ["workday"]}}, root=d), wd))
+    check("driver: for_agent is never retried by the loop", FOR_AGENT not in RETRYABLE and DEFAULT_LOOP_HOSTS == ["greenhouse.io", "ashbyhq.com", "workable.com"])
+
+    state = RunState(path=d / "s.json")
+    out = d / "out"; (out / "screenshots").mkdir(parents=True)
+    entry = QueueEntry(id="w1", url=wd, company_hint="Beta", title="Data Intern")
+    o = asyncio.run(_process_one_inner(None, prof, entry, out, out / "screenshots", False, state, False))
+    check("handoff: a Workday posting is recorded for_agent before any page, model or judge — no session was touched",
+          o.status == FOR_AGENT and "workday at beta.wd5.myworkdayjobs.com" in o.detail and o.url == wd and o.company == "Beta" and not o.pdf, f"{o.status}: {o.detail[:120]}")
+    state.record("w1", {"status": "needs_review", "company": "Beta Inc", "role": "Data Intern", "pdf": "/tmp/x.pdf", "fit": "hiring manager 90/100 pass | screener 90/100 pass",
+                        "answers": [{"question": "First Name*", "answer": "A"}], "screenshot": "/tmp/x.png", "resume_version": 7, "revisions": 1,
+                        "detail": "could not answer: Degree*", "when": "2026-10-17T10:00:00-04:00"})
+    o = asyncio.run(_process_one_inner(None, prof, entry, out, out / "screenshots", False, state, False))
+    check("handoff: what an earlier attempt left rides along — PDF, verdict, answers, screenshot, version — and the detail says how it ended",
+          o.status == FOR_AGENT and o.pdf == "/tmp/x.pdf" and o.fit.startswith("hiring manager") and o.answers and o.screenshot == "/tmp/x.png"
+          and o.resume_version == 7 and o.revisions == 1 and o.company == "Beta Inc" and "last attempt ended needs_review: could not answer: Degree*" in o.detail, o.detail[:200])
+    state.record("w1", {"status": "needs_review", "company": "Beta Inc", "detail": "re-queued by the user", "when": "2026-10-17T10:00:00-04:00"})
+    o = asyncio.run(_process_one_inner(None, prof, entry, out, out / "screenshots", False, state, False))
+    check("handoff: a hand re-queue is passed on as such (the driver applies whatever the judges say)", o.status == FOR_AGENT and "re-queued by hand" in o.detail)
+    state.record("w1", {"status": "blocked", "company": "Beta Inc", "detail": "assist: an hCaptcha stood on the form", "worker": "assist", "when": "2026-10-18T10:00:00-04:00"})
+    o = asyncio.run(_process_one_inner(None, prof, entry, out, out / "screenshots", False, state, False))
+    check("handoff: the driver's own word is final — the loop repeats it, owner and all, instead of handing the posting back",
+          o.status == "blocked" and o.detail.startswith("assist:") and o.worker == "assist")
+    o = asyncio.run(_process_one_inner(None, prof, entry, out, out / "screenshots", False, state, False, driver=False))
+    check("handoff: the dashboard's own window (driver=False) goes on past the handoff to the page", o.status == "error" and "could not load posting" in o.detail, o.detail[:100])
+    o = asyncio.run(_process_one_inner(None, prof, entry, out, out / "screenshots", False, state, False, approved=True))
+    check("handoff: an approved submit goes on past the handoff", o.status == "error" and "could not load posting" in o.detail)
+    o = asyncio.run(_process_one_inner(None, prof, QueueEntry(id="g1", url=gh, company_hint="Acme", title="SWE"), out, out / "screenshots", False, state, False))
+    check("handoff: a Greenhouse posting is the loop's and goes on to the page", o.status == "error" and "could not load posting" in o.detail)
+
+    # the shared fit helpers
+    check("fit knobs: the defaults, the hand-added posting, the environment's hold",
+          fit_knobs(prof) == (90, 2, True) and fit_knobs(prof, "added by hand")[2] is True
+          and fit_knobs(Profile(career={}, answers={"search": {"min_judge_score": 80, "max_revisions": 0, "apply_below_bar": False}}, root=d)) == (80, 0, False))
+    import os as _os
+    _os.environ["RESUME_TAILOR_APPLY_BELOW_BAR"] = "0"
+    try:
+        check("fit knobs: RESUME_TAILOR_APPLY_BELOW_BAR=0 holds everything under the bar, except a posting the user added by hand",
+              fit_knobs(prof)[2] is False and fit_knobs(prof, "added by hand")[2] is True)
+    finally:
+        del _os.environ["RESUME_TAILOR_APPLY_BELOW_BAR"]
+    (d / "a.pdf").write_bytes(b"%PDF-1.4")
+    good = {"pdf": str(d / "a.pdf"), "fit": "hiring manager 90/100 pass | screener 90/100 pass", "status": "needs_review", "resume_version": RESUME_VERSION}
+    check("cached fit: stands for a passing verdict on a current PDF from a retryable or handed-over attempt; not for an older composer, a failed bar, a finished attempt or a missing file",
+          cached_fit(good, prof, 90) == str(d / "a.pdf") and cached_fit({**good, "status": FOR_AGENT}, prof, 90) == str(d / "a.pdf")
+          and cached_fit({**good, "resume_version": RESUME_VERSION - 1}, prof, 90) is None
+          and cached_fit({**good, "fit": "hiring manager 60/100 HOLD | screener 90/100 pass"}, prof, 90) is None
+          and cached_fit({**good, "status": "applied"}, prof, 90) is None
+          and cached_fit({**good, "pdf": str(d / "gone.pdf")}, prof, 90) is None)
+    text, notes = posting_for_models("We build things. Apply now.", "Zipline", "SWE Intern")
+    check("posting for models: the company is named when the page never says it; a page that names it is left alone",
+          text.startswith("Zipline — SWE Intern\n\n") and posting_for_models("Zipline builds drones.", "Zipline", "SWE")[0] == "Zipline builds drones.")
+    fit = FitResult(95, SimpleNamespace(render_violations=["[clipped] the GPA line", "[other] x"], roles_included=1), {}, True, 0)
+    check("settle fit: a lint hit holds the posting for a look before any judge is summarised",
+          settle_fit(fit, 90, judge_gate=True, apply_below_bar=True) == ("needs_review", "résumé lint: [clipped] the GPA line", ""))
+
+# --- a person at the keyboard, essays to approve, the floor, the gates ----
+
+import resume_tailor.batch as B
+from resume_tailor.batch import approve_essays, _model_prose, human_present, set_present
+from resume_tailor.freetext import banned_phrases, violations
+
+with tempfile.TemporaryDirectory() as d:
+    d = Path(d)
+    (d / "career.yaml").write_text("personal_information:\n  name: A\n  surname: B\n")
+    prof = Profile(career={}, answers={}, root=d)
+    B.PRESENT_FILE = d / "present.json"
+    check("presence: nobody until said so; 'here for an hour' holds; 0 clears",
+          not human_present() and bool(set_present(1)) and human_present() and bool(set_present(0)) and not human_present())
+    check("essay approval: on by default, off by setting; the model-written answers are found by their source",
+          approve_essays(prof) and not approve_essays(Profile(career={}, answers={"search": {"approve_essays": False}}, root=d))
+          and _model_prose([{"question": "Why us?", "answer": "x", "source": "essay writer (from the record)"},
+                            {"question": "Email", "answer": "a@b", "source": "answer bank: personal.email"},
+                            {"question": "Cover letter", "answer": "f.pdf", "source": "cover letter written from the record"},
+                            {"question": "Empty essay", "answer": "", "source": "essay writer (from the record)"}]) == ["Why us?", "Cover letter"]
+          and _model_prose([]) == [])
+    check("the floor: the kit's words, an em dash and a volunteered weakness are violations; a plain sentence is not",
+          {"banned phrase 'leverage'", "banned phrase 'synergy'", "banned phrase 'game-changer'"} <= set(violations("We leverage synergy — a game-changer.", prof))
+          and any(v.startswith("em dash") for v in violations("A plain claim — with an aside.", prof))
+          and any(v.startswith("volunteers a weakness") for v in violations("Although I have not used Rust, I learn fast.", prof))
+          and violations("I built the parser in Go and cut the run from 40 s to 6 s.", prof) == []
+          and len(banned_phrases(prof)) > 120 and "world-class" in banned_phrases(prof))
+
+    # the deterministic gates in the pipeline: text in hand, no browser, no model
+    pr = Profile(career={}, answers={"work_authorization": {"citizenship_status": "U.S. lawful permanent resident (green card holder)", "requires_us_sponsorship": "No"},
+                                     "education": {"graduation_date": "May 2028", "degree_level": "Bachelor's"}}, root=d)
+    state = RunState(path=d / "s2.json")
+    out = d / "out2"; (out / "screenshots").mkdir(parents=True)
+    gh = "https://job-boards.greenhouse.io/acme/jobs/1"
+    barred = "Acme Software Engineering Intern. " + "You will build services. " * 8 + "Applicants must be a U.S. citizen due to federal contract requirements."
+    o = asyncio.run(_process_one_inner(SimpleNamespace(injection_notes=[]), pr, QueueEntry(id="e1", url=gh, apply_url=gh, text=barred, company_hint="Acme", title="SWE Intern"),
+                                       out, out / "screenshots", False, state, False))
+    check("eligibility gate: an enumerated bar ends the attempt as fit_rejected before any page, résumé or judge",
+          o.status == "fit_rejected" and o.detail.startswith("eligibility:") and "must be a U.S. citizen" in o.detail, f"{o.status}: {o.detail[:120]}")
+    o = asyncio.run(_process_one_inner(SimpleNamespace(injection_notes=[]), pr, QueueEntry(id="e1", url=gh, apply_url=gh, text=barred, company_hint="Acme", title="SWE Intern"),
+                                       out, out / "screenshots", False, state, False, judge_gate=False))
+    check("eligibility gate: a hand re-queue (judge_gate off) goes on past it", o.status == "error" and "could not open the application form" in o.detail, o.detail[:100])
+    small = "Acme Software Engineering Intern. " + "You will build services. " * 8 + "We are a pre-seed startup, a team of four engineers."
+    o = asyncio.run(_process_one_inner(SimpleNamespace(injection_notes=[]), pr, QueueEntry(id="e2", url=gh, apply_url=gh, text=small, company_hint="Acme", title="SWE Intern"),
+                                       out, out / "screenshots", False, state, False))
+    check("tier-4 gate: a seed-stage, tiny-team posting is skipped; off by setting",
+          o.status == "skipped" and "company tier 4" in o.detail
+          and asyncio.run(_process_one_inner(SimpleNamespace(injection_notes=[]), Profile(career={}, answers={"search": {"skip_tier4": False}}, root=d),
+                                             QueueEntry(id="e2", url=gh, apply_url=gh, text=small, company_hint="Acme", title="SWE Intern"),
+                                             out, out / "screenshots", False, state, False)).status == "error", f"{o.status}: {o.detail[:120]}")
+    plain = "Acme Software Engineering Intern. " + "You will build services with a mentor. " * 8
+    o = asyncio.run(_process_one_inner(SimpleNamespace(injection_notes=[]), pr, QueueEntry(id="e3", url=gh, apply_url=gh, text=plain, company_hint="Acme", title="SWE Intern"),
+                                       out, out / "screenshots", False, state, False))
+    check("gates: an open posting goes on to the page", o.status == "error" and "could not open the application form" in o.detail, o.detail[:100])
 
 width = max(len(n) for n, _, _ in RESULTS)
 failed = 0

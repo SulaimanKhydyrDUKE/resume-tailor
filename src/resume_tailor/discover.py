@@ -22,9 +22,12 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
+
+from .profile import DEFAULT_PROFILE_DIR
 from typing import Any
 
 from . import ats
@@ -41,9 +44,14 @@ DEFAULT_URL = (
 TABLE_SOURCES = [
     ("jobright-swe", "https://raw.githubusercontent.com/jobright-ai/2026-Software-Engineer-Internship/master/README.md"),
     ("jobright-ba", "https://raw.githubusercontent.com/jobright-ai/2026-Business-Analyst-Internship/master/README.md"),
-    ("speedyapply", "https://raw.githubusercontent.com/speedyapply/2026-SWE-College-Jobs/main/README.md"),
-    ("vanshb03", "https://raw.githubusercontent.com/vanshb03/Summer2026-Internships/main/README.md"),
+    ("speedyapply", "https://raw.githubusercontent.com/speedyapply/2027-SWE-College-Jobs/main/README.md"),
+    ("speedyapply-ai", "https://raw.githubusercontent.com/speedyapply/2027-AI-College-Jobs/main/README.md"),
+    ("vanshb03", "https://raw.githubusercontent.com/vanshb03/Summer2027-Internships/main/README.md"),
+    ("sndsh404", "https://raw.githubusercontent.com/sndsh404/summer-2027-internships/main/README.md"),
 ]
+# The category a table source's rows carry (the lists have no category column);
+# the title gate still decides what is software.
+SOURCE_CATEGORY = {"jobright-ba": "Business Analyst", "speedyapply-ai": "AI/ML"}
 
 
 def sources_from_profile(answers: dict) -> tuple[bool, list[tuple[str, str]]]:
@@ -153,6 +161,10 @@ def title_terms(title: str) -> set[str]:
 
 
 DEFAULT_CATEGORIES = ["software", "analyst", "ai/ml", "data", "product"]
+# Sites the tool never opens, whatever list a posting came from: filling
+# LinkedIn's forms by machine is against its rules, and that account is the
+# one the user needs for referrals and recruiters.
+DEFAULT_HOST_BLACKLIST = ["linkedin.com"]
 
 
 @dataclass
@@ -161,6 +173,14 @@ class Prefs:
     title_blacklist: list[str] = field(default_factory=list)
     company_blacklist: list[str] = field(default_factory=list)
     location_blacklist: list[str] = field(default_factory=list)
+    host_blacklist: list[str] = field(default_factory=lambda: list(DEFAULT_HOST_BLACKLIST))
+    # Firms by quality, from answers.yaml → search.company_tiers: `first` are
+    # dealt before anything else, `then` after them, unlisted firms after
+    # those, and `never` is not applied to at all. Order and floor only;
+    # eligibility and the judges still decide.
+    tier_first: list[str] = field(default_factory=list)
+    tier_then: list[str] = field(default_factory=list)
+    tier_never: list[str] = field(default_factory=list)
     require_us: bool = True
     exclude_phd_only: bool = True
     apply_once_at_company: bool = True
@@ -170,6 +190,9 @@ class Prefs:
     # audit found applications in a posting's fourth week or later produced
     # rejections and silence, never an assessment. 0 = no cap.
     max_posting_age_days: int = 21
+    # When the résumé last changed (tailor.resume_updated_at). A review-held
+    # posting last tried before this is run again with the new résumé.
+    resume_updated_at: float = 0.0
     positions: list[str] = field(default_factory=list)
     jobright_account: bool = False  # the tool's browser is signed in to jobright.ai, so its links resolve
     # Listing categories worth reading (substrings of the source's category):
@@ -191,13 +214,45 @@ class Prefs:
             title_blacklist=list(s.get("title_blacklist") or []),
             company_blacklist=list(s.get("company_blacklist") or []),
             location_blacklist=list(s.get("location_blacklist") or []),
+            host_blacklist=[str(h).lower() for h in (s["host_blacklist"] if s.get("host_blacklist") is not None else DEFAULT_HOST_BLACKLIST)],
+            tier_first=[str(c).lower() for c in ((s.get("company_tiers") or {}).get("first") or [])],
+            tier_then=[str(c).lower() for c in ((s.get("company_tiers") or {}).get("then") or [])],
+            tier_never=[str(c).lower() for c in ((s.get("company_tiers") or {}).get("never") or [])],
             require_us=bool(s.get("require_us", True)),
             exclude_phd_only=bool(s.get("exclude_phd_only", True)),
             apply_once_at_company=_apply_once(s_all),
             company_cooldown_days=int(s.get("company_cooldown_days", 7) or 0),
             max_posting_age_days=int(s.get("max_posting_age_days", 21) or 0),
             jobright_account=bool(s.get("jobright_account", False)),
+            resume_updated_at=_resume_updated_at(profile),
         )
+
+
+def _resume_updated_at(profile) -> float:
+    try:
+        from .tailor import resume_updated_at
+        return float(resume_updated_at(profile))
+    except Exception:
+        return 0.0
+
+
+def resume_stale(rec: dict, resume_since: float = 0.0) -> bool:
+    """Whether a record's résumé is older than the current one: made by an
+    earlier composer (resume_version below batch.RESUME_VERSION), or tried
+    before the fixed PDF / skeleton last changed. The user's rule: never
+    reuse what was almost submitted with a résumé they no longer send; run
+    the cycle again with the newest one."""
+    from .batch import RESUME_VERSION
+
+    version = rec.get("resume_version")
+    if version is not None and int(version or 0) < RESUME_VERSION:
+        return True  # (a record with no version at all is judged by its time alone)
+    if resume_since and rec.get("when"):
+        try:
+            return datetime.fromisoformat(str(rec["when"])).timestamp() < resume_since
+        except ValueError:
+            return False
+    return False
 
 
 # --- fetching ----------------------------------------------------------------
@@ -285,7 +340,7 @@ def parse_table(markdown: str, source: str) -> list[dict]:
             "locations": [location] if location else [], "date_posted": _date_epoch(cells[-1]),
             "source": source, "active": True, "is_visible": True,
             "terms": sorted(title_terms(title)) or ["Summer 2027"], "degrees": [],
-            "category": "Software Engineering" if source != "jobright-ba" else "Business Analyst",
+            "category": SOURCE_CATEGORY.get(source, "Software Engineering"),
         })
     return out
 
@@ -445,6 +500,10 @@ def evaluate(listing: dict, prefs: Prefs) -> str:
     """Empty string when the listing is worth applying to; otherwise why not."""
     if not listing.get("active", True):
         return "inactive"
+    host = urlsplit(listing.get("url") or "").netloc.lower()
+    if any(h and (host == h or host.endswith("." + h)) for h in prefs.host_blacklist):
+        # Before the hand-added branch: a LinkedIn link pasted in is still LinkedIn.
+        return "host blacklist"
     if listing.get("source") == "added by hand":
         # The user put this link in the pool themselves (`resume-tailor add`):
         # the title and category gates are for feeds, not for a choice made
@@ -481,6 +540,8 @@ def evaluate(listing: dict, prefs: Prefs) -> str:
     company = (listing.get("company_name") or "").lower()
     if any(b.lower() in company for b in prefs.company_blacklist):
         return "company blacklist"
+    if any(_named(c, company) for c in prefs.tier_never):
+        return "company tier: never"
     locations = listing.get("locations") or []
     if prefs.require_us and is_us(locations) is False:
         return "outside US"
@@ -498,6 +559,23 @@ def evaluate(listing: dict, prefs: Prefs) -> str:
 
 def _posted_day(listing: dict) -> int:
     return int(listing.get("date_posted") or 0) // 86400
+
+
+def _named(tier_entry: str, company: str) -> bool:
+    """A tier entry names a firm when it is the company name, or a whole word
+    of it ("amazon" names "Amazon Web Services", not "Amazonia Labs")."""
+    e = tier_entry.strip().lower()
+    return bool(e) and (company == e or re.search(r"(?<![a-z0-9])" + re.escape(e) + r"(?![a-z0-9])", company) is not None)
+
+
+def tier_rank(listing: dict, prefs: Prefs) -> int:
+    """0 for a `first` firm, 1 for `then`, 2 for every other."""
+    company = (listing.get("company_name") or "").lower()
+    if any(_named(c, company) for c in prefs.tier_first):
+        return 0
+    if any(_named(c, company) for c in prefs.tier_then):
+        return 1
+    return 2
 
 
 def _fit_rank(listing: dict) -> int:
@@ -593,6 +671,7 @@ def entry_term(listing: dict) -> str:
 
 RETRY_CAP = 3
 LOGIN_RETRY_CAP = 2
+ERROR_RETRY_CAP = 6
 
 
 def shard_of(listing: dict, workers: int) -> int:
@@ -605,16 +684,45 @@ def shard_of(listing: dict, workers: int) -> int:
     return int(hashlib.sha1(key.encode("utf-8")).hexdigest(), 16) % max(1, workers)
 
 
-def _worn_out(rec: dict, inbox: bool | None = None) -> bool:
+LOGINS_DIR = DEFAULT_PROFILE_DIR / "logins"  # ~/.resume-tailor/logins/: cookies per host, and signed-in.json
+
+
+def logged_in_since(url: str, when: str) -> bool:
+    """Whether a wall on this posting's host was passed after the attempt at
+    `when`: ApplySession.save_logins notes the host and the time in
+    logins/signed-in.json whenever a sign-in, an account creation or the
+    dashboard's hand Log in got through. Exact host: a sign-in at one Workday
+    or iCIMS tenant says nothing about another."""
+    host = (urlsplit(url or "").netloc or "").lower()
+    if not host:
+        return False
+    try:
+        seen = json.loads((LOGINS_DIR / "signed-in.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    try:
+        since = datetime.fromisoformat(when).timestamp() if when else 0.0
+    except ValueError:
+        since = 0.0
+    at = seen.get(host) or seen.get(host.removeprefix("www.")) or seen.get("www." + host)
+    return bool(at) and float(at) > since
+
+
+def _worn_out(rec: dict, inbox: bool | None = None, url: str = "", resume_since: float = 0.0) -> bool:
     """Three attempts that all ended in needs_review or blocked, or two that
     ended at a login wall — none of them a hand re-queue. A wall only a
     person can pass (a sign-in, an e-mailed link) costs minutes of browser
     time per retry and does not change on its own; `review` re-queues it.
 
-    A wall that only wants the applicant's inbox is worn out for exactly as
-    long as the inbox is unconfigured (`inbox`, read once by the caller): the
-    moment RESUME_TAILOR_IMAP_PASSWORD is set, every such posting is worth a
-    try, whatever its count says — the passes it sat out were not attempts."""
+    Two things do change it from outside, and lift the cap on their own:
+    - A wall that only wants the applicant's inbox is worn out for exactly as
+      long as the inbox is unconfigured (`inbox`, read once by the caller): the
+      moment RESUME_TAILOR_IMAP_PASSWORD is set, every such posting is worth a
+      try, whatever its count says — the passes it sat out were not attempts.
+    - A hand sign-in at the host after the last attempt (`logged_in_since`):
+      the dashboard's Log in on one posting of an iCIMS tenant solves its
+      captcha and keeps the session, and with it every other posting of that
+      tenant is worth a try. Without this, one hand login un-stuck one posting."""
     from . import mailbox
 
     if (rec.get("detail") or "").startswith(("re-queued", "retry:")):
@@ -622,11 +730,42 @@ def _worn_out(rec: dict, inbox: bool | None = None) -> bool:
         # judges' gate); "retry:" is the bulk re-queue after a fix, which
         # lifts only the attempt cap.
         return False
+    if rec.get("worker") == "assist":
+        # The agent driver's word is final for the loop: an outcome the agent
+        # recorded (assist.record) is never retried here — the agent sees its
+        # own holds again through assist_next. One owner per application; the
+        # hand re-queue above is the one way back into the loop.
+        return True
     attempts = int(rec.get("attempts") or 0)
+    if rec.get("status") in ("needs_login", "blocked") and logged_in_since(url or rec.get("url") or "", str(rec.get("when") or "")):
+        return False
+    if rec.get("status") == "blocked" and (rec.get("detail") or "").lower().startswith("spam flag"):
+        return True  # a spam-flagged submit is never retried on its own: repeated flags hurt the applicant's standing
+    if rec.get("status") == "blocked" and re.match(r"a (captcha|bot/verification check)", (rec.get("detail") or "").lower()):
+        # A captcha does not go away on retry: Tesla's 36 blocks and the
+        # iCIMS walls each took three browser passes to learn that. One
+        # attempt; a hand sign-in at the host (above) lifts it.
+        return attempts >= 1
+    if rec.get("status") == "blocked" and (rec.get("detail") or "").lower().startswith("weekly application cap"):
+        try:
+            return datetime.fromisoformat(str(rec.get("when"))).timestamp() + 7 * 86400 > time.time()  # the cap is per rolling week
+        except ValueError:
+            return True
     if rec.get("status") == "needs_login":
         if mailbox.waiting_for_inbox(rec):
             return not (mailbox.configured() if inbox is None else inbox)
         return attempts >= LOGIN_RETRY_CAP
+    if rec.get("status") == "needs_review" and attempts >= RETRY_CAP and resume_stale(rec, resume_since):
+        # Held three times with a résumé the user no longer sends: the cycle
+        # runs once more with the newest one (the cached PDF and verdicts are
+        # not reused — batch.fit_and_resume re-tailors and re-judges). After
+        # that run the record carries the current version and the cap holds.
+        return False
+    if rec.get("status") == "error" and attempts >= ERROR_RETRY_CAP:
+        # A blip clears in a pass or two. Six attempts on is a posting the
+        # tool breaks on every time (one reached 163 attempts, ten minutes
+        # apart, on "can only join an iterable"): a bug to fix, not a retry.
+        return True
     return rec.get("status") in ("needs_review", "blocked") and attempts >= RETRY_CAP
 
 
@@ -730,6 +869,8 @@ def select(listings: list[dict], prefs: Prefs, state: RunState | None = None,
                 reason = "this link was already applied to"
             elif rk in applied_roles and rk[1]:
                 reason = f"this role was already applied to at this company ({applied_roles[rk]})"
+            elif (state.done.get(l.get("id") or l.get("url", "")) or {}).get("status") == "for_agent":
+                reason = "for the agent driver (assist-queue)"
             elif state.already_attempted(l.get("id") or l.get("url", ""), RETRYABLE):
                 reason = "already attempted"
             if reason:
@@ -744,7 +885,9 @@ def select(listings: list[dict], prefs: Prefs, state: RunState | None = None,
             reason = f"older than {max_age} days"
         if not reason and state is not None:
             role_key = role_key_of(l.get("company_name") or "", l.get("title") or "")
-            if state.already_attempted(l.get("id") or l.get("url", ""), RETRYABLE):
+            if (state.done.get(l.get("id") or l.get("url", "")) or {}).get("status") == "for_agent":
+                reason = "for the agent driver (assist-queue)"
+            elif state.already_attempted(l.get("id") or l.get("url", ""), RETRYABLE):
                 reason = "already attempted"
             elif url_key(l.get("url") or "") in attempted_urls and (l.get("id") or l.get("url")) not in state.done:
                 reason = "same link already attempted"
@@ -788,7 +931,7 @@ def select(listings: list[dict], prefs: Prefs, state: RunState | None = None,
     # week often is not. Within a day, the roles the user is actually after
     # first (software before analyst before AI/ML/Data before product), then
     # the hosts with a direct form.
-    kept.sort(key=lambda l: (stage(l), -_posted_day(l), _fit_rank(l), _rank(l["url"]), -(l.get("date_posted") or 0)))
+    kept.sort(key=lambda l: (stage(l), tier_rank(l, prefs), -_posted_day(l), _fit_rank(l), _rank(l["url"]), -(l.get("date_posted") or 0)))
     # Retries are cheap (resume and verdicts cached) and usually follow a fix
     # to the form layer, so they are dealt in — one after every three new
     # postings — rather than left behind the whole never-attempted pool.
@@ -800,15 +943,18 @@ def select(listings: list[dict], prefs: Prefs, state: RunState | None = None,
     # Errors and login walls keep retrying: a network blip or a login by
     # the user changes them without any code change.
     inbox = mailbox.configured()  # once per pass, not once per record: it reads the env file
-    retries = [l for l in kept if stage(l) == 2 and not _worn_out(attempted.get(l.get("id") or l.get("url")) or {}, inbox)]
+    retries = [l for l in kept if stage(l) == 2 and not _worn_out(attempted.get(l.get("id") or l.get("url")) or {}, inbox, l.get("url") or "",
+                                                                   resume_since=prefs.resume_updated_at)]
     # The least-tried first: a posting never retried since the last fix to
     # the form layer goes before one that just failed again a pass ago.
     retries.sort(key=lambda l: int((attempted.get(l.get("id") or l.get("url")) or {}).get("attempts") or 0))
     for l in kept:
         rec = attempted.get(l.get("id") or l.get("url")) or {}
-        if stage(l) == 2 and _worn_out(rec, inbox):
+        if stage(l) == 2 and _worn_out(rec, inbox, l.get("url") or "", resume_since=prefs.resume_updated_at):
             why = ("waiting for the inbox (set RESUME_TAILOR_IMAP_PASSWORD)" if mailbox.waiting_for_inbox(rec)
-                   else "needs review, three attempts")
+                   else ("login wall or captcha, two tries (a hand Log in there lifts this)" if rec.get("status") in ("needs_login", "blocked")
+                         else f"broke off {ERROR_RETRY_CAP} times (a bug, not a blip)" if rec.get("status") == "error"
+                         else "needs review, three attempts"))
             excluded[why] = excluded.get(why, 0) + 1
     kept = ready
     if retries_first:
@@ -819,6 +965,10 @@ def select(listings: list[dict], prefs: Prefs, state: RunState | None = None,
         del new[:3]
         if retries:
             kept.append(retries.pop(0))
+    # Tier 1 firms before everything else, retries of theirs included (the
+    # user, 2026-10-29); the sort is stable, so the deal above holds inside
+    # each tier.
+    kept.sort(key=lambda l: tier_rank(l, prefs))
     if limit is not None:
         kept = kept[:limit]
     return [to_entry(l) for l in kept], excluded

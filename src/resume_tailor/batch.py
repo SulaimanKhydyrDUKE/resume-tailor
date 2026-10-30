@@ -23,15 +23,15 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from . import ats, freetext, judge, mailbox, planner, qa
+from . import ats, eligibility, freetext, judge, mailbox, planner, qa
 from .untrusted import scrub
-from .apply import (ApplySession, _SIGNIN_TEXT, _is_empty, _looks_like_application, _pick_option, _value_parts, _YES_WORDS,
-                    closest_option, detect_blocker)
+from .apply import (ApplySession, _SIGNIN_TEXT, _SUCCESS_TEXT, _dial_code_of, _is_empty, _looks_like_application, _pick_option, _place_tokens,
+                    _same_country_code, _value_parts, _YES_WORDS, closest_option, detect_blocker)
 from .planner import Decision
 from .profile import Profile, gpa_answer, sponsorship_answer
 from .render import extract_pdf_text
 from .queue import QueueEntry, RunState, company_key, load_queue
-from .tailor import tailor, fixed_pdf_path
+from .tailor import tailor, fixed_pdf_path, resume_updated_at
 
 # Outcomes that are worth re-attempting on a later run without --retry-all —
 # transient errors and the two blockers a human can actually clear in between
@@ -107,12 +107,16 @@ _SOCIO = re.compile(r"household earner|free school meals|highest level of educat
 _LANG_SKILL = re.compile(r"language skills in|proficiency in (reading|writing|speaking)|indicate your language|skills in reading, written and spoken", re.I)
 _CONSENT_WORDS = re.compile(r"\b(certify|agree|confirm|accura|consent|acknowledge|terms|policy|code of conduct|i understand|scheduling tool|"
                             r"please note|reminder that|we will only consider|first preference|one (role|position|application)s? at a time)\b", re.I)
-# "How did you hear about us?" — and not "if you were referred, name the
-# person", which is a different question with a factual answer.
-_SOURCE_FIELD = re.compile(
-    r"\b(how|where|when) (did you|you)( first| originally)? (hear|heard|find|found|learn|learned)( about| of)?\b"
-    r"|\b(what|which) source\b.*\b(hear|heard|learn|learned|find|found)\b|\bsource of (this )?application\b"
-    r"|\breferral source\b|\bapplication source\b", re.I)
+# "How did you hear about us?" (planner.SOURCE_Q, which its rails share).
+_SOURCE_FIELD = planner.SOURCE_Q
+# A year, a season, a place or a requirement in a question makes it about the
+# candidate's situation — "I confirm my availability for a Summer 2026
+# internship", "candidates must be in Omaha, NE for the summer; can you meet
+# this requirement?" — not a statement to acknowledge, whatever consent words
+# it carries. Those went out as Yes under the acknowledgement rules (2026-09).
+_SITUATION = re.compile(r"\b(19|20)\d\d\b|\b(summer|spring|fall|autumn|winter)\b|\b(requirement|must (be|live|reside|work)|"
+                        r"able to (meet|work|commute|relocate|be)|availability|available (to|for|on|from)|located in|live within|live in|"
+                        r"reside|relocat|commut|on-?site|in-?person)\b", re.I)
 # In order of preference: the postings come from a job board (the SimplifyJobs
 # list), so those options are true; "Other" is true of anything; LinkedIn is not.
 # Honest, generic answers to "how did you hear about us", in order of
@@ -176,6 +180,28 @@ _NOT_SUBMIT = re.compile(
     r"apply (with|using|via|through)|autofill|linkedin|indeed|dropbox|google drive|\bsave\b|draft|cancel|\bback\b|"
     r"previous|alert|search|filter|later|share|locate|enter manually|attach|add another|sign in|log ?in|"
     r"create (an )?account|withdraw|delete|remove|print|email this|friend", re.I)
+
+
+# A captcha met mid-form. Named so discover._worn_out parks it after one
+# attempt — a puzzle does not go away on retry — and a hand sign-in at the
+# host (logged_in_since) is what lifts it.
+CAPTCHA_DETAIL = ("a captcha came up — an hCaptcha or reCAPTCHA puzzle the tool never solves; not retried on its own: "
+                  "the dashboard's Log in opens the page in Chrome, and once you have passed it there every posting on this "
+                  "host is retried")
+
+
+async def _captcha_here(session: ApplySession) -> bool:
+    """A captcha a person would have to solve is on the page right now: the
+    widget's own challenge frame on show, or the page saying so."""
+    try:
+        if await session.challenge_visible():
+            return True
+    except Exception:
+        pass
+    try:
+        return await detect_blocker(session, after_apply=True) == "bot_check"
+    except Exception:
+        return False
 
 
 def _pick_submit_button(buttons: list[dict]) -> dict | None:
@@ -304,12 +330,36 @@ async def _link_wall(session: ApplySession) -> bool:
     return bool(_LINK_WALL.search(text[:6000])) and not await session.describe_form()
 
 
+# What a one-time-code box is called in its own id or name, whatever the
+# text around it: Greenhouse's security-input-0…7, an otp-3, a code_2.
+_CODE_BOX_ID = re.compile(r"security-input|\botp\b|one-?time|verif|pass-?code|code[-_]?\d|digit[-_]?\d", re.I)
+
+
+def _code_boxes(fields: list[dict]) -> list[dict]:
+    """The boxes a code wall wants typed into, out of a form's fields, in
+    page order: text inputs, empty or holding one stray character (a repair
+    round once put "1" in each of Oracle's six), that either say so — the
+    wall's words in their label, name, id or hint — or have its shape: four
+    or more single-character boxes whose ids or names differ only by a
+    number (Greenhouse's eight). Inversion's eight carried the words only in
+    the dialog's legend, and read by words alone the wall went unseen while
+    the code sat in the inbox; the user typed it."""
+    text_like = [f for f in fields
+                 if f.get("type") in ("text", "number", "tel", "") and len(str(f.get("value") or "")) <= 1]
+    said = {id(f) for f in text_like
+            if _CODE_WALL.search(" ".join((f.get("label") or "", f.get("name") or "", f.get("hint") or "", f.get("dom_id") or "")))
+            or _CODE_BOX_ID.search((f.get("dom_id") or "") + " " + (f.get("name") or ""))}
+    runs: dict[str, list[dict]] = {}
+    for f in text_like:
+        if f.get("maxlength") == 1:
+            runs.setdefault(re.sub(r"\d+", "#", (f.get("dom_id") or f.get("name") or "").lower()), []).append(f)
+    shaped = {id(f) for run in runs.values() if len(run) >= 4 for f in run}
+    return [f for f in text_like if id(f) in said or id(f) in shaped]
+
+
 async def _code_fields(session: ApplySession) -> list[dict]:
-    """The boxes a code wall wants typed into: empty, or holding one stray
-    character (a repair round once put "1" in each of Oracle's six)."""
-    return [f for f in await session.describe_form()
-            if f.get("type") in ("text", "number", "tel", "") and len(str(f.get("value") or "")) <= 1
-            and _CODE_WALL.search(" ".join((f.get("label") or "", f.get("name") or "", f.get("hint") or "")))]
+    """The code wall's boxes on the page now (see _code_boxes)."""
+    return _code_boxes(await session.describe_form())
 
 
 async def _enter_code(session: ApplySession, code: str) -> bool:
@@ -374,15 +424,17 @@ async def _enter_code(session: ApplySession, code: str) -> bool:
     return True
 
 
-def _accounts_allowed(profile: Profile, url: str, entry_url: str = "") -> bool:
-    """Whether the user has said the tool may create an account on this host
-    (`search.create_accounts_on`, host suffixes) — or on this kind of portal:
-    "icims.com" in the list covers an iCIMS portal white-labelled under the
-    company's own domain (careers.amd.com, firstcitizens.jibeapply.com),
-    which the listing's `?icims=1` or the wall's campus-*.icims.com address
-    gives away. `entry_url` is the listing's URL, kept because the query
-    that names the ATS is gone once the portal has redirected."""
-    hosts = [str(h).strip().lower() for h in (profile.answers.get("search", {}).get("create_accounts_on") or []) if str(h).strip()]
+def _host_listed(hosts: list[str], url: str, entry_url: str = "") -> bool:
+    """Whether a page is on one of the listed hosts (host suffixes) — or on
+    that kind of portal: "icims.com" in a list covers an iCIMS portal
+    white-labelled under the company's own domain (careers.amd.com,
+    firstcitizens.jibeapply.com), which the listing's `?icims=1` or the
+    wall's campus-*.icims.com address gives away. `entry_url` is the
+    listing's URL, kept because the query that names the ATS is gone once
+    the portal has redirected."""
+    hosts = [str(h).strip().lower() for h in hosts if str(h).strip()]
+    if not hosts:
+        return False
 
     def by_host(u: str) -> bool:
         host = (urlsplit(u or "").netloc or "").lower()
@@ -391,6 +443,205 @@ def _accounts_allowed(profile: Profile, url: str, entry_url: str = "") -> bool:
     kinds = {kind for needle, kind in ats._KINDS if any(h == needle or h.endswith("." + needle) or needle in h for h in hosts)}
     kind_of = lambda u: (ats.host_kind(u) or "") if u else ""  # noqa: E731
     return by_host(url) or by_host(entry_url) or kind_of(url) in kinds or kind_of(entry_url) in kinds
+
+
+def _listed_hosts(profile: Profile, key: str, default: list[str]) -> list[str]:
+    """`search.<key>` from answers.yaml; `default` when the key is absent
+    (an explicit empty list turns the rule off)."""
+    raw = (profile.answers.get("search", {}) or {}).get(key)
+    return [str(h) for h in (default if raw is None else (raw or []))]
+
+
+def _accounts_allowed(profile: Profile, url: str, entry_url: str = "") -> bool:
+    """Whether the user has said the tool may create an account on this host
+    (`search.create_accounts_on`, host suffixes or the ATS kind they name)."""
+    return _host_listed(_listed_hosts(profile, "create_accounts_on", []), url, entry_url)
+
+
+# Hosts whose form sits behind a captcha the tool never passes headless: iCIMS
+# puts an hCaptcha on its e-mail step (2 of 126 attempts got through, and
+# only after a hand sign-in), Tesla's careers site a bot check on its form (36
+# blocked, none applied). Nothing is opened or tailored there until a person
+# has signed in once at the host; then every posting there is retried.
+DEFAULT_HAND_LANE_HOSTS = ["icims.com", "tesla.com"]
+# Boards whose bot check turns a headless submit away without a word — Lever's
+# hCaptcha left 31 complete forms standing for 4 that went through. The form
+# is filled and held for Approve, and the approved submit runs in a visible
+# Chrome window.
+DEFAULT_VISIBLE_SUBMIT_HOSTS = ["lever.co"]
+
+
+def hand_lane_host(profile: Profile, url: str, entry_url: str = "") -> bool:
+    """A posting on `search.hand_lane_hosts` (default: iCIMS, Tesla)."""
+    return _host_listed(_listed_hosts(profile, "hand_lane_hosts", DEFAULT_HAND_LANE_HOSTS), url, entry_url)
+
+
+def visible_submit_host(profile: Profile, url: str, entry_url: str = "") -> bool:
+    """A posting on `search.visible_submit_hosts` (default: Lever): filled
+    headless, submitted only from a visible window the user approved."""
+    return _host_listed(_listed_hosts(profile, "visible_submit_hosts", DEFAULT_VISIBLE_SUBMIT_HOSTS), url, entry_url)
+
+
+# The boards the Python loop fills itself: Greenhouse, Ashby and Workable,
+# where it finishes about four forms in five. Every other host — Workday and
+# Oracle (accounts, multi-step wizards), SmartRecruiters (shadow-DOM screening
+# pages), Lever (an hCaptcha on submit), iCIMS, a company's own careers site —
+# is the agent driver's from the first attempt: the loop records the posting
+# as `for_agent` without opening, tailoring or judging it, and a Claude Code
+# session works it in the resume-tailor MCP browser (assist.py; the
+# assist-queue skill). The record decided the split: on 2026-10-17, 1,287
+# postings sat in needs_review / needs_login / blocked after three browser
+# attempts each, nearly all on the hosts outside this list. `search.loop_hosts`
+# overrides it (an empty list sends everything to the driver);
+# `search.agent_driver: false` keeps everything in the loop.
+DEFAULT_LOOP_HOSTS = ["greenhouse.io", "ashbyhq.com", "workable.com"]
+FOR_AGENT = "for_agent"  # the status: the loop's handoff to the agent driver; never retried by the loop
+
+
+# --- a person at the keyboard --------------------------------------------
+# The user's rule (2026-10-18): one visible worker, watched from the desk
+# while they do other work, so a captcha or a sign-in wall is theirs to pass
+# in the worker's own Chrome window — the same session, the same filled
+# form, the attempt going on from where it stopped. The dashboard's "I'm
+# here" button writes present.json; while it holds, a wall is held for the
+# user for HUMAN_WAIT_S with a desktop notification and a banner, and the
+# attempt ends as before only when the time runs out or nobody is there.
+PRESENT_FILE = Path.home() / ".resume-tailor" / "present.json"
+HUMAN_WAIT_S = 10 * 60
+
+
+def human_present() -> bool:
+    """Whether the user said they are at the keyboard (present.json, with
+    an end time; the dashboard's "I'm here" or `resume-tailor present`)."""
+    try:
+        data = json.loads(PRESENT_FILE.read_text(encoding="utf-8"))
+        return float(data.get("until") or 0) > time.time()
+    except (OSError, ValueError):
+        return False
+
+
+def set_present(hours: float) -> dict:
+    """Mark the user present for `hours` (0 clears). Returns the file's content."""
+    PRESENT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    data = {"until": time.time() + hours * 3600 if hours > 0 else 0,
+            "since": datetime.now().astimezone().isoformat(timespec="seconds"), "hours": hours}
+    PRESENT_FILE.write_text(json.dumps(data), encoding="utf-8")
+    return data
+
+
+def _waiting_file() -> Path:
+    w = _worker()
+    return CURRENT_FILE.with_name(f"waiting-w{w}.json" if w else "waiting.json")
+
+
+async def _notify(text: str, title: str = "resume-tailor") -> None:
+    """A macOS desktop notification, best effort and never awaited for long."""
+    try:
+        script = f'display notification {json.dumps(text[:200])} with title {json.dumps(title)} sound name "Glass"'
+        proc = await asyncio.create_subprocess_exec("osascript", "-e", script, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+        try:
+            await asyncio.wait_for(proc.wait(), 5)
+        except asyncio.TimeoutError:
+            proc.kill()
+    except Exception:
+        pass
+
+
+async def _wait_for_human(session: ApplySession, entry: QueueEntry | None, kind: str, shots_dir: Path | None = None,
+                          timeout_s: float | None = None, force: bool = False) -> bool:
+    """Hold the page for the user to pass a wall in this very window —
+    `kind` is "captcha", "sign-in" or "code" (an e-mailed one-time code to
+    type into the page's boxes) — and return whether they did. Only
+    when the user said they are at the keyboard (human_present) or the
+    caller insists (`force`, the agent driver); otherwise False at once
+    and the attempt ends as it always has. Brings the window to the
+    front, posts a desktop notification (and one more at half time),
+    writes waiting-w<k>.json for the dashboard's banner, and polls every
+    three seconds for the wall to be gone. The file is removed on exit."""
+    if not (force or human_present()):
+        return False
+    budget = float(timeout_s or HUMAN_WAIT_S)
+    deadline = time.time() + budget
+    url = _page_url(session) or ""
+    who = (entry.company_hint if entry and entry.company_hint else "a posting")
+    ask = {"captcha": "solve the captcha", "code": "type the e-mailed code"}.get(kind, "sign in")
+    try:
+        _waiting_file().parent.mkdir(parents=True, exist_ok=True)
+        _waiting_file().write_text(json.dumps({
+            "kind": kind, "company": who, "role": entry.title if entry else "", "entry_id": entry.id if entry else "",
+            "url": url, "since": datetime.now().astimezone().isoformat(timespec="seconds"), "until": deadline,
+            "worker": _worker(), "pid": os.getpid(), "profile_dir": str(getattr(session, "profile_dir", "") or "")}), encoding="utf-8")
+    except Exception:
+        pass
+    _now(f"waiting for you to {ask}", entry, url=url)
+    try:
+        await session._page.bring_to_front()
+    except Exception:
+        pass
+    await _notify(f"{who}: {ask} in the resume-tailor Chrome window ({int(budget // 60)} min)")
+    nudged = passed = False
+    try:
+        while time.time() < deadline:
+            await asyncio.sleep(3)
+            try:
+                if session._page is None or session._page.is_closed():
+                    break
+                if kind == "captcha":
+                    passed = not await _captcha_here(session)
+                elif kind == "code":
+                    # Typed and taken, or the site moved on: the boxes are gone.
+                    await session._pick_frame()
+                    passed = not await _code_fields(session)
+                else:
+                    await session._pick_frame()
+                    passed = (await detect_blocker(session, after_apply=True)) not in ("login_required", "bot_check")
+            except Exception:
+                continue  # mid-navigation: the user is clicking
+            if passed:
+                break
+            if not nudged and time.time() > deadline - budget / 2:
+                nudged = True
+                await _notify(f"{who}: still waiting for you to {ask} ({int((deadline - time.time()) // 60)} min left)")
+    finally:
+        try:
+            _waiting_file().unlink()
+        except OSError:
+            pass
+    if passed:
+        await asyncio.sleep(2)  # let the page settle behind the wall
+        print(f"  [{who}] you passed the {kind}; going on in the same window", file=sys.stderr, flush=True)
+    else:
+        print(f"  [{who}] the {kind} was not passed in {int(budget // 60)} min; recorded as before", file=sys.stderr, flush=True)
+    return passed
+
+
+def approve_essays(profile: Profile) -> bool:
+    """`search.approve_essays` (default yes): a form that carries an answer
+    the model wrote — an essay, a cover letter — is held for the user's
+    Approve, and the approved run sends exactly the words they read."""
+    return bool((profile.answers.get("search", {}) or {}).get("approve_essays", True))
+
+
+def _model_prose(answers: list) -> list[str]:
+    """The questions whose recorded answer the model wrote."""
+    out = []
+    for a in answers or []:
+        src = str((a or {}).get("source") or "")
+        if (a or {}).get("answer") and (src.startswith("essay writer") or "written from the record" in src):
+            out.append(str(a.get("question") or a.get("label") or "?")[:80])
+    return out
+
+
+def agent_driver_host(profile: Profile, url: str, entry_url: str = "") -> bool:
+    """Whether a posting is the agent driver's rather than the loop's: the
+    driver is on (`search.agent_driver`, default yes) and the host is not one
+    of `search.loop_hosts` (default Greenhouse, Ashby, Workable)."""
+    search = profile.answers.get("search", {}) or {}
+    if not bool(search.get("agent_driver", True)):
+        return False
+    if not (url or entry_url):
+        return False
+    return not _host_listed(_listed_hosts(profile, "loop_hosts", DEFAULT_LOOP_HOSTS), url, entry_url)
 
 
 def _applicant_email(profile: Profile) -> str:
@@ -636,6 +887,13 @@ async def _create_account(session: ApplySession, profile: Profile) -> str:
                     await session.fill(f["selector"], "yes", f)
                 except Exception:
                     pass
+        # The code is mailed on this press. The inbox is read from this
+        # moment, not from when the form fill began seconds later: a code
+        # stamped in between was missed, and Oracle's (Amex) e-mail step
+        # was then pressed again on the next attempt, which burns the code
+        # before it — every visit to that step issues a new code and
+        # invalidates the old (seven attempts at one Amex requisition).
+        session.email_step_at = time.time()
         if await press(r"next|continue|send (verification )?code|get code|sign in|log ?in|submit|begin|start"):
             await session._page.wait_for_timeout(2000)
             # iCIMS runs hCaptcha on this very press: passive when the browser
@@ -794,6 +1052,30 @@ async def _create_account(session: ApplySession, profile: Profile) -> str:
     return "created" if created else "signed_in"
 
 
+async def _resume_workday_draft(session: ApplySession, posting_url: str) -> bool:
+    """After a Save and Continue that fired nothing: back to the posting,
+    through its Apply / Continue Application control, to the saved draft's
+    last step. True when a form is on the page again."""
+    if not posting_url:
+        return False
+    try:
+        await session.goto(posting_url)
+    except Exception:
+        return False
+    try:
+        if not await session.click_apply_control():
+            return False
+    except Exception:
+        return False
+    await session._wait_for_fields(20)
+    try:
+        fields = await session.describe_form()
+        blocker = await detect_blocker(session, after_apply=True)
+    except Exception:
+        return False
+    return bool(fields) and blocker not in ("login_required", "bot_check", "posting_gone")
+
+
 async def _step_signature(session: ApplySession) -> tuple:
     """What identifies the step a multi-page form is on: the URL and the
     questions it shows. Workday keeps one URL for all six steps and two of
@@ -941,8 +1223,15 @@ def _education_date_answer(profile: Profile, section: str, question: str, option
     if not re.search(r"education|school|academic|degree", section or "", re.I):
         return None
     q = (question or "").lower()
-    which = "start" if re.search(r"\b(start|from|begin)", q) else "end" if re.search(r"\b(end|to|graduat|complet|finish)", q) else None
-    part = "month" if "month" in q else "year" if "year" in q else None
+    # A date box has a short label. A prose question that happens to sit
+    # under an education heading — OCC's "Employer 1: Please list, starting
+    # with your most recent employment, all work history over the last seven
+    # years…" — matched "starting" and "years" here and was answered "2024",
+    # seven boxes over, on 28 submitted forms.
+    if len(q) > 60 or re.search(r"please (list|describe|provide)|describe|explain|include|history|employ", q):
+        return None
+    which = "start" if re.search(r"\b(start|from|begin)\b", q) else "end" if re.search(r"\b(end|to|graduat\w*|complet\w*|finish\w*)\b", q) else None
+    part = "month" if re.search(r"\bmonth\b", q) else "year" if re.search(r"\byear\b", q) else None
     if not which:
         return None
     dates = _education_dates(profile)
@@ -1098,6 +1387,70 @@ async def _add_entries_for(session: ApplySession, errors: list[str]) -> int:
     return pressed
 
 
+# Relocation and location requirements: yes to anything (the user, 2026-10-05:
+# "just get me to the interview"). The one answer about the candidate's
+# situation that comes from a standing instruction rather than the bank:
+# willingness or ability to relocate, move, commute, work on site or in
+# person, be in the posting's city for the term, or live in its area takes
+# the affirmative option. Two limits keep it honest: a question about where
+# the candidate lives *now* with only Yes/No on offer is a fact, not a
+# willingness, and stays with the bank; "do you need relocation assistance?"
+# takes the no-assistance option, since the instruction is to be easy to
+# hire, not to make demands.
+_RELOCATION_Q = re.compile(
+    r"relocat|\bmov(e|ing) to\b|commut|\blive within\b|\bservice areas?\b|\bgeographic(al)? (areas?|preference)|"
+    r"\b(on-?site|in-?person|hybrid|in[- ]office|at (the|our) office)\b|"
+    r"\b(must|required to|need to|expected to|have to|able to|willing to|prepared to|ready to|open to|comfortable) "
+    r"(be|live|reside|work|report|be located|be based|be present|stay)\b|"
+    r"\b(be|located|based|present|living|residing|working) (in|near|within|at) \w[\w .,'-]{0,40}\b(for|during|by|throughout) "
+    r"(the |this |our )?(summer|internship|term|program|duration|start)\b", re.I)
+_RELOCATION_ASSIST_Q = re.compile(r"\b(require|need|request|expect|want|seek)\b[^?]{0,40}\brelocation (assistance|support|package|reimbursement|benefits?|help|stipend)", re.I)
+_RESIDENCE_NOW_Q = re.compile(r"\b(do you|are you) (currently |presently |now )?(live|living|reside|residing|located|based)\b", re.I)
+_LOCATION_LIST_Q = re.compile(r"\b(list|which|what|select|indicate|name)\b", re.I)
+_NEG_OPTION = re.compile(r"\b(no|not|unable|cannot|can'?t|won'?t|unwilling|decline|n/?a|none)\b", re.I)
+_NO_ASSIST_OPTION = re.compile(r"^\s*no\b|not (need|require|request)|without|own expense|on my own|not needed|not required", re.I)
+_YES_OPTION_PATTERNS = (
+    r"relocat|\bmove\b|\bmoving\b|\bwilling\b|\bopen to\b|\bable to\b|\bready to\b|\bi can\b|\bi will\b",
+    r"^\s*yes\b",
+    r"^\s*(i (agree|confirm|understand|accept|acknowledge)|agree|confirm|understood|accept)\b",
+)
+
+
+def relocation_answer(label: str, options: list[str], field: dict | None = None, widget: str = "") -> str | None:
+    """The affirmative answer to a relocation or location-requirement
+    question, in the option's own words; None when the question is not one,
+    asks only where the candidate lives today, or offers nothing affirmative."""
+    label = label or ""
+    if not _RELOCATION_Q.search(label):
+        return None
+    opts = [str(o) for o in (options or []) if str(o).strip()]
+    kind = (field or {}).get("type") or ""
+    if _RELOCATION_ASSIST_Q.search(label):
+        for o in opts:
+            if _NO_ASSIST_OPTION.search(o):
+                return o
+        return "no" if kind in ("checkbox", "yesno") and not opts else None
+    if _RESIDENCE_NOW_Q.search(label) and not any(re.search(r"relocat|\bmov(e|ing)\b|willing", o, re.I) for o in opts):
+        return None
+    if opts:
+        for pat in _YES_OPTION_PATTERNS:
+            for o in opts:
+                if re.search(pat, o, re.I) and not _NEG_OPTION.search(o):
+                    return o
+        if widget == "checkboxes" and _LOCATION_LIST_Q.search(label):
+            # "Indicate every location you would relocate to": all of them.
+            chosen = [o for o in opts if not _NEG_OPTION.search(o)]
+            return " | ".join(chosen) if chosen else None
+        return None
+    if kind in ("checkbox", "yesno"):
+        return "yes"
+    if kind in ("text", "textarea", ""):
+        if _LOCATION_LIST_Q.search(label):
+            return "Any of the role's locations; open to relocating anywhere in the United States."
+        return "Yes, open to relocating for this role."
+    return None
+
+
 def _autofill_boilerplate(label: str, field: dict, options: list[str] | None = None) -> str | None:
     """The narrow, explicitly-enumerated set of required fields safe to answer
     without a profile match, because the answer carries no factual claim about
@@ -1119,14 +1472,14 @@ def _autofill_boilerplate(label: str, field: dict, options: list[str] | None = N
         part = m.group(3).lower()
         return datetime.now().strftime("%m" if part == "month" else "%d" if part == "day" else "%Y")
     if (field.get("type") == "checkbox" and not opts_now and field.get("required") and "?" not in label and not _NO_BANK.search(label)
-            and not _SELF_ID.search(" ".join((label, field.get("option_label") or "", field.get("section") or "")))):
+            and not _SITUATION.search(label) and not _SELF_ID.search(" ".join((label, field.get("option_label") or "", field.get("section") or "")))):
         # A required lone checkbox under a statement — "Your application will
         # be reviewed for one position at a time" — is an acknowledgement box,
         # whatever words it uses. Nobody puts a real question behind one.
         # Never a box on a self-identification form: "Yes, I have a
         # disability" is a claim about the candidate, not an acknowledgement.
         return "yes"
-    if _CONSENT_WORDS.search(label):
+    if _CONSENT_WORDS.search(label) and not _SITUATION.search(label):
         opts = opts_now
         if field.get("type") in ("checkbox", "yesno") and not opts:
             return "yes"
@@ -1161,7 +1514,8 @@ def _autofill_boilerplate(label: str, field: dict, options: list[str] | None = N
         for opt in opts_now:
             if re.search(r"^\s*(none|no (knowledge|proficiency|ability|skills?)|not (applicable|proficient)|n/?a|0)\b", opt, re.I):
                 return opt
-    if field.get("required") and opts_now and "?" not in label and all(_ACK_OPTION.match(o) for o in opts_now if o.strip()):
+    if (field.get("required") and opts_now and "?" not in label and not _SITUATION.search(label)
+            and all(_ACK_OPTION.match(o) for o in opts_now if o.strip())):
         # A statement to acknowledge ("Reminder: you may apply for one role
         # only") whose every option is a form of yes: the only answer there is.
         return next(o for o in opts_now if o.strip())
@@ -1188,7 +1542,10 @@ def _autofill_boilerplate(label: str, field: dict, options: list[str] | None = N
             # option present, in order of preference.
             for want in _GENERIC_SOURCE_OPTIONS:
                 for opt in opts:
-                    if want in opt.strip().lower():
+                    # "Job Posting (LinkedIn, Indeed…)" is a category; "LinkedIn
+                    # Job Postings" is a site the candidate did not use.
+                    plain = re.sub(r"\([^)]*\)", " ", opt).strip().lower()
+                    if want in plain and not planner.NAMED_SOURCE.search(plain):
                         return opt
             return None
         if field.get("type") in ("text", "textarea", "") and not field.get("combobox"):
@@ -1198,6 +1555,15 @@ def _autofill_boilerplate(label: str, field: dict, options: list[str] | None = N
 
 def _is_essay(field: dict) -> bool:
     return field.get("tag") == "textarea" or (field.get("type") in ("text", "") and len(field.get("label", "")) > 60)
+
+
+def _optional_prose(field: dict, options: list[str] | None = None) -> bool:
+    """A free-text box the form does not require: it gets no model text, ever
+    (planner.OPTIONAL_PROSE_Q says why). The bank's own words, found before
+    the plan is consulted, may still fill it."""
+    if field.get("required") or options or field.get("combobox") or field.get("type") not in ("text", "textarea", ""):
+        return False
+    return planner.is_prose_question({"widget": planner.widget_of(field), "label": field.get("label") or "", "options": []})
 
 
 def _fits(answer: str | None, field: dict, options: list[str]) -> bool:
@@ -1234,6 +1600,10 @@ def _bank(profile: Profile, question: str, field: dict | None = None, options: l
     if answer is None or key is None:
         return None, None
     if planner.THIRD_PARTY.search(question) and key.startswith(planner.SELF_KEYS):
+        return None, None
+    if planner.CITIZENSHIP_Q.search(question) and not key.startswith("work_authorization."):
+        # "Please list all countries of citizenship" once reached
+        # address.country: the mailing address says nothing about citizenship.
         return None, None
     if key == "about.recent_reading" and not re.search(r"\b(read|reading|book|paper|article|podcast|blog)\b", question, re.I):
         # "What is the most impressive thing you've built with AI?" is not a
@@ -1320,11 +1690,14 @@ def _missing_labels(errors: list[str]) -> set[str]:
 
 
 async def _fill_form(session: ApplySession, profile: Profile, pdf_path: Path, posting_text: str = "",
-                     force_required: set[str] | None = None) -> tuple[list[str], list[dict]]:
+                     force_required: set[str] | None = None, seed: list[dict] | None = None) -> tuple[list[str], list[dict]]:
     """Returns the labels of required fields nothing could answer, and the
     record of what the form holds. Non-empty labels mean this application
     does not get submitted. `force_required` names questions the page
-    itself has demanded (from a rejected submit), required or not in the markup."""
+    itself has demanded (from a rejected submit), required or not in the markup.
+    `seed` is the answers of the attempt the user approved: a written answer
+    in it is the answer here, ahead of any writer, so the approved run sends
+    the words the user read rather than a fresh essay."""
     unresolved: list[str] = []
     fields = await session.describe_form()
 
@@ -1445,6 +1818,12 @@ async def _fill_form(session: ApplySession, profile: Profile, pdf_path: Path, po
     # from answers already decided, so it costs no model calls.
     decided: dict[tuple, str | None] = {}
     sources: dict[tuple, str] = {}  # (section, question) -> where its answer came from
+    for a in seed or []:
+        src = str((a or {}).get("source") or "")
+        if (a or {}).get("answer") and (src.startswith("essay writer") or "written from the record" in src or src.startswith("approved answer")):
+            q = str(a.get("question") or a.get("label") or "")
+            decided[(str(a.get("section") or ""), q, ())] = str(a["answer"])
+            sources[(str(a.get("section") or ""), q)] = "approved answer: the words you read on the dashboard"
     for _ in range(2):
         fields = await session.describe_form()
         if force_required:
@@ -1466,6 +1845,11 @@ async def _fill_form(session: ApplySession, profile: Profile, pdf_path: Path, po
         after = len(unresolved) + len(await session.unfilled_required(force_required))
         if not unresolved or after >= before:
             break
+    # Every field against the value decided for it, before anything is sent.
+    try:
+        unresolved = await _sweep_intended(session, decided, unresolved)
+    except Exception as e:
+        print(f"  sweep skipped ({_brief(e)})", file=sys.stderr, flush=True)
     return unresolved, _snapshot(await session.describe_form(), unresolved, sources)
 
 
@@ -1547,6 +1931,10 @@ def _current_employer(profile: Profile) -> str | None:
     return None
 
 
+_TIMELINE_Q = re.compile(r"recruiting timelines?|competing (offers?|deadlines?|processes)|(other|outstanding|pending) (offers?|deadlines?) we should|"
+                         r"exploding offers?|timelines? we should (be aware of|know about)", re.I)
+
+
 async def _decide(question: str, field: dict, options: list[str], profile: Profile, posting_text: str,
                   decided: dict[tuple, str | None], sources: dict[tuple, str], plan: dict | None,
                   widget: str) -> str | None:
@@ -1558,6 +1946,37 @@ async def _decide(question: str, field: dict, options: list[str], profile: Profi
     key = (section, question, tuple(options))
     if key in decided:
         return decided[key]
+    if planner.HUMAN_CHECK.search(question):
+        # Built to unmask an automated applicant; answered by nobody but the
+        # user. Required, it holds the application for review.
+        decided[key] = None
+        sources[(section, question)] = "human check: left for the user"
+        return None
+    if _TIMELINE_Q.search(question) and options:
+        # "Do you have any recruiting timelines we should be aware of?" is
+        # No unless the bank says otherwise: a model once said Yes on the
+        # strength of "Summer 2027", which opened a required essay about a
+        # deadline that does not exist (Jane Street).
+        hit, src = profile.lookup("recruiting timelines")
+        want = str(hit) if hit is not None else "No"
+        i = _pick_option(want, [{"label": o, "value": o} for o in options])
+        if i is None:
+            i = closest_option(want, options)
+        if i is not None:
+            sources[(section, question)] = (f"answer bank: {src}" if hit is not None
+                                            else "standing rule: no competing recruiting timelines unless the bank says so")
+            decided[key] = options[i]
+            return options[i]
+    if not re.search(r"[A-Za-z]{2,}", question or ""):
+        # A control whose "question" has no words — SmartRecruiters' 1-to-10
+        # rating pickers read as "1 2 3 4 5 6 7 8 9 10" because the question
+        # sits in a shadow root the scanner did not reach. Nothing can be
+        # answered to a question nobody read; a model given the digits rated
+        # the candidate a 9 in C#, which is not in the record. Required, it
+        # holds the form for review.
+        decided[key] = None
+        sources[(section, question)] = "the question text could not be read: left for the user"
+        return None
     if _TEXT_CONSENT.search(question):
         # "Check Yes or No to indicate your agreement to receive text message
         # updates from … Reply STOP to opt out" (Rippling): a paragraph the
@@ -1604,6 +2023,11 @@ async def _decide(question: str, field: dict, options: list[str], profile: Profi
         sources[(section, question)] = "answer bank: work_authorization.requires_us_sponsorship"
         decided[key] = picked
         return picked
+    reloc = relocation_answer(question, options, field, widget)
+    if reloc is not None and _fits(reloc, field, options):
+        sources[(section, question)] = "standing rule: relocation, yes to anything"
+        decided[key] = reloc
+        return reloc
     if _CURRENT_EMPLOYER.search(question) and not options:
         # A text box or an employer search picker: "Duke University" is
         # searched and chosen like any other picker value.
@@ -1645,9 +2069,13 @@ async def _decide(question: str, field: dict, options: list[str], profile: Profi
             sources[(section, question)] = "form plan" + (f": {d.reason}" if d.reason else "")
         decided[key] = answer
         return answer
-    if field.get("combobox") and re.search(r"\b(city|location)\b", question, re.I) and not re.search(r"work|prefer|office|relocat", question, re.I):
+    if (field.get("combobox") and re.search(r"\b(city|location)\b", question, re.I) and not re.search(r"work|prefer|office|relocat", question, re.I)
+            and not (re.fullmatch(r"\s*city\s*[*✱:]?\s*", question, re.I) and re.search(r"address", section or "", re.I))):
         # A place picker lists "Durham, NC, US" beside five other Durhams:
-        # the whole place, not the bare city, is what tells them apart.
+        # the whole place, not the bare city, is what tells them apart. A
+        # bare "City" picker inside an Address block (Oracle's, with its own
+        # State and ZIP boxes beside it) wants the city alone: the whole
+        # place typed there filtered its list to nothing (DTCC).
         flat = profile.flat_answers()
         place = ", ".join(str(flat.get(k)) for k in ("address.city", "address.state", "address.country") if flat.get(k))
         if place:
@@ -1663,6 +2091,11 @@ async def _decide(question: str, field: dict, options: list[str], profile: Profi
         answer, bank_key = _bank(profile, question, field, options, strong=True)
         if answer is not None:
             sources[(section, question)] = f"answer bank: {bank_key}"
+    if answer is None and _optional_prose(field, options):
+        # Nothing the bank or the rules could say; a model is not asked.
+        sources[(section, question)] = planner.OPTIONAL_PROSE_REASON
+        decided[key] = None
+        return None
     if answer is None and plan is not None:
         d = plan.get(planner.question_key(question, widget, section))
         if d is not None:
@@ -1918,9 +2351,11 @@ async def _repair(session: ApplySession, profile: Profile, posting_text: str,
         try:
             if quick is not None:
                 d = Decision(quick, reason="rule or answer bank")
+            elif _optional_prose(f, options):
+                d = Decision(None, reason=planner.OPTIONAL_PROSE_REASON)  # an optional box the page fussed over is still left blank
             else:
                 d = await planner.repair(question, previous, error, profile, posting_text)
-            if d.essay and not options:
+            if d.essay and not options and f.get("required"):
                 d = Decision(await freetext.answer_question(label, posting_text, profile, max_chars=f.get("maxlength")))
         except Exception as e:
             remaining.append(f"{label} ({_brief(e)})")
@@ -1945,16 +2380,180 @@ async def _repair(session: ApplySession, profile: Profile, posting_text: str,
 # Questions whose answer is a hard fact the bank holds, where a value a page
 # already shows may be an earlier attempt's mistake rather than the truth.
 _HARD_FACT_Q = re.compile(r"sponsor|visa|authori[sz]|citizen|clearance|relocat|18 years|drug|background check|eligib", re.I)
+# A site's résumé parser fills these from the PDF and gets them wrong in ways
+# nobody sees — a first name cut short, "NC" in County, the school's e-mail —
+# so a prefilled identity field is checked against the bank, exactly, and
+# corrected. Whole-label patterns, so "Name of the person who referred you"
+# is not one of them.
+_IDENTITY_Q = re.compile(
+    r"^\s*((first|given|last|family|sur|full|legal|preferred)\s*name|name|e-?mail( address)?|(primary |mobile |cell |home )?(phone|telephone)( number)?|"
+    r"street( address)?|address( line\s*1)?|city|state( ?/ ?province)?|province|zip( code)?|postal code|"
+    r"linkedin( url| profile| profile url)?|github( url| profile)?|website|portfolio( url)?)\s*[*✱:]?\s*$", re.I)
+_BREEZY_STEP = re.compile(r"one more step|check your (e-?mail|inbox)[^.]{0,60}(code|confirm|complete)|enter the code we (sent|e-?mailed)", re.I)
+_CAP_DIALOG = re.compile(r"(limit|maximum|cap|quota)\b[^.]{0,60}\bapplications?\b|\bapplications? (per|this|a|each) (rolling )?(week|day|month)\b|\b\d+ applications\b", re.I)
+
+
+def _same_identity(answer: str, held: str, label: str) -> bool:
+    """An identity field agrees with the bank only when it holds exactly the
+    bank's value (case and spacing aside; digits alone for a phone). "Sulai"
+    is not "Sulaiman" because one contains the other, and a doubled e-mail
+    address contains the right one and is wrong."""
+    a, h = " ".join(str(answer).split()).lower(), " ".join(str(held).split()).lower()
+    if re.search(r"phone|telephone|mobile|zip|postal", label, re.I):
+        return re.sub(r"\D", "", a)[-10:] == re.sub(r"\D", "", h)[-10:] and bool(re.sub(r"\D", "", h))
+    if re.search(r"linkedin|github|website|portfolio", label, re.I):
+        strip = lambda u: re.sub(r"^https?://(www\.)?|/+$", "", u)  # noqa: E731
+        return strip(a) == strip(h)
+    if re.search(r"\b(state|province|city|country|region)\b", label, re.I):
+        return a == h or _same_place(a, h)  # "NC" is "North Carolina" on a State picker
+    return a == h
+
+
+def _breezy_pending(url: str, why: str, page_text: str) -> bool:
+    """Whether a submit that looked complete still wants Breezy's e-mailed
+    code: a breezy.hr host, or the page saying so."""
+    return "breezy.hr" in (url or "").lower() or bool(_BREEZY_STEP.search(" ".join((why or "", page_text or ""))))
+
+
+async def _finish_breezy(session: ApplySession, entry: QueueEntry, since: float, why: str) -> tuple[bool, str]:
+    """Breezy's last step: the tenant mails "One more step! … code: NNNN" with
+    a breezy.hr/q/<id> link; the application counts once the code is entered
+    there. Read the mail, follow the link, type the code. Without the mail,
+    the submit is not complete and the posting is a review item."""
+    if not mailbox.configured():
+        return False, why + "; Breezy wants an e-mailed code entered at its link and the inbox is not configured"
+    found = await mailbox.fetch_secret_async(since, [entry.company_hint, "breezy", "one more step", "code"], timeout_s=150)
+    code, link = (found or {}).get("code"), (found or {}).get("link")
+    if not code:
+        return False, why + "; Breezy's 'one more step' code did not arrive in 150 s — the application does not count until it is entered"
+    if link and "breezy" in link:
+        try:
+            await session.goto(link)
+            await session._page.wait_for_timeout(2000)
+        except Exception:
+            pass
+    if await _enter_code(session, code):
+        await session._page.wait_for_timeout(2500)
+        text = (await session.read_text()).lower()
+        if not await _code_fields(session) or re.search(r"thank you|confirmed|complete|received", text):
+            return True, why + "; Breezy's e-mailed code entered"
+    return False, why + "; Breezy's e-mailed code arrived but could not be entered — finish at the link in that mail"
+
+
+def _deviates(intended: str | None, field: dict, options: list[str]) -> str | None:
+    """Whether the page holds something other than the intended answer for a
+    field, and what: None when it agrees (or nothing was intended). The check
+    is against the intended value, never against non-emptiness — a value can
+    be present and wrong (a neighbour's text, search-box residue, a doubled
+    e-mail) and a field can pass an emptiness check while blank."""
+    if intended is None or not str(intended).strip():
+        return None
+    kind = field.get("type") or ""
+    label = field.get("label") or ""
+    if kind == "file" or field.get("search") or re.search(r"\b(date|month|year|day)\b", label, re.I):
+        return None  # dates and search pickers render in their own formats; the repair pass owns them
+    if kind == "checkbox":
+        want = str(intended).strip().lower() in _YES_WORDS
+        return None if bool(field.get("checked")) == want else f"{'ticked' if field.get('checked') else 'unticked'} instead of {'yes' if want else 'no'}"
+    held = str(field.get("value") or "")
+    code_picker = (field.get("combobox") or field.get("tag") == "listbox") and re.search(r"(country|dial(ing)?|phone|calling) code", label, re.I)
+    if code_picker and (not held.strip() or _dial_code_of(held)[1] or _same_country_code(str(intended), held)):
+        # The phone's country-code selector: the page defaults it and some
+        # draw its "+1" where the scanner cannot read it (SmartRecruiters'
+        # shadow root). A wrong code fails the number's own validation; it is
+        # never a reason to hold a form on its own.
+        return None
+    if not held.strip():
+        return "empty"
+    if (field.get("combobox") or field.get("tag") == "listbox") and re.fullmatch(r"\s*\+?\d{1,3}\s*", re.sub(r"[^\x20-\x7e]+", "", held)) \
+            and re.search(r"phone|telephone|mobile", label, re.I):
+        return None  # the dial-code selector beside a phone box, wearing the phone's label: not the number's field
+    if _IDENTITY_Q.search(label):
+        return None if _same_identity(str(intended), held, label) else f"holds {held!r}"
+    return None if _same_answer(str(intended), held, options) else f"holds {held!r}"
+
+
+async def _sweep_intended(session: ApplySession, decided: dict[tuple, str | None], unresolved: list[str]) -> list[str]:
+    """Before any submit: every field against the value decided for it. A
+    deviation is filled once more; what still deviates goes on the
+    unresolved list, which holds the application for review rather than
+    sending a form that does not say what was decided."""
+    want: dict[tuple[str, str], str | None] = {}
+    for (section, question, _opts), answer in decided.items():
+        if answer is not None:
+            want[(section or "", question)] = answer
+    if not want:
+        return unresolved
+    fields = await session.describe_form()
+    groups, grouped = _group(fields)
+    deviations: list[tuple[dict, str, str]] = []
+    for f in fields:
+        if f["id"] in grouped or f.get("type") in ("file", "radio", "password"):
+            continue
+        intended = want.get((f.get("section") or "", f.get("label") or ""))
+        what = _deviates(intended, f, list(f.get("options") or []))
+        if what:
+            deviations.append((f, intended, what))
+    if not deviations:
+        return unresolved
+    for f, intended, _ in deviations:
+        try:
+            await session.fill(f["selector"], intended, f)
+        except Exception:
+            pass
+    fields = await session.describe_form()
+    by_key = {(f.get("section") or "", f.get("label") or ""): f for f in fields if f["id"] not in grouped}
+    for f, intended, _ in deviations:
+        now = by_key.get((f.get("section") or "", f.get("label") or ""), f)
+        what = _deviates(intended, now, list(now.get("options") or []))
+        if what:
+            label = f.get("label") or f.get("name") or "a field"
+            if not any(u.startswith(label[:40]) for u in unresolved):
+                unresolved.append(f"{label[:80]} — {what}, not the intended {str(intended)[:60]!r}")
+    return unresolved
+
+
+_COUNTRY_WORDS = re.compile(r"^(the )?(united states( of america)?|u\.?s\.?a?\.?|us|usa)$", re.I)
+
+
+def _same_place(answer: str, held: str) -> bool:
+    """A place written two ways: the bank's "NC" against Workday's "North
+    Carolina", "Durham, NC, United States" against the typeahead's "Durham,
+    North Carolina, United States", "United States" against "United States
+    of America". The sweep adopted on 2026-10-06 compared these literally
+    and held 82 complete, correct forms for review in its first week."""
+    a, h = " ".join(answer.split()).lower(), " ".join(held.split()).lower()
+    if _COUNTRY_WORDS.match(a) and _COUNTRY_WORDS.match(h):
+        return True
+    if _same_country_code(a, h):
+        return True  # Greenhouse's Country picker shows "🇺🇸 +1" for United States; a "Country code" picker holds "+1"
+    ta, th = _place_tokens(a), _place_tokens(h)
+    return bool(ta) and ta == th
+
+
+def _same_link(a: str, b: str) -> bool:
+    """Two web addresses that differ only in scheme, "www." or a trailing
+    slash — a LinkedIn or GitHub profile the form shows in its own canonical
+    form (apply._linkedin_url writes the https://www. one Workday insists on)."""
+    if not re.search(r"https?://|www\.|\.(com|io|org|net|dev|me)(/|$)", a + " " + b):
+        return False
+    strip = lambda u: re.sub(r"^https?://(www\.)?|/+$", "", u.strip().lower())  # noqa: E731
+    return strip(a) == strip(b) and bool(strip(a))
 
 
 def _same_answer(answer: str, held: str, options: list[str]) -> bool:
     """Whether what the page holds already means the bank's answer: the same
-    option, the same words, or both a yes (or both a no)."""
+    option, the same words, the same place written out, the same link, or
+    both a yes (or both a no)."""
     a, h = " ".join(answer.split()).lower(), " ".join(held.split()).lower()
     if not h:
         return False
     if a == h or a in h or h in a:
         return True
+    if _same_place(a, h):
+        return True
+    if _same_link(a, h):
+        return True  # the bank's "https://linkedin.com/in/x" is the page's "https://www.linkedin.com/in/x", which the tool itself typed
     if options:
         ia = _pick_option(answer, [{"label": o, "value": o} for o in options])
         ih = _pick_option(held, [{"label": o, "value": o} for o in options])
@@ -2035,8 +2634,11 @@ async def _fill_pass(session: ApplySession, profile: Profile, fields: list[dict]
 
     # Single controls first — text, pickers, yes/no toggles — and the option
     # groups after them, so a picker's remount does not undo a box checked
-    # before it.
-    for f in fields:
+    # before it. State pickers last of the single controls: a committed
+    # state clears itself on almost any re-render (Paylocity, BambooHR), the
+    # one a neighbouring picker triggers included, and then reads "Select a
+    # state" again, which looks like a field nobody reached.
+    for f in _state_pickers_last(fields):
         if f["id"] in grouped or f.get("type") == "file":
             continue
         # Already filled — a retry pass, the site's own prefill, or an earlier
@@ -2046,7 +2648,8 @@ async def _fill_pass(session: ApplySession, profile: Profile, fields: list[dict]
         # a draft that contradicts the bank is corrected, never kept.
         if (f.get("checked") if f.get("type") in ("checkbox", "radio") else f.get("value")):
             label_now = f.get("label") or ""
-            if f.get("type") in ("checkbox", "radio") or not (_HARD_FACT_Q.search(label_now) or _CURRENT_EMPLOYER.search(label_now)):
+            identity = bool(_IDENTITY_Q.search(label_now))
+            if f.get("type") in ("checkbox", "radio") or not (_HARD_FACT_Q.search(label_now) or _CURRENT_EMPLOYER.search(label_now) or identity):
                 continue
             held = str(f.get("value") or "")
             opts_now = f.get("options") or []
@@ -2074,9 +2677,9 @@ async def _fill_pass(session: ApplySession, profile: Profile, fields: list[dict]
                 d = plan.get(planner.question_key(f["label"], planner.widget_of(f), f.get("section") or ""))
                 if d is not None and d.answer and not d.essay:
                     answer, why = d.answer, "form plan" + (f": {d.reason}" if d.reason else "")
-            if answer is None or _same_answer(answer, held, opts_now):
+            if answer is None or (_same_identity(answer, held, label_now) if identity else _same_answer(answer, held, opts_now)):
                 continue
-            sources[(f.get("section") or "", f["label"])] = f"{why} (over a saved draft of {held!r})"
+            sources[(f.get("section") or "", f["label"])] = f"{why} (over {'the parser' if identity else 'a saved draft'}'s {held!r})"
             try:
                 await session.fill(f["selector"], answer, f)
             except Exception as e:
@@ -2130,6 +2733,16 @@ async def _fill_pass(session: ApplySession, profile: Profile, fields: list[dict]
         if not session.fast:
             await asyncio.sleep(random.uniform(0.3, 1.0))
     return unresolved
+
+
+_STATE_Q = re.compile(r"^\s*(state|province|region|state ?(/|or) ?province|state ?/ ?region)\s*[*✱:]?\s*$", re.I)
+
+
+def _state_pickers_last(fields: list[dict]) -> list[dict]:
+    """The same fields, with every State / Province picker moved to the end."""
+    late = [f for f in fields if _STATE_Q.search(f.get("label") or "") and (f.get("combobox") or f.get("tag") in ("select", "listbox"))]
+    late_ids = {f["id"] for f in late}
+    return [f for f in fields if f["id"] not in late_ids] + late
 
 
 def _brief(e: BaseException) -> str:
@@ -2198,8 +2811,14 @@ async def run_batch(
             except Exception as e:
                 # One posting's page must never end the pass: whatever the
                 # browser threw is that posting's record, and the next one runs.
+                # The frame it broke in goes to the log: "can only join an
+                # iterable" was retried 296 times before anyone could say where.
+                import traceback
+                frames = traceback.extract_tb(e.__traceback__)[-3:]
+                where = " < ".join(f"{Path(f.filename).name}:{f.lineno} {f.name}" for f in reversed(frames))
+                print(f"  [{entry.company_hint}] the attempt broke off: {_brief(e)} — at {where}", file=sys.stderr, flush=True)
                 outcome = Outcome(entry_id=entry.id, status="error", company=entry.company_hint, role=entry.title,
-                                  detail=f"the attempt broke off: {_brief(e)}")
+                                  detail=f"the attempt broke off: {_brief(e)} (at {where[:160]})")
             if outcome.status == "error" and _NETWORK_ERROR.search(outcome.detail or ""):
                 # The connection dropped, not the posting. Wait for it to come
                 # back rather than racing through the rest of the list offline,
@@ -2217,7 +2836,8 @@ async def run_batch(
                     if _ckey(name or ""):
                         sent_this_pass.add(_ckey(name or ""))
             outcome.when = datetime.now().astimezone().isoformat(timespec="seconds")
-            outcome.worker = _worker()
+            if outcome.worker != "assist":
+                outcome.worker = _worker()  # an outcome the agent driver recorded keeps its owner
             counts[outcome.status] = counts.get(outcome.status, 0) + 1
             state.record(entry.id, asdict(outcome))
             _append_report_row(report_path, outcome)
@@ -2251,6 +2871,42 @@ def _inbox_wall(state: RunState, entry: QueueEntry, prev_rec: dict | None = None
             return (f"{entry.company_hint} e-mails a verification code before its form (another posting there hit that wall) — "
                     f"not attempted, so as not to mail you one more code; set {mailbox.ENV_HINT} (a Google app password) "
                     "in ~/.resume-tailor/env and the tool will read it")
+    return None
+
+
+def _acknowledged_since(out_dir: Path, names: list[str], when: str) -> str | None:
+    """The subject of an acknowledgement the mail lane filed for one of these
+    company names after `when` (an ISO timestamp), from results.json — or
+    None. Company names are matched the way the state file keys them."""
+    if not names or not when:
+        return None
+    try:
+        res = json.loads((Path(out_dir) / "results.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    items = res.get("companies", res.get("results", res)) if isinstance(res, dict) else res
+    items = list(items.values()) if isinstance(items, dict) else (items or [])
+    keys = {company_key(n) for n in names if company_key(n)}
+    if not keys:
+        return None
+    # The record's time carries its zone; the lane's are UTC. Compare on the
+    # UTC minute so an attempt at 12:46 EDT is before a mail at 16:47Z.
+    try:
+        since = datetime.fromisoformat(when).astimezone().timestamp()
+    except ValueError:
+        return None
+    for it in items:
+        if not isinstance(it, dict) or company_key(it.get("company") or "") not in keys:
+            continue
+        for step in it.get("timeline") or []:
+            if step.get("stage") != "applied":
+                continue
+            try:
+                at = datetime.fromisoformat(str(step.get("when")).replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                continue
+            if at >= since - 120:
+                return str(step.get("subject") or "application acknowledged")
     return None
 
 
@@ -2302,9 +2958,185 @@ async def _resolve_jobright(session: ApplySession, url: str) -> tuple[str, str]:
     return ("ok", link) if link else ("none", "")
 
 
+@dataclass
+class FitResult:
+    """What tailor_and_judge settles on: the best round's tailoring result,
+    the two judges' verdicts on it, and how many revisions it took."""
+    score: int
+    result: Any
+    verdicts: dict
+    fit_ok: bool
+    revisions: int = 0
+
+
+def fit_knobs(profile: Profile, entry_source: str = "") -> tuple[Any, int, bool]:
+    """The judges' bar, how many revisions a hold earns, and whether a posting
+    under the bar is applied to anyway — from answers.yaml → search, the
+    environment and the posting's provenance. One place for the loop and the
+    agent driver (fit_for_agent), so both judge by the same rules."""
+    search = profile.answers.get("search", {}) or {}
+    min_score = search.get("min_judge_score") or judge.PASS_SCORE  # one number, or {judge name: score}
+    max_revisions = int(search.get("max_revisions") if search.get("max_revisions") is not None else 2)
+    if fixed_pdf_path(profile):
+        max_revisions = 0  # the résumé is sent as written: nothing to revise from the judges' notes
+    # The user's rule: a score below the bar earns the résumé its revisions,
+    # then the application goes in anyway. Only an eligibility barrier —
+    # citizenship, clearance, degree level, graduation window — still stops it.
+    apply_below_bar = bool(search.get("apply_below_bar", True))
+    if os.environ.get("RESUME_TAILOR_APPLY_BELOW_BAR", "").strip().lower() in ("0", "false", "no"):
+        apply_below_bar = False  # the launch script's word: every judge at the bar, or the posting is held
+    if entry_source == "added by hand":
+        # The user put this posting in the pool themselves: the judges' notes
+        # are recorded, the application goes in — unless an eligibility
+        # barrier (degree level, citizenship, clearance) stands, which the
+        # user is told about in the record.
+        apply_below_bar = True
+    return min_score, max_revisions, apply_below_bar
+
+
+def cached_fit(prev: dict, profile: Profile, min_score: Any) -> str | None:
+    """The PDF of an earlier attempt whose résumé and verdicts still stand, or
+    None. They stand only when the verdict was a pass at today's bar (a
+    posting the judges turned down is judged again on a forced retry, not
+    waved through on the strength of having been looked at), the composer has
+    not changed since (RESUME_VERSION), and the résumé itself has not: a PDF
+    made before the fixed PDF or the skeleton was last edited is one the user
+    no longer sends."""
+    try:
+        return (prev.get("pdf") if prev.get("fit") and prev.get("pdf") and Path(prev["pdf"]).is_file()
+                and prev.get("status") in RETRYABLE | {FOR_AGENT} and int(prev.get("resume_version") or 0) >= RESUME_VERSION
+                and Path(prev["pdf"]).stat().st_mtime >= resume_updated_at(profile)
+                and judge.cached_scores_ok(prev.get("fit", ""), min_score)
+                else None)
+    except OSError:
+        return None
+
+
+def posting_for_models(jd_text: str, company_hint: str = "", title: str = "") -> tuple[str, list[str]]:
+    """The posting as every model sees it. The company's name goes in front
+    when the page never says it (the essay writer may name only what the
+    posting names; a page that never spells out its own company would leave
+    "Zipline" unsayable), and third-party text aimed at an automated reader is
+    removed (untrusted.scrub) — a posting handed in as text has not been
+    through the page reader, so the scrub happens here, before any model."""
+    if company_hint and company_hint.lower() not in jd_text.lower():
+        jd_text = " — ".join(x for x in (company_hint, title) if x) + "\n\n" + jd_text
+    return scrub(jd_text)
+
+
+async def posting_text_on_page(session: ApplySession, max_chars: int = 15000) -> str:
+    """The posting's text from the page the session is on: the posting
+    container, or the whole page when that guess came up short (a careers
+    page listing many roles: the whole page beats a fragment)."""
+    jd_text = await session.read_posting_text()
+    if len(jd_text) < 1500:
+        full = await session.read_text()
+        if len(full) > 2 * len(jd_text):
+            jd_text = full[:max_chars]
+    return jd_text
+
+
+async def tailor_and_judge(profile: Profile, jd_text: str, out_dir: Path, label: str, *, min_score: Any, max_revisions: int,
+                           on_first=None, now=None) -> tuple[FitResult | None, Any]:
+    """Tailor, judge, and — when a judge holds — revise from the judges' notes
+    and judge again, up to `max_revisions` times, keeping the best draft. A
+    disqualifier (citizenship, degree level, graduation window) ends it early:
+    no rewrite meets those. `on_first(result)` sees the first draft before it
+    is judged and may return an Outcome that ends the attempt (a blacklisted
+    company, one already applied to). Returns (FitResult, None), or (None,
+    reason) where reason is that Outcome or an error string."""
+    now = now or (lambda stage: None)
+    best = None  # (weakest score, result, verdicts, fit_ok)
+    revision = None
+    job_spec = None
+    revisions = 0
+    for round_no in range(max_revisions + 1):
+        now("tailoring the résumé" if not round_no else f"revising the résumé (round {round_no})")
+        try:
+            result = await tailor(profile, jd_text, out_dir=out_dir, label=label, revision=revision,
+                                  variant=f"-r{round_no}" if round_no else "", job=job_spec)
+        except Exception as e:
+            if best is not None:
+                break
+            return None, f"tailoring failed: {e}"
+        job_spec = result.job
+        if round_no == 0 and on_first is not None:
+            stop = on_first(result)
+            if stop is not None:
+                return None, stop
+        # Two independent match judges, both of which must pass before
+        # anything is submitted. Judged on the PDF's extracted text — what a
+        # recruiter's tools will actually read — against the posting.
+        now("judging the résumé")
+        try:
+            fit_ok, verdicts = await judge.two_independent(
+                jd_text, extract_pdf_text(result.pdf_path), profile.applicant_facts(), min_score=min_score)
+        except Exception as e:
+            if best is not None:
+                break
+            return None, f"fit judging failed: {e}"
+        score = judge.weakest(verdicts)
+        if best is None or score > best[0]:
+            best = (score, result, verdicts, fit_ok)
+        if fit_ok or judge.disqualified(verdicts) or round_no == max_revisions:
+            break
+        revision = judge.revision_notes(verdicts)
+        revisions = round_no + 1
+    score, result, verdicts, fit_ok = best
+    return FitResult(score, result, verdicts, fit_ok, revisions), None
+
+
+def settle_fit(fit: FitResult, min_score: Any, *, judge_gate: bool, apply_below_bar: bool) -> tuple[str | None, str, str]:
+    """What the verdict means for the attempt: (the status that ends it or
+    None, its detail, the fit summary for the record). The résumé lint first —
+    a PDF whose text layer lost a bullet, the GPA, the city or the graduation
+    year is held for a look, never sent. Then the judges: under the bar, a
+    disqualifier or a user who holds everything under the bar ends it as
+    fit_rejected; otherwise the application goes in "below the bar" and the
+    record says so."""
+    lint = [v for v in (fit.result.render_violations or [])
+            if v.startswith(("[clipped]", "[leading-punctuation]", "[missing-in-pdf]"))]
+    if lint:
+        return "needs_review", "résumé lint: " + "; ".join(v[:160] for v in lint[:3]), ""
+    fit_text = judge.summarize(fit.verdicts, min_score) + (f" (revised ×{fit.revisions})" if fit.revisions else "")
+    if not fit.fit_ok and judge_gate:
+        if judge.disqualified(fit.verdicts) or not apply_below_bar:
+            return "fit_rejected", judge.reasons(fit.verdicts, min_score), fit_text
+        fit_text += " — applied below the bar"
+    return None, "", fit_text
+
+
+async def fit_for_agent(profile: Profile, jd_text: str, entry_id: str, out_dir: Path, prev: dict,
+                        judge_gate: bool = True) -> dict[str, Any]:
+    """The résumé and the two judges for one posting the agent driver is about
+    to work (assist.prepare): the same cache rule, knobs, rounds and verdict
+    as the loop's fit_and_resume, run at the agent's pace so a posting it
+    never reaches costs no tokens. Returns the fields for the record — pdf,
+    fit, company, role, coverage, resume_version, revisions — plus `status` /
+    `detail` when the verdict ends the posting (fit_rejected; needs_review for
+    a lint hold; skipped when nothing survived selection), `cached` when
+    nothing was spent, or `error`."""
+    min_score, max_revisions, apply_below_bar = fit_knobs(profile)
+    cached = cached_fit(prev, profile, min_score)
+    if cached:
+        return {"cached": True, "pdf": cached, "fit": prev.get("fit", ""), "company": prev.get("company", ""),
+                "role": prev.get("role", ""), "coverage": prev.get("coverage") or {}, "resume_version": RESUME_VERSION,
+                "revisions": int(prev.get("revisions") or 0), "status": None, "detail": ""}
+    fit, err = await tailor_and_judge(profile, jd_text, out_dir, entry_id, min_score=min_score, max_revisions=max_revisions)
+    if fit is None:
+        return {"error": str(err)}
+    status, detail, fit_text = settle_fit(fit, min_score, judge_gate=judge_gate, apply_below_bar=apply_below_bar)
+    if status is None and fit.result.roles_included == 0:
+        status, detail = "skipped", "no experience survived selection and audit for this posting — poor fit"
+    return {"cached": False, "pdf": str(fit.result.pdf_path), "fit": fit_text,
+            "company": fit.result.job.company or prev.get("company", ""), "role": fit.result.job.role_title or prev.get("role", ""),
+            "coverage": fit.result.coverage, "resume_version": RESUME_VERSION, "revisions": fit.revisions,
+            "status": status, "detail": detail}
+
+
 async def _process_one(session: ApplySession, profile: Profile, entry: QueueEntry, out_dir: Path,
                         shots_dir: Path, apply_once: bool, state: RunState, dry_run: bool,
-                        judge_gate: bool = True, approved: bool = False) -> Outcome:
+                        judge_gate: bool = True, approved: bool = False, driver: bool = True) -> Outcome:
     """_process_one_inner, with the third-party text the attempt met on
     record: every sentence a posting or form aimed at an automated reader
     (untrusted.py) ends up in the outcome's flags, for the dashboard and
@@ -2318,7 +3150,7 @@ async def _process_one(session: ApplySession, profile: Profile, entry: QueueEntr
     variant = profile.resume_variant_for(entry.title, getattr(entry, "category", "")) or "base"
     profile = profile.for_resume_variant(entry.title, getattr(entry, "category", ""))
     o = await _process_one_inner(session, profile, entry, out_dir, shots_dir, apply_once, state, dry_run,
-                                 judge_gate=judge_gate, approved=approved)
+                                 judge_gate=judge_gate, approved=approved, driver=driver)
     o.resume_variant = variant
     notes = list(dict.fromkeys(session.injection_notes))
     if notes:
@@ -2329,7 +3161,7 @@ async def _process_one(session: ApplySession, profile: Profile, entry: QueueEntr
 
 async def _process_one_inner(session: ApplySession, profile: Profile, entry: QueueEntry, out_dir: Path,
                               shots_dir: Path, apply_once: bool, state: RunState, dry_run: bool,
-                              judge_gate: bool = True, approved: bool = False) -> Outcome:
+                              judge_gate: bool = True, approved: bool = False, driver: bool = True) -> Outcome:
     o = Outcome(entry_id=entry.id, status="error", company=entry.company_hint, role=entry.title)
 
     if not entry.has_source:
@@ -2353,6 +3185,19 @@ async def _process_one_inner(session: ApplySession, profile: Profile, entry: Que
     # A company goes by two names here: the listing's ("National Information
     # Solutions Cooperative") and the posting's own ("NISC"); both count.
     names = [entry.company_hint, (state.done.get(entry.id) or {}).get("company") or ""]
+    ack = _acknowledged_since(out_dir, [c for c in names if c], prev_rec.get("when") or "") if prev_rec else None
+    if ack:
+        # A retry of an attempt the inbox says went through: the mail lane
+        # (results.json) holds an acknowledgement dated after that attempt.
+        # The record said error or review; the form was sent. Never again.
+        o.status = "applied"
+        o.detail = f"submitted — the earlier attempt went through: the inbox has the acknowledgement ({ack[:80]!r}); not sent again"
+        o.pdf, o.fit, o.answers, o.screenshot = prev_rec.get("pdf", ""), prev_rec.get("fit", ""), prev_rec.get("answers") or [], prev_rec.get("screenshot", "")
+        if apply_once:
+            for name in names:
+                if name:
+                    state.mark_applied(name)
+        return o
     if apply_once and any(state.has_applied(c) for c in names if c):
         # Known before anything is spent: no page load, no tailoring.
         o.status, o.detail = "skipped", f"already applied at {entry.company_hint} (apply_once_at_company)"
@@ -2381,17 +3226,67 @@ async def _process_one_inner(session: ApplySession, profile: Profile, entry: Que
             entry.apply_url = original
         entry.url = original
     o.url = entry.url or ""
+    if driver and not approved and agent_driver_host(profile, entry.apply_url or entry.url or "", entry.url or ""):
+        # The agent driver's posting (Workday, Oracle, SmartRecruiters, Lever,
+        # iCIMS, a company's own site — anything off search.loop_hosts).
+        # Nothing is opened, tailored or judged here: the agent reads the
+        # posting in its own browser and calls assist_prepare for the résumé
+        # and the judges when it gets to it, so a posting it never reaches
+        # costs no tokens. What an earlier attempt left — the PDF, the
+        # verdict, the answers it decided, the screenshot — rides along for
+        # the brief. An outcome the agent itself recorded is final: the loop
+        # never writes over the agent's word (discover._worn_out keeps those
+        # out of the pool; this is the belt to that braces). The dashboard's
+        # own windows (`driver=False`) and an approved submit (`approved`) are
+        # a person at the keyboard and go on as before.
+        target = entry.apply_url or entry.url or ""
+        o.company, o.role = prev_rec.get("company") or entry.company_hint, prev_rec.get("role") or entry.title
+        o.pdf, o.fit, o.coverage = prev_rec.get("pdf", ""), prev_rec.get("fit", ""), prev_rec.get("coverage") or {}
+        o.answers, o.screenshot = prev_rec.get("answers") or [], prev_rec.get("screenshot", "")
+        o.resume_version, o.revisions = int(prev_rec.get("resume_version") or 0), int(prev_rec.get("revisions") or 0)
+        if prev_rec.get("worker") == "assist":
+            o.status, o.detail, o.worker = prev_rec.get("status") or FOR_AGENT, prev_rec.get("detail") or "", "assist"
+            return o
+        if judge_gate:
+            # The vendor's public API, where there is one (Lever, SmartRecruiters,
+            # a Greenhouse board): a posting closed by an enumerated bar, or a
+            # seed-stage team, is settled here for nothing rather than queued.
+            api_text = await asyncio.to_thread(eligibility.fetch_text, target, out_dir)
+            if api_text:
+                verdict, why = eligibility.scan(api_text, eligibility.facts_from_profile(profile))
+                if verdict == "bar":
+                    o.status, o.detail = "fit_rejected", f"eligibility (read from the vendor's API, no model call): {why}"
+                    return o
+                small = eligibility.tier4_signal(api_text) if eligibility.skip_tier4(profile) else ""
+                if small:
+                    o.status, o.detail = "skipped", f"company tier 4 — a seed-stage or tiny-team signal in the posting (search.skip_tier4): {small!r}"
+                    return o
+        host = (urlsplit(target).netloc or "").lower()
+        o.status = FOR_AGENT
+        o.detail = (f"for the agent driver: {ats.host_kind(target)} at {host} is not one of the loop's boards (search.loop_hosts) — "
+                    "nothing opened, tailored or judged here; the assist-queue session works it"
+                    + (" (re-queued by hand: apply whatever the judges say)" if (prev_rec.get("detail") or "").startswith("re-queued") else "")
+                    + (f"; the last attempt ended {prev_rec.get('status')}: {(prev_rec.get('detail') or '')[:200]}"
+                       if prev_rec.get("status") and prev_rec.get("status") != FOR_AGENT else ""))
+        return o
+    if hand_lane_host(profile, entry.apply_url or entry.url or "", entry.url or ""):
+        from .discover import logged_in_since
+        if not logged_in_since(entry.apply_url or entry.url or "", ""):
+            # A host whose form sits behind a captcha (iCIMS's e-mail step,
+            # Tesla's careers site): no page is opened and nothing is
+            # tailored until a person has signed in there once. The record
+            # puts the posting on the dashboard with its Log in button; the
+            # sign-in lifts the retry cap for every posting on the host.
+            host = (urlsplit(entry.apply_url or entry.url or "").netloc or "").lower()
+            o.status = "needs_login"
+            o.detail = (f"hand lane: {host} guards its form with a captcha the tool never solves (search.hand_lane_hosts) — "
+                        "nothing was opened or tailored; log in once by hand (dashboard → Log in) and every posting there is retried")
+            return o
     jd_text = entry.text
     if not jd_text:
         try:
             await session.goto(entry.url)
-            jd_text = await session.read_posting_text()
-            if len(jd_text) < 1500:
-                # The posting container guess came up short (a careers page
-                # listing many roles): the whole page beats a fragment.
-                full = await session.read_text()
-                if len(full) > 2 * len(jd_text):
-                    jd_text = full[:15000]
+            jd_text = await posting_text_on_page(session)
         except Exception as e:
             o.status, o.detail = "error", f"could not load posting: {e}"
             return o
@@ -2405,37 +3300,28 @@ async def _process_one_inner(session: ApplySession, profile: Profile, entry: Que
             return o
         o.status, o.detail = "skipped", "posting text too short — page likely did not load the description"
         return o
-    if entry.company_hint and entry.company_hint.lower() not in jd_text.lower():
-        # The essay writer may name only what the posting names; a page that
-        # never spells out its own company would leave "Zipline" unsayable.
-        jd_text = " — ".join(x for x in (entry.company_hint, entry.title) if x) + "\n\n" + jd_text
-    # A posting handed in as text (a queue entry, a pasted description) has not
-    # been through the page reader: the same scrub applies before any model.
-    jd_text, _jd_notes = scrub(jd_text)
+    jd_text, _jd_notes = posting_for_models(jd_text, entry.company_hint, entry.title)  # the company named, third-party text removed
     session.injection_notes.extend(f"posting: {n}" for n in _jd_notes)
+    if judge_gate:
+        # Deterministic reads first (eligibility.py): an enumerated bar the
+        # applicant cannot meet ends it as fit_rejected, a seed-stage or
+        # tiny-team signal as skipped — no résumé, no judges, no form.
+        verdict, why = eligibility.scan(jd_text, eligibility.facts_from_profile(profile))
+        if verdict == "bar":
+            o.status, o.detail = "fit_rejected", f"eligibility: {why}"
+            return o
+        if eligibility.skip_tier4(profile):
+            small = eligibility.tier4_signal(jd_text)
+            if small:
+                o.status, o.detail = "skipped", f"company tier 4 — a seed-stage or tiny-team signal in the posting (search.skip_tier4): {small!r}"
+                return o
 
     # The address that applies to this posting's location — the default one, or
     # an alternate for postings in the home state — follows the profile into
     # both the form answers and the fit judges.
     profile = profile.for_location(entry.location or jd_text[:1500])
 
-    search = profile.answers.get("search", {}) or {}
-    min_score = search.get("min_judge_score") or judge.PASS_SCORE  # one number, or {judge name: score}
-    max_revisions = int(search.get("max_revisions") if search.get("max_revisions") is not None else 2)
-    if fixed_pdf_path(profile):
-        max_revisions = 0  # the résumé is sent as written: nothing to revise from the judges' notes
-    # The user's rule: a score below the bar earns the résumé its revisions,
-    # then the application goes in anyway. Only an eligibility barrier —
-    # citizenship, clearance, degree level, graduation window — still stops it.
-    apply_below_bar = bool(search.get("apply_below_bar", True))
-    if os.environ.get("RESUME_TAILOR_APPLY_BELOW_BAR", "").strip().lower() in ("0", "false", "no"):
-        apply_below_bar = False  # the launch script's word: every judge at the bar, or the posting is held
-    if getattr(entry, "source", "") == "added by hand":
-        # The user put this posting in the pool themselves: the judges' notes
-        # are recorded, the application goes in — unless an eligibility
-        # barrier (degree level, citizenship, clearance) stands, which the
-        # user is told about in the record.
-        apply_below_bar = True
+    min_score, max_revisions, apply_below_bar = fit_knobs(profile, getattr(entry, "source", ""))
 
     o.resume_version = RESUME_VERSION
     pdf_path: Path | None = None
@@ -2447,17 +3333,13 @@ async def _process_one_inner(session: ApplySession, profile: Profile, entry: Que
         open), so a login wall, a captcha or a vanished posting costs no
         tokens; and before an account is made on a portal, so no account is
         left behind for a posting the judges would turn down. Returns the
-        outcome that ends the attempt, or None to go on."""
+        outcome that ends the attempt, or None to go on. The rounds, the cache
+        rule and the verdict are the shared helpers (tailor_and_judge,
+        cached_fit, settle_fit) the agent driver's prepare step uses too."""
         nonlocal pdf_path, judged
         judged = True
         prev = state.done.get(entry.id) or {}
-        # A cached resume and verdict stand only when the verdict was a pass at
-        # today's bar: a posting the judges turned down is judged again on a
-        # forced retry, not waved through on the strength of having been looked at.
-        cached = (prev.get("pdf") if prev.get("fit") and prev.get("pdf") and Path(prev["pdf"]).is_file()
-                  and prev.get("status") in RETRYABLE and int(prev.get("resume_version") or 0) >= RESUME_VERSION
-                  and judge.cached_scores_ok(prev.get("fit", ""), min_score)
-                  else None)
+        cached = cached_fit(prev, profile, min_score)
         o.resume_version = RESUME_VERSION
         if cached:
             # A retry. The resume and both judges' verdicts stand from the last
@@ -2468,74 +3350,38 @@ async def _process_one_inner(session: ApplySession, profile: Profile, entry: Que
             o.company = prev.get("company") or entry.company_hint
             o.pdf, o.fit, o.coverage = cached, prev["fit"], prev.get("coverage") or {}
             o.revisions = int(prev.get("revisions") or 0)
-        else:
-            # Tailor, judge, and — when a judge holds — revise from the judges'
-            # notes and judge again, up to `max_revisions` times, keeping the best
-            # draft. A disqualifier (citizenship, degree level, graduation window)
-            # ends it early: no rewrite meets those.
-            best = None  # (weakest score, result, verdicts, fit_ok)
-            revision = None
-            job_spec = None
-            for round_no in range(max_revisions + 1):
-                _now("tailoring the résumé" if not round_no else f"revising the résumé (round {round_no})", entry)
-                try:
-                    result = await tailor(profile, jd_text, out_dir=out_dir, label=entry.id, revision=revision,
-                                          variant=f"-r{round_no}" if round_no else "", job=job_spec)
-                except Exception as e:
-                    if best is not None:
-                        break
-                    o.status, o.detail = "error", f"tailoring failed: {e}"
-                    return o
-                job_spec = result.job
-                if round_no == 0:
-                    o.role, o.company = result.job.role_title, result.job.company or entry.company_hint
-                    if profile.blacklisted(o.company):
-                        o.status, o.detail = "skipped", f"{o.company} is on your company blacklist"
-                        return o
-                    if apply_once and o.company and state.has_applied(o.company):
-                        o.status, o.detail = "skipped", f"already applied at {o.company} (apply_once_at_company)"
-                        return o
-                    if apply_once and o.company and state.held_at(o.company, except_id=entry.id):
-                        o.status, o.detail = "skipped", f"another posting at {o.company} is awaiting your approval (apply_once_at_company)"
-                        return o
-                    if result.roles_included == 0:
-                        o.status, o.detail = "skipped", "no experience survived selection and audit for this posting — poor fit"
-                        return o
-                # Two independent match judges, both of which must pass before
-                # anything is submitted. Judged on the PDF's extracted text — what a
-                # recruiter's tools will actually read — against the posting.
-                _now("judging the résumé", entry)
-                try:
-                    fit_ok, verdicts = await judge.two_independent(
-                        jd_text, extract_pdf_text(result.pdf_path), profile.applicant_facts(), min_score=min_score)
-                except Exception as e:
-                    if best is not None:
-                        break
-                    o.status, o.detail = "error", f"fit judging failed: {e}"
-                    return o
-                score = judge.weakest(verdicts)
-                if best is None or score > best[0]:
-                    best = (score, result, verdicts, fit_ok)
-                if fit_ok or judge.disqualified(verdicts) or round_no == max_revisions:
-                    break
-                revision = judge.revision_notes(verdicts)
-                o.revisions = round_no + 1
-            score, result, verdicts, fit_ok = best
-            o.pdf, o.coverage = str(result.pdf_path), result.coverage
-            pdf_path = result.pdf_path
-            # The résumé lint: a PDF whose text layer lost a bullet, the GPA, the
-            # city or the graduation year is held for a look, never sent.
-            lint = [v for v in (result.render_violations or [])
-                    if v.startswith(("[clipped]", "[leading-punctuation]", "[missing-in-pdf]"))]
-            if lint:
-                o.status, o.detail = "needs_review", "résumé lint: " + "; ".join(v[:160] for v in lint[:3])
+            return None
+
+        def first_draft(result) -> Outcome | None:
+            o.role, o.company = result.job.role_title, result.job.company or entry.company_hint
+            if profile.blacklisted(o.company):
+                o.status, o.detail = "skipped", f"{o.company} is on your company blacklist"
                 return o
-            o.fit = judge.summarize(verdicts, min_score) + (f" (revised ×{o.revisions})" if o.revisions else "")
-            if not fit_ok and judge_gate:
-                if judge.disqualified(verdicts) or not apply_below_bar:
-                    o.status, o.detail = "fit_rejected", judge.reasons(verdicts, min_score)
-                    return o
-                o.fit += " — applied below the bar"
+            if apply_once and o.company and state.has_applied(o.company):
+                o.status, o.detail = "skipped", f"already applied at {o.company} (apply_once_at_company)"
+                return o
+            if apply_once and o.company and state.held_at(o.company, except_id=entry.id):
+                o.status, o.detail = "skipped", f"another posting at {o.company} is awaiting your approval (apply_once_at_company)"
+                return o
+            if result.roles_included == 0:
+                o.status, o.detail = "skipped", "no experience survived selection and audit for this posting — poor fit"
+                return o
+            return None
+
+        fit, why = await tailor_and_judge(profile, jd_text, out_dir, entry.id, min_score=min_score, max_revisions=max_revisions,
+                                          on_first=first_draft, now=lambda stage: _now(stage, entry))
+        if fit is None:
+            if isinstance(why, Outcome):
+                return why
+            o.status, o.detail = "error", str(why)
+            return o
+        o.revisions = fit.revisions
+        o.pdf, o.coverage = str(fit.result.pdf_path), fit.result.coverage
+        pdf_path = fit.result.pdf_path
+        status, detail, o.fit = settle_fit(fit, min_score, judge_gate=judge_gate, apply_below_bar=apply_below_bar)
+        if status:
+            o.status, o.detail = status, detail
+            return o
         return None
 
     if not entry.apply_url:
@@ -2569,6 +3415,7 @@ async def _process_one_inner(session: ApplySession, profile: Profile, entry: Que
         o.status, o.detail = "error", f"could not open the application form: {e}"
         return o
 
+    session.email_step_at = None
     if blocker == "login_required" and _accounts_allowed(profile, _page_url(session) or apply_url, apply_url):
         # A portal the user told us to make an account on (Workday): create
         # it, or sign in if an earlier attempt already did, and go on — but
@@ -2582,6 +3429,8 @@ async def _process_one_inner(session: ApplySession, profile: Profile, entry: Que
         except Exception as e:
             how = ""
             print(f"  account step failed: {_brief(e)}", file=sys.stderr, flush=True)
+        if how == "captcha" and await _wait_for_human(session, entry, "captcha", shots_dir):
+            how = "passed"  # the user solved it in this window; the account step's page goes on below
         if how == "captcha":
             o.status = "blocked"
             o.detail = ("a captcha guards this site's sign-in and registration, which the tool does not solve — "
@@ -2603,6 +3452,16 @@ async def _process_one_inner(session: ApplySession, profile: Profile, entry: Que
             blocker = await detect_blocker(session, after_apply=True)
             if blocker == "no_form_found" and await session.click_apply_control():
                 blocker = await detect_blocker(session, after_apply=True)
+    if blocker == "login_required" and await _wait_for_human(session, entry, "sign-in", shots_dir):
+        # The user signed in here, in this window: keep the cookies for
+        # every later browser (and the host's other postings), then go on.
+        try:
+            await session.save_logins()
+        except Exception as e:
+            print(f"  (could not save the site's cookies: {_brief(e)})", file=sys.stderr, flush=True)
+        blocker = await detect_blocker(session, after_apply=True)
+        if blocker == "no_form_found" and await session.click_apply_control():
+            blocker = await detect_blocker(session, after_apply=True)
     if blocker == "login_required":
         where = _page_url(session) or entry.apply_url
         o.status = "needs_login"
@@ -2613,6 +3472,10 @@ async def _process_one_inner(session: ApplySession, profile: Profile, entry: Que
             o.detail = ("this site wants an account or a sign-in before its form — its host is not in search.create_accounts_on; "
                         f"open it in Chrome to finish by hand, or log in once and rerun: {where}")
         return o
+    if blocker == "bot_check" and await _wait_for_human(session, entry, "captcha", shots_dir):
+        blocker = await detect_blocker(session, after_apply=True)
+        if blocker == "no_form_found" and await session.click_apply_control():
+            blocker = await detect_blocker(session, after_apply=True)
     if blocker == "bot_check":
         o.status, o.detail = "blocked", "a bot/verification check was on the page — not attempted"
         return o
@@ -2651,8 +3514,13 @@ async def _process_one_inner(session: ApplySession, profile: Profile, entry: Que
             return verdict
     _now("filling the form", entry, url=apply_url)
     form_started = time.time()
+    # The inbox is read from the moment the code was asked for: the account
+    # step's e-mail press (Oracle), else the start of the fill.
+    code_since = min(form_started, getattr(session, "email_step_at", None) or form_started)
+    wd_resumed = False
     try:
-        unresolved, o.answers = await _fill_form(session, profile, pdf_path, jd_text)
+        unresolved, o.answers = await _fill_form(session, profile, pdf_path, jd_text,
+                                                 seed=(prev_rec.get("answers") or None) if approved else None)
         # A multi-step form: when this page has no submit control but one
         # Next/Continue, move on and fill the next page too — as long as this
         # one is complete, since the site will not advance an incomplete page.
@@ -2660,17 +3528,37 @@ async def _process_one_inner(session: ApplySession, profile: Profile, entry: Que
         for _ in range(9):  # Workday walks six named steps before its Review page
             code_wall = any(_CODE_WALL.search(u) for u in unresolved) or await _code_fields(session)
             link_wall = not code_wall and await _link_wall(session)
-            if (code_wall or link_wall) and mailbox.configured() and codes_tried < 2:
+            if (code_wall or link_wall) and codes_tried < 2:
                 # The site e-mailed a one-time code or a sign-in link: read it
                 # from the inbox, as a person would, and carry on behind it.
+                # No code in time, or no inbox configured, and the user at
+                # the keyboard: the window is held for them to type it.
                 codes_tried += 1
-                _now("waiting for the verification e-mail", entry, url=apply_url)
-                found = await mailbox.fetch_secret_async(form_started, [entry.company_hint, "verification", "code", "link"])
+                found = None
+                if mailbox.configured():
+                    _now("waiting for the verification e-mail", entry, url=apply_url)
+                    found = await mailbox.fetch_secret_async(code_since, [entry.company_hint, "verification", "code", "link"])
                 if not found:
+                    if code_wall and await _code_fields(session) and await _wait_for_human(session, entry, "code", shots_dir):
+                        unresolved, more = await _fill_form(session, profile, pdf_path, jd_text)
+                        o.answers = o.answers + more
+                        continue
                     break
                 if code_wall and found.get("code"):
                     if not await _enter_code(session, found["code"]):
                         break
+                    await session._page.wait_for_timeout(1500)
+                    if await _code_fields(session) and any(re.search(r"invalid|incorrect|expired|not valid|try again", e, re.I)
+                                                           for e in await session.errors()):
+                        # The code was stale (a later visit to the e-mail
+                        # step issued a newer one). The page's own Send New
+                        # Code keeps the step; going back to the e-mail step
+                        # would burn this one too. Read the mail from now.
+                        code_since = time.time()
+                        await session._click_control(re.compile(
+                            r"^\s*(send (a |me a )?new code|resend( the| my)?( code)?|send (the |it )?again|didn.?t (get|receive) (a|the|your) code.*)\s*$", re.I))
+                        await session._page.wait_for_timeout(1500)
+                        continue
                 elif found.get("link"):
                     await session.goto(found["link"])
                     await session._wait_for_fields(15)
@@ -2707,9 +3595,11 @@ async def _process_one_inner(session: ApplySession, profile: Profile, entry: Que
                 # pressed once more — twice at most. Re-filling the same page
                 # nine times would only pile up answers.
                 moved = False
+                complained = False  # did the page name a field or show an error at all?
                 for round_no in range(2):
                     errors = await session.errors()
                     demanded = set(_missing_labels(errors))
+                    complained = complained or bool(errors) or bool(demanded)
                     invalid_ids = {m.group(1) for e in errors for m in [re.match(r"(rt-\d+): ", e)] if m}
                     for f in await session.describe_form():
                         label = (f.get("label") or "").strip()
@@ -2756,8 +3646,34 @@ async def _process_one_inner(session: ApplySession, profile: Profile, entry: Que
                     if await _step_signature(session) != page_before:
                         moved = True
                         break
+                if not moved and await _captcha_here(session):
+                    # The step did not move because a captcha came up on it
+                    # (Honeywell's Oracle tenant draws an hCaptcha drag
+                    # puzzle after its e-mail step). A wall, not a form to
+                    # review — and not one to retry on its own.
+                    o.status, o.detail = "blocked", CAPTCHA_DETAIL + f": {_page_url(session) or apply_url}"
+                    o.screenshot = str(await session.screenshot(shots_dir / f"{_safe(entry.id)}-blocked.png"))
+                    return o
+                if not moved and not complained and not wd_resumed and ats.host_kind(_page_url(session) or apply_url) == "workday":
+                    # Workday can wedge so that Save and Continue fires no
+                    # request at all: every field filled, nothing flagged,
+                    # the button live, the page unmoved (53 steps held this
+                    # way). A reload drops the flow; the posting's own
+                    # Continue Application reopens the saved draft at its
+                    # last step with the entries intact. Once per attempt.
+                    wd_resumed = True
+                    _now("reopening the Workday draft", entry, url=apply_url)
+                    print(f"  [{entry.company_hint}] workday: Save and Continue moved nothing and named nothing — reopening the draft from the posting",
+                          file=sys.stderr, flush=True)
+                    if await _resume_workday_draft(session, entry.url or apply_url):
+                        unresolved, more = await _fill_form(session, profile, pdf_path, jd_text)
+                        o.answers = o.answers + more
+                        continue
                 if not moved:
-                    complaints = [e for e in await session.errors() if not re.match(r"rt-\d+: ", e)][:4]
+                    raw_errors = await session.errors()
+                    complaints = [e for e in raw_errors if not re.match(r"rt-\d+: ", e)][:4]
+                    print(f"  [{entry.company_hint}] the step did not advance; page complaints={raw_errors[:6]!r}; "
+                          f"named fields={bool(complained)}; workday draft reopened={wd_resumed}", file=sys.stderr, flush=True)
                     unresolved = unresolved or [f"the page did not advance past this step" + (": " + "; ".join(complaints) if complaints else "")]
                     break
             unresolved, more = await _fill_form(session, profile, pdf_path, jd_text)
@@ -2865,12 +3781,30 @@ async def _process_one_inner(session: ApplySession, profile: Profile, entry: Que
         o.status, o.detail = "needs_review", "the page at submit time is not an application form (a job page or a sign-in step); not submitted"
         o.screenshot = str(shot)
         return o
+    if not approved and approve_essays(profile) and _model_prose(o.answers):
+        # A written answer is in the form. The user reads it on the dashboard
+        # and presses Approve; the approved run (`resume-tailor submit`)
+        # seeds the filler with these very answers, so what they read is
+        # what goes (search.approve_essays).
+        o.status = AWAITING
+        o.detail = ("filled and ready — a written answer is in it (" + "; ".join(_model_prose(o.answers)[:3]) +
+                    "): read it on the dashboard and press Approve and submit; the approved run sends exactly those words (search.approve_essays)")
+        return o
     if not approved and _needs_approval(profile, o.company, entry.company_hint):
         # Only a page that passed every guard above — a real, filled form —
         # is worth holding for the user's approval.
         o.status = AWAITING
         o.detail = ("filled and ready — this company is on your approve-before-submit list; review the answers and "
                     "the résumé on the dashboard and press Approve and submit")
+        return o
+    if not approved and visible_submit_host(profile, _page_url(session) or apply_url, entry.apply_url or ""):
+        # Lever's hCaptcha turns a headless submit away and leaves the form
+        # standing without a word. The approved submit (`resume-tailor
+        # submit`, from the dashboard's Approve) runs in a visible window.
+        o.status = AWAITING
+        o.detail = ("filled and ready — this board's bot check turns a headless submit away without a word "
+                    "(search.visible_submit_hosts), so the submit is left for a visible Chrome window: press Approve and "
+                    "submit on the dashboard")
         return o
     buttons = await session.buttons()
     submit = _pick_submit_button(buttons)
@@ -2909,6 +3843,14 @@ async def _process_one_inner(session: ApplySession, profile: Profile, entry: Que
         submit = await _ask_button(buttons, "submit")
         if submit is not None and (_NEXT_WORDS.match(submit.get("text", "")) or _NOT_SUBMIT.search(submit.get("text", ""))):
             submit = None  # the model may not turn a Next or Verify into a submit
+    if submit is None and await _captcha_here(session) and await _wait_for_human(session, entry, "captcha", shots_dir):
+        buttons = await session.buttons()
+        submit = _pick_submit_button(buttons)
+        greyed = _greyed_submit(buttons)
+    if submit is None and await _captcha_here(session):
+        o.status, o.detail = "blocked", CAPTCHA_DETAIL + f": {_page_url(session) or apply_url}"
+        o.screenshot = str(await session.screenshot(shots_dir / f"{_safe(entry.id)}-blocked.png"))
+        return o
     if submit is None:
         o.status = "needs_review"
         if greyed:
@@ -2935,6 +3877,17 @@ async def _process_one_inner(session: ApplySession, profile: Profile, entry: Que
         rounds += 1
         demanded = await _demanded_by_page(session)
         if not demanded:
+            # No complaint, form still standing: a required field that
+            # rendered only on the first attempt (a work-authorization pair
+            # drawn after the click) — whatever is required and empty now is
+            # what the page wants.
+            try:
+                demanded = {(f.get("label") or "").strip() for f in await session.unfilled_required()} - {""}
+            except Exception:
+                demanded = set()
+        # A code wall's boxes are the inbox's to fill, never the planner's.
+        demanded = {d for d in demanded if not _CODE_WALL.search(d)}
+        if not demanded:
             break
         _now(f"repairing the form (round {rounds})", entry, url=apply_url)
         try:
@@ -2951,19 +3904,40 @@ async def _process_one_inner(session: ApplySession, profile: Profile, entry: Que
         except Exception as e:
             why += f"; repair round {rounds} failed: {_brief(e)}"
             break
-    if not submitted and mailbox.configured():
-        # Greenhouse (Coinbase) e-mails a security code after Submit and
-        # holds the application until it is typed in — the "still in
-        # progress" it looked like. Read the code from the inbox and finish,
-        # as a person would.
-        try:
-            boxes = await _code_fields(session)
-        except Exception:
-            boxes = []
+    if not submitted:
+        # Greenhouse (Coinbase, MEMX, Inversion) e-mails a security code
+        # after Submit — its reCAPTCHA's fallback when the browser scores
+        # badly — and holds the application until the code is typed in. The
+        # eight boxes draw after the site's round trip, so they are looked
+        # for over a few seconds, not once. The code is read from the inbox
+        # and typed, as a person would; with no code in time (or no inbox)
+        # and the user at the keyboard, the window is held for them.
+        boxes = []
+        for _ in range(8):
+            try:
+                boxes = await _code_fields(session)
+                if boxes or _SUCCESS_TEXT.search((await session.read_text())[:6000]):
+                    break
+            except Exception:
+                break
+            await session._page.wait_for_timeout(1500)
         if boxes:
-            _now("waiting for the security-code e-mail", entry, url=apply_url)
-            found = await mailbox.fetch_secret_async(submit_started, [entry.company_hint, "security code", "code"], timeout_s=180)
-            if found and found.get("code") and await _enter_code(session, found["code"]):
+            entered = ""
+            if mailbox.configured():
+                _now("waiting for the security-code e-mail", entry, url=apply_url)
+                found = await mailbox.fetch_secret_async(submit_started, [entry.company_hint, "security code", "code"], timeout_s=180)
+                if found and found.get("code"):
+                    if await _enter_code(session, found["code"]):
+                        entered = "verified with the e-mailed security code"
+                    else:
+                        why += "; the e-mailed security code could not be typed in"
+                else:
+                    why += "; the page asked for an e-mailed security code and none arrived in time"
+            else:
+                why += f"; the page asked for an e-mailed security code (set {mailbox.ENV_HINT} in ~/.resume-tailor/env and the tool will read it)"
+            if not entered and await _wait_for_human(session, entry, "code", shots_dir):
+                entered = "you typed the e-mailed security code in the worker's window"
+            if entered:
                 await session._page.wait_for_timeout(2500)
                 try:
                     fields_after = await session.describe_form()
@@ -2973,18 +3947,131 @@ async def _process_one_inner(session: ApplySession, profile: Profile, entry: Que
                     fields_after, text_after, still_asking = [], "", True
                 if not still_asking and (not _looks_like_application(fields_after) or re.search(
                         r"thank you for applying|application (has been |was )?(submitted|received)|we'?ve received your application", text_after)):
-                    submitted, why = True, "submitted — verified with the e-mailed security code"
+                    submitted, why = True, f"submitted — {entered}"
                 else:
-                    why += "; the e-mailed security code was entered but the page still shows the form"
-            else:
-                why += "; the page asked for an e-mailed security code and none arrived in time"
+                    why += "; the security code was entered but the page still shows the form"
+    if submitted:
+        # From here on the application has gone. Whatever the checks below
+        # throw, the record must say so: a generator with an `await` in it
+        # handed to str.join here (an async generator is not iterable) made
+        # every successful submit from 2026-10-06 to 2026-10-17 an "error",
+        # which the loop then retried every pass — Tessera Labs got 32
+        # applications in a morning, Assort Health 24, Cohere 16.
+        o.status, o.detail = "applied", f"submitted — {why}"
+        if apply_once:
+            for name in (o.company, entry.company_hint):
+                if name:
+                    state.mark_applied(name)
+        try:
+            page_text_after = (await session.read_text())[:4000]
+        except Exception:
+            page_text_after = ""
+        if _breezy_pending(_page_url(session) or apply_url, why, page_text_after):
+            # Breezy counts an application only once the 4-digit code it e-mails
+            # after Submit is entered at the link in that mail. "Submitted" on the
+            # page is not the end of it.
+            _now("finishing Breezy's e-mailed code step", entry, url=apply_url)
+            try:
+                submitted, why = await _finish_breezy(session, entry, submit_started, why)
+            except Exception as e:
+                why += f"; Breezy's code step failed: {_brief(e)}"
+        try:
+            o.screenshot = str(await session.screenshot(shots_dir / f"{_safe(entry.id)}-post-submit.png"))
+        except Exception:
+            pass
+        if submitted:
+            o.detail = f"submitted — {why}"
+            return o
     post_shot = await session.screenshot(shots_dir / f"{_safe(entry.id)}-post-submit.png")
     o.screenshot = str(post_shot)
+    cap = next((m for m in session.dialogs if _CAP_DIALOG.search(m)), None)
+    if not submitted and cap:
+        # Work at a Startup caps candidates at 25 applications a rolling week
+        # and says so in a browser alert mid-submit. Not this posting's fault:
+        # blocked, and left alone for a week (discover._worn_out).
+        o.status = "blocked"
+        o.detail = f"weekly application cap: the site said {cap.strip()[:160]!r}"
+        return o
+    if not submitted and re.search(r"submission is (currently |temporarily )?unavailable", why, re.I):
+        # Ashby's transient; it clears within minutes. An error, so the next
+        # pass simply tries again.
+        o.status, o.detail = "error", f"the site said submission is unavailable right now (it clears on its own) — {why[:200]}"
+        return o
+    if not submitted and mailbox.configured():
+        # The page would not say the form went — yet it may have: Ashby
+        # leaves the form standing after a submit that landed (Replit took
+        # sixteen applications this way, each retry a fresh one). Before any
+        # verdict that would retry, the inbox is asked for the acknowledgement.
+        _now("checking the inbox for an acknowledgement", entry, url=apply_url)
+        ack = await mailbox.confirmation_async(submit_started, o.company or entry.company_hint, timeout_s=90)
+        if ack:
+            o.status, o.detail = "applied", f"submitted — the page kept the form but the inbox has the acknowledgement ({ack[:80]!r}); {why[:160]}"
+            if apply_once:
+                for name in (o.company, entry.company_hint):
+                    if name:
+                        state.mark_applied(name)
+            return o
     if not submitted:
-        # A spam or bot verdict is the site's, not the form's: blocked, and
-        # worth another try from a more convincing browser later.
+        # The page once more, after the waits above: a confirmation that
+        # appeared meanwhile — the user finished the form in the window, or
+        # the site was slow — is the application gone through.
+        try:
+            await session._pick_frame()
+            late = _SUCCESS_TEXT.search((await session.read_text())[:6000])
+        except Exception:
+            late = None
+        if late:
+            o.status, o.detail = "applied", f"submitted — the page showed the confirmation after the wait ({late.group(0)[:60]!r}); {why[:160]}"
+            if apply_once:
+                for name in (o.company, entry.company_hint):
+                    if name:
+                        state.mark_applied(name)
+            return o
+    if not submitted:
+        # A spam or bot verdict is the site's, not the form's: blocked. A
+        # spam flag in particular is never retried by the loop — repeated
+        # flags hurt the applicant's standing with that vendor (Ashby keys
+        # it on the tenant) — so it is named for discover._worn_out; a hand
+        # sign-in there lifts it like any other wall. A captcha that came up
+        # on the submit (Lever's hCaptcha) is the same kind of wall.
+        if await _captcha_here(session):
+            if await _wait_for_human(session, entry, "captcha", shots_dir):
+                # Passed in this window. Lever submits on its own once its
+                # hCaptcha is solved; another board may want the click again.
+                from .apply import _SUCCESS_TEXT
+                went = False
+                for attempt in range(2):
+                    try:
+                        await asyncio.sleep(3)
+                        text_now = await session.read_text()
+                        await session._pick_frame()
+                        fields_now = await session.describe_form()
+                    except Exception:
+                        text_now, fields_now = "", []
+                    if _SUCCESS_TEXT.search(text_now) or (fields_now == [] and not await _captcha_here(session)) \
+                            or (fields_now and not _looks_like_application(fields_now)):
+                        went = True
+                        break
+                    if attempt == 0:
+                        again = _pick_submit_button(await session.buttons())
+                        if again is None:
+                            break
+                        await session.click(again["selector"])
+                if went:
+                    o.status, o.detail = "applied", "submitted — after you passed the captcha in the worker's window"
+                    if apply_once:
+                        for name in (o.company, entry.company_hint):
+                            if name:
+                                state.mark_applied(name)
+                    try:
+                        o.screenshot = str(await session.screenshot(shots_dir / f"{_safe(entry.id)}-post-submit.png"))
+                    except Exception:
+                        pass
+                    return o
+            o.status, o.detail = "blocked", CAPTCHA_DETAIL + f"; {why[:200]}"
+            return o
         o.status = "blocked" if re.search(r"spam|bot\b|captcha|robot|verif", why, re.I) else "needs_review"
-        o.detail = why
+        o.detail = ("spam flag: " + why) if re.search(r"spam", why, re.I) else why
         return o
     o.status, o.detail = "applied", f"submitted — {why}"
     if apply_once:
@@ -3198,7 +4285,7 @@ async def login_site(url: str, timeout_s: float = 30 * 60) -> int:
             try:
                 if session._page.is_closed():
                     break
-                saved = await session.save_logins()
+                saved = await session.save_logins(record=False)  # every five seconds while the window is open: not yet a passed wall
             except Exception:
                 break
         try:
@@ -3276,7 +4363,7 @@ async def login_and_apply(profile: Profile, entry: QueueEntry, out_dir: str | Pa
             print(f"  (could not save the site's cookies: {_brief(e)})", file=sys.stderr, flush=True)
         print("  signed in — filling and submitting…", file=sys.stderr, flush=True)
         o = await _process_one(session, profile, entry, out_dir, shots_dir, apply_once, state, dry_run=False,
-                               judge_gate=False)
+                               judge_gate=False, driver=False)
         o.when = datetime.now().astimezone().isoformat(timespec="seconds")
         state.record(entry.id, asdict(o))
         if on_progress:
@@ -3316,7 +4403,7 @@ async def review_by_hand(profile: Profile, entry: QueueEntry, out_dir: str | Pat
                            else DEFAULT_PROFILE_DIR.parent / "review-profiles" / _safe(entry.id)[:16])
     try:
         o = await _process_one(session, profile, entry, out_dir, shots_dir, apply_once, state, dry_run=True,
-                               judge_gate=False)
+                               judge_gate=False, driver=False)
         o.when = datetime.now().astimezone().isoformat(timespec="seconds")
         if on_progress:
             on_progress(o)

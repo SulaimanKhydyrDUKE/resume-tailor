@@ -65,6 +65,8 @@ _SYSTEM = (
     "title', 'where did you complete your most recent internship' and the like are answered with the employer's "
     "name or the title as the record spells it — never with a record id — citing the role id in basis.\n"
     "- Optional questions with no basis in the profile: skip. Do not fill for the sake of filling.\n"
+    "- An OPTIONAL free-text box — comments, 'additional information', an optional 'why us' or 'tell us "
+    "about' — is skipped, always: `skip: true`. Only a required one is written.\n"
     "- A REQUIRED question is never skipped: a blank required field stops the application, and the "
     "candidate has asked that the tool decide and apply. Decide it from the record: an opinion, "
     "preference, motivation or free-text question is answered briefly in the candidate's voice from the "
@@ -133,8 +135,40 @@ _SYSTEM = (
 # from the record is a fair basis for them.
 # Facts the profile alone may answer: eligibility and credentials. Reasoning
 # never fills these in; the answer bank holds the candidate's truth for them.
+# Citizenship, nationality, passport, visa or residency status: the bank's
+# to state (a work_authorization entry) or nobody's. "United States" once
+# went out for "list all countries of citizenship" on reasoning alone.
+CITIZENSHIP_Q = re.compile(r"citizen|nationalit|\bnationals? of\b|country of (origin|birth|residen)|passport|visa (status|type|category|class)|"
+                           r"immigration status|permanent resident|green card|residency status|lawful(ly)? (admitted|resident)", re.I)
+# A question built to tell a person from a program — "if you are a human,
+# answer: how many R's are in strawberry", "type the word apple to prove you
+# are not a bot" — is never answered, right or wrong: a correct answer is still
+# an automated system passing a human check under the candidate's name. The
+# field stays empty and the posting goes to the user (needs_review).
+HUMAN_CHECK = re.compile(
+    r"if you are (a |an )?(human|person|real person)\b|\bare you (a )?(human|robot|bot)\b|"
+    r"(prove|confirm|verify|show|demonstrate) (that )?you('re| are| are not| aren'?t) (a |an )?(human|person|robot|bot|ai)\b|"
+    r"\bnot (a |an )?(bot|robot|ai|automated|language model)\b[^.?]{0,40}\b(answer|type|enter|write|solve)\b|"
+    r"\bhuman (check|verification|test)\b|\banti-?bot\b|\b(bot|robot) (check|test|detection)\b", re.I)
+# "How did you hear about us?" — and not "if you were referred, name the
+# person", which is a different question with a factual answer.
+SOURCE_Q = re.compile(
+    r"\b(how|where|when) (did you|you)( first| originally)? (hear|heard|find|found|learn|learned)( about| of)?\b"
+    r"|\b(what|which) source\b.*\b(hear|heard|learn|learned|find|found)\b|\bsource of (this )?application\b"
+    r"|\breferral source\b|\bapplication source\b", re.I)
+# A source the candidate did not use: the postings come from a public list,
+# so a named site, a person or an event is a claim, whoever picks it.
+NAMED_SOURCE = re.compile(r"linkedin|indeed|glassdoor|handshake|ziprecruiter|monster|\bdice\b|facebook|instagram|twitter|tiktok|youtube|reddit|"
+                          r"referr|friend|employee|recruiter|agency|headhunter|career fair|professor|alumn|newspaper|radio", re.I)
 _HARD_FACT = re.compile(r"citizen|clearance|authori[sz]|sponsor|visa|degree|gpa|graduat|felon|convict|licen[cs]e|"
                         r"certif|security|passport|national", re.I)
+# A quantity, a date or a credential about the candidate is a fact, never an
+# opinion: "how many years of industry experience" once got "2.5" on
+# reasoning alone. Reasoning answers a puzzle, a preference, or a required
+# question of the safe-default kind the prompt lists — never one of these.
+_FACT_Q = re.compile(r"\b(how (many|much|long)|number of|years?|months?|hours?|salary|wage|compensation|pay|gpa|grade|score|"
+                     r"date|when|licen[cs]e|certif|degree|diploma|graduat|age|years? old|birth|employ(ed|er|ment)|job title|"
+                     r"position title|company name|experience (with|in|using))\b", re.I)
 _PREFERENCE = re.compile(r"prefer|preference|which (team|program|track|platform|division|group|area)|team choice|"
                          r"important (factors? )?to you|factors|matters? (the )?most|what (would|do) you (like|want|hope|look for)|"
                          r"most (interested|excited)|interested in (working|joining)", re.I)
@@ -181,6 +215,8 @@ def widget_of(field: dict, group_type: str | None = None) -> str:
         return "select"
     if typ == "yesno":
         return "yesno"
+    if typ == "pills":
+        return "radio"  # choice chips (Oracle's Degree): one of the listed options, like a radio group
     if tag in ("textarea", "editor"):
         return "textarea"
     if typ == "checkbox":
@@ -312,6 +348,28 @@ def _title_to_company(profile: Profile, answer: str) -> str | None:
     return None
 
 
+# Free text a form does not require is left blank. A model's prose in an
+# optional box answers nothing the form asked for, and it is the surest place
+# a generated voice shows: the audit of 2026-10-06 found 98 optional boxes
+# filled, 77 of them with the plan's one-sentence "I am excited to…". The
+# bank's own words (the rules in batch.py run before the plan) may still fill
+# one; nothing written by a model does. A required box is still answered.
+OPTIONAL_PROSE_Q = re.compile(r"additional (information|comments?|details?)|anything else|comments?\b|cover letter|tell (us|me)|"
+                              r"describe|explain|why (do you|are you|would you|us|this)|what (do you|would you|makes you|excites|interests)|"
+                              r"interest(ed)? in|motivat|proud of|story|about yourself|in your (own )?words|\bessay\b|message to", re.I)
+OPTIONAL_PROSE_REASON = "optional free text: left blank on purpose"
+
+
+def is_prose_question(q: dict) -> bool:
+    """A box that wants sentences: a textarea, or a text field whose label is
+    a prompt (long, or worded as a question about the candidate) with no
+    options to choose from."""
+    if q.get("options") or q.get("widget") not in ("textarea", "text", ""):
+        return False
+    label = q.get("label") or ""
+    return q.get("widget") == "textarea" or len(label) > 60 or bool(OPTIONAL_PROSE_Q.search(label))
+
+
 def rails(answers: list[FieldAnswer], questions: list[dict], profile: Profile) -> dict[tuple[str, str], Decision]:
     """The model's plan, held to the rules the rest of the tool lives by."""
     flat = profile.flat_answers()
@@ -323,6 +381,14 @@ def rails(answers: list[FieldAnswer], questions: list[dict], profile: Profile) -
         if q is None:
             continue
         key = q["key"]
+        if HUMAN_CHECK.search(q["label"]):
+            # Before anything else: a human check is never answered, whatever
+            # the model proposed and however it would have been grounded.
+            decisions[key] = Decision(None, reason="a human check: left for the user, never answered by the tool")
+            continue
+        if not q.get("required") and is_prose_question(q):
+            decisions[key] = Decision(None, reason=OPTIONAL_PROSE_REASON)
+            continue
         if a.essay:
             decisions[key] = Decision(None, essay=True, reason=a.reason)
             continue
@@ -339,16 +405,21 @@ def rails(answers: list[FieldAnswer], questions: list[dict], profile: Profile) -
         if not known and ("posting" in a.basis or "reasoning" in a.basis) and _ABOUT_POSTING.search(q["label"]):
             known = ["posting"]  # a fact about the job, read off the posting
         if not known and "reasoning" in a.basis and (
-                not re.search(r"\byou(r|rs|rself)?\b", q["label"], re.I) or _PREFERENCE.search(q["label"])
-                or (q.get("required") and not _HARD_FACT.search(q["label"])
-                    and not re.search(r"\b(read|reading|favou?rite|book|paper|article|podcast|hobby|hobbies)\b", q["label"], re.I))):
+                _PREFERENCE.search(q["label"])
+                or (not _FACT_Q.search(q["label"]) and (
+                    not re.search(r"\byou(r|rs|rself)?\b", q["label"], re.I)
+                    or (q.get("required") and not _HARD_FACT.search(q["label"])
+                        and not re.search(r"\b(read|reading|favou?rite|book|paper|article|podcast|hobby|hobbies)\b", q["label"], re.I))))):
             # Reasoning carries a puzzle, a preference, or a required question
-            # that is not a hard eligibility fact — never a credential, and
-            # never a personal fact like what the candidate has read (that
-            # must rest on a record id or a bank key).
+            # that is not a hard eligibility fact — never a credential, never
+            # a quantity, date or title about the candidate (_FACT_Q: the
+            # bank's or nobody's), and never a personal fact like what the
+            # candidate has read (that must rest on a record id or a bank key).
             known = ["reasoning"]
         if not known and not (_SILENCE.search(q["label"]) and _NO_LIKE.match(answer)):
-            decisions[key] = Decision(None, reason="rests on nothing in the profile")
+            decisions[key] = Decision(None, reason=("a fact about the candidate the bank does not hold"
+                                                    if "reasoning" in a.basis and _FACT_Q.search(q["label"])
+                                                    else "rests on nothing in the profile"))
             continue
         if (known and THIRD_PARTY.search(q["label"]) and all(b.startswith(SELF_KEYS) for b in known)
                 and not _ASKS_IF_REFERRED.search(q["label"]) and not _ASKS_ABOUT_OWN_TIES.search(q["label"])):
@@ -361,6 +432,16 @@ def rails(answers: list[FieldAnswer], questions: list[dict], profile: Profile) -
             company = _title_to_company(profile, answer)
             if company:
                 answer = company
+        if CITIZENSHIP_Q.search(q["label"]) and not any(b.startswith("work_authorization.") for b in known):
+            # Citizenship, nationality, passport, visa or residency status
+            # rests on a work_authorization entry or on nothing.
+            decisions[key] = Decision(None, reason="citizenship or visa status must rest on a work_authorization entry")
+            continue
+        if SOURCE_Q.search(q["label"]) and NAMED_SOURCE.search(re.sub(r"\([^)]*\)", " ", answer)):
+            # "How did you hear about us": a named site or person is a claim
+            # the postings' real source (a public list) does not support.
+            decisions[key] = Decision(None, reason="names a source the candidate did not use")
+            continue
         if GPA_Q.search(q["label"]) and not re.search(r"scale|out of what|maximum", q["label"], re.I):
             fixed = gpa_answer(profile, q["label"], q["options"])
             if fixed is not None:
